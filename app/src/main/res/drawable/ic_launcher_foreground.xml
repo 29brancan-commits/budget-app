@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Binder rings -->
+    <path
+        android:pathData="M38,20h4v10h-4z"
+        android:fillColor="#A7F3D0" />
+    <path
+        android:pathData="M66,20h4v10h-4z"
+        android:fillColor="#A7F3D0" />
+
+    <!-- Calendar Card Base Shadow -->
+    <path
+        android:pathData="M27,29h54a6,6 0 0 1 6,6v46a6,6 0 0 1 -6,6h-54a6,6 0 0 1 -6,-6v-46a6,6 0 0 1 6,-6z"
+        android:fillColor="#064E3B"
+        android:alpha="0.4" />
+
+    <!-- Calendar Card Base -->
+    <path
+        android:pathData="M26,27h56a6,6 0 0 1 6,6v46a6,6 0 0 1 -6,6h-56a6,6 0 0 1 -6,-6v-46a6,6 0 0 1 6,-6z"
+        android:fillColor="#1E293B"
+        android:strokeColor="#10B981"
+        android:strokeWidth="2" />
+
+    <!-- Calendar Top Header Bar -->
+    <path
+        android:pathData="M26,27h56a6,6 0 0 1 6,6v12h-68v-12a6,6 0 0 1 6,-6z"
+        android:fillColor="#10B981" />
+
+    <!-- Upward Growth Sparkline -->
+    <path
+        android:pathData="M32,70 L43,62 L51,66 L74,48"
+        android:strokeColor="#34D399"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M66,48 h8 v8"
+        android:strokeColor="#34D399"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <!-- Gold Dollar Badge Emblem -->
+    <path
+        android:pathData="M54,46 A15,15 0 1 1 53.99,46 Z"
+        android:fillColor="#F59E0B" />
+    <path
+        android:pathData="M54,48 A13,13 0 1 1 53.99,48 Z"
+        android:fillColor="#FBBF24" />
+
+    <!-- Dollar Sign ($) -->
+    <path
+        android:pathData="M54,52v18"
+        android:strokeColor="#0F172A"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M58.5,55.5h-6a2.5,2.5 0 0 0 -2.5,2.5v0a2.5,2.5 0 0 0 2.5,2.5h3a2.5,2.5 0 0 1 2.5,2.5v0a2.5,2.5 0 0 1 -2.5,2.5h-6"
+        android:strokeColor="#0F172A"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round" />
+
+</vector>

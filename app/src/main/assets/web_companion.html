@@ -1,0 +1,4154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PayCycle Budget — PC Companion & Web App</title>
+  <meta name="description" content="Manage your bi-weekly pay cycle budget, transactions, recurring income, planned bills, debt snowball payoff, calendar schedule, and AI intelligence directly in your browser." />
+  <style>
+    /* Base Theme Variables (Color Theory Spectrum Default) */
+    :root {
+      --bg-color: #0F172A;
+      --card-bg: #1E293B;
+      --card-border: #334155;
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+      --primary: #2DD4BF;
+      --primary-hover: #14B8A6;
+      --primary-light: rgba(45, 212, 191, 0.15);
+      --accent: #6366F1;
+      --accent-light: rgba(99, 102, 241, 0.15);
+      --danger: #EF4444;
+      --danger-light: rgba(239, 68, 68, 0.15);
+      --warning: #F59E0B;
+      --warning-light: rgba(245, 158, 11, 0.15);
+      --purple: #8B5CF6;
+      --purple-light: rgba(139, 92, 246, 0.15);
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      --radius: 14px;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.25), 0 2px 4px -2px rgba(0, 0, 0, 0.25);
+    }
+
+    /* 1. Color Theory Spectrum */
+    [data-theme="color_theory"][data-mode="light"] {
+      --bg-color: #F8FAFC; --card-bg: #FFFFFF; --card-border: #E2E8F0;
+      --text-main: #0F172A; --text-muted: #64748B; --primary: #0D9488;
+      --primary-hover: #0F766E; --primary-light: rgba(13, 148, 136, 0.12);
+      --accent: #4F46E5; --accent-light: rgba(79, 70, 229, 0.12);
+    }
+    [data-theme="color_theory"][data-mode="dark"] {
+      --bg-color: #09090B; --card-bg: #18181B; --card-border: #27272A;
+      --text-main: #F4F4F5; --text-muted: #A1A1AA; --primary: #2DD4BF;
+      --primary-hover: #14B8A6; --primary-light: rgba(45, 212, 191, 0.15);
+      --accent: #818CF8; --accent-light: rgba(129, 140, 248, 0.15);
+    }
+
+    /* 2. Purple Minimal */
+    [data-theme="default"][data-mode="light"] {
+      --bg-color: #FEF7FF; --card-bg: #FFFFFF; --card-border: #EADDFF;
+      --text-main: #1D1B20; --text-muted: #49454F; --primary: #6750A4;
+      --primary-hover: #523E85; --primary-light: rgba(103, 80, 164, 0.12);
+      --accent: #7C4DFF; --accent-light: rgba(124, 77, 255, 0.12);
+    }
+    [data-theme="default"][data-mode="dark"] {
+      --bg-color: #000000; --card-bg: #121216; --card-border: #2B2938;
+      --text-main: #F4F4F5; --text-muted: #A1A1AA; --primary: #A5B4FC;
+      --primary-hover: #818CF8; --primary-light: rgba(165, 180, 252, 0.15);
+      --accent: #C4B5FD; --accent-light: rgba(196, 181, 253, 0.15);
+    }
+
+    /* 3. Emerald Mint */
+    [data-theme="emerald"][data-mode="light"] {
+      --bg-color: #F0FDF4; --card-bg: #FFFFFF; --card-border: #DCFCE7;
+      --text-main: #064E3B; --text-muted: #047857; --primary: #059669;
+      --primary-hover: #047857; --primary-light: rgba(5, 150, 105, 0.12);
+    }
+    [data-theme="emerald"][data-mode="dark"] {
+      --bg-color: #022C22; --card-bg: #064E3B; --card-border: #047857;
+      --text-main: #ECFDF5; --text-muted: #A7F3D0; --primary: #34D399;
+      --primary-hover: #10B981; --primary-light: rgba(52, 211, 153, 0.2);
+    }
+
+    /* 4. Ocean Sapphire */
+    [data-theme="ocean"][data-mode="light"] {
+      --bg-color: #EFF6FF; --card-bg: #FFFFFF; --card-border: #DBEAFE;
+      --text-main: #1E3A8A; --text-muted: #2563EB; --primary: #2563EB;
+      --primary-hover: #1D4ED8; --primary-light: rgba(37, 99, 235, 0.12);
+    }
+    [data-theme="ocean"][data-mode="dark"] {
+      --bg-color: #0A192F; --card-bg: #172A45; --card-border: #303C55;
+      --text-main: #F8FAFC; --text-muted: #93C5FD; --primary: #60A5FA;
+      --primary-hover: #3B82F6; --primary-light: rgba(96, 165, 250, 0.2);
+    }
+
+    /* 5. Sunset Copper / Amber */
+    [data-theme="amber"][data-mode="light"] {
+      --bg-color: #FFFBEB; --card-bg: #FFFFFF; --card-border: #FEF3C7;
+      --text-main: #78350F; --text-muted: #B45309; --primary: #D97706;
+      --primary-hover: #B45309; --primary-light: rgba(217, 119, 6, 0.12);
+    }
+    [data-theme="amber"][data-mode="dark"] {
+      --bg-color: #1A1208; --card-bg: #2B1E0C; --card-border: #453014;
+      --text-main: #FFFBEB; --text-muted: #FCD34D; --primary: #FBBF24;
+      --primary-hover: #F59E0B; --primary-light: rgba(251, 191, 36, 0.2);
+    }
+
+    /* 6. Rose Gold */
+    [data-theme="rose"][data-mode="light"] {
+      --bg-color: #FFF1F2; --card-bg: #FFFFFF; --card-border: #FFE4E6;
+      --text-main: #881337; --text-muted: #BE123C; --primary: #E11D48;
+      --primary-hover: #BE123C; --primary-light: rgba(225, 29, 72, 0.12);
+    }
+    [data-theme="rose"][data-mode="dark"] {
+      --bg-color: #1C0A10; --card-bg: #2E101A; --card-border: #4C1D2A;
+      --text-main: #FFE4E6; --text-muted: #FDA4AF; --primary: #FB7185;
+      --primary-hover: #F43F5E; --primary-light: rgba(251, 113, 133, 0.2);
+    }
+
+    /* 7. Midnight Cyber */
+    [data-theme="midnight"][data-mode="light"] {
+      --bg-color: #ECFEFF; --card-bg: #FFFFFF; --card-border: #CFFAFE;
+      --text-main: #164E63; --text-muted: #0891B2; --primary: #0891B2;
+      --primary-hover: #0E7490; --primary-light: rgba(8, 145, 178, 0.12);
+    }
+    [data-theme="midnight"][data-mode="dark"] {
+      --bg-color: #000000; --card-bg: #0A0F14; --card-border: #132230;
+      --text-main: #F0FDF4; --text-muted: #67E8F9; --primary: #22D3EE;
+      --primary-hover: #06B6D4; --primary-light: rgba(34, 211, 238, 0.2);
+    }
+
+    /* 8. 90s AOL Retro */
+    [data-theme="retro_aol"] {
+      --bg-color: #C0C0C0; --card-bg: #FFFFFF; --card-border: #808080;
+      --text-main: #000080; --text-muted: #333333; --primary: #003399;
+      --primary-hover: #002266; --primary-light: rgba(0, 51, 153, 0.15);
+      --accent: #FFC600; --radius: 4px;
+    }
+
+    /* 9. 90s Mac OS */
+    [data-theme="mac_classic"] {
+      --bg-color: #D4D0C8; --card-bg: #EAE6DF; --card-border: #A09D96;
+      --text-main: #000000; --text-muted: #555555; --primary: #003399;
+      --primary-hover: #002266; --primary-light: rgba(0, 51, 153, 0.15);
+      --radius: 6px;
+    }
+
+    /* 10. 8-Bit Retro Arcade */
+    [data-theme="retro_8bit"] {
+      --bg-color: #051408; --card-bg: #0C2812; --card-border: #00FF66;
+      --text-main: #00FF66; --text-muted: #88FFB4; --primary: #00FF66;
+      --primary-hover: #00CC52; --primary-light: rgba(0, 255, 102, 0.2);
+      --accent: #FF0055; --radius: 4px;
+      font-family: 'Courier New', Courier, monospace;
+    }
+
+    /* 11. E-Reader Sepia */
+    [data-theme="ereader"] {
+      --bg-color: #F5EDDE; --card-bg: #EFE6D5; --card-border: #D4C3AD;
+      --text-main: #2A1C15; --text-muted: #5C4033; --primary: #7C4A03;
+      --primary-hover: #5C3502; --primary-light: rgba(124, 74, 3, 0.15);
+      --accent: #8A4F23; --radius: 10px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: var(--font-sans);
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    /* Top Mac-style Header Bar */
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--card-border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      font-size: 24px;
+      background: var(--primary-light);
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      border: 1px solid var(--primary);
+    }
+
+    .brand h1 {
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .sync-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: var(--primary-light);
+      color: var(--primary);
+      border: 1px solid var(--primary);
+      cursor: pointer;
+    }
+
+    .sync-badge.syncing {
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #FFFFFF;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-accent {
+      background: var(--accent);
+      color: #FFFFFF;
+    }
+
+    .btn-accent:hover {
+      background: #2563EB;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border-color: var(--card-border);
+      color: var(--text-main);
+    }
+
+    .btn-outline:hover {
+      background: var(--card-border);
+    }
+
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 0.75rem;
+    }
+
+    .btn-danger {
+      background: var(--danger-light);
+      color: var(--danger);
+      border-color: var(--danger);
+    }
+
+    .theme-select {
+      background: var(--card-bg);
+      color: var(--text-main);
+      border: 1px solid var(--card-border);
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    /* Main Container */
+    main {
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 20px 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Pay Cycle Hero Ribbon */
+    .hero-banner {
+      background: linear-gradient(135deg, var(--card-bg) 0%, rgba(16, 185, 129, 0.08) 100%);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .cycle-info {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .cycle-circle {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: var(--primary-light);
+      border: 2px solid var(--primary);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: var(--primary);
+      flex-shrink: 0;
+    }
+
+    .cycle-circle .num { font-size: 1.1rem; line-height: 1; }
+    .cycle-circle .lbl { font-size: 0.55rem; text-transform: uppercase; font-weight: 700; }
+
+    .cycle-details h2 {
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    .cycle-details p {
+      font-size: 0.825rem;
+      color: var(--text-muted);
+    }
+
+    .account-picker-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* Summary Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+    }
+
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--primary);
+    }
+
+    .stat-card.accent::before { background: var(--accent); }
+    .stat-card.warning::before { background: var(--warning); }
+    .stat-card.danger::before { background: var(--danger); }
+    .stat-card.purple::before { background: var(--purple); }
+
+    .stat-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+
+    .stat-sub {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Account Carousel Chips Bar */
+    .account-chips-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .account-chip {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .account-chip.active {
+      background: var(--primary-light);
+      border-color: var(--primary);
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    /* Navigation Tabs */
+    .tabs-nav {
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 6px;
+      overflow-x: auto;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      font-weight: 700;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active {
+      background: var(--card-bg);
+      color: var(--primary);
+      border: 1px solid var(--card-border);
+      box-shadow: var(--shadow);
+    }
+
+    .tab-btn:hover:not(.active) {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    /* Content Panes */
+    .tab-pane {
+      display: none;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .tab-pane.active {
+      display: flex;
+    }
+
+    /* Cards & Panels */
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .panel-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Tables */
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.875rem;
+    }
+
+    th {
+      background: rgba(0, 0, 0, 0.2);
+      color: var(--text-muted);
+      font-weight: 700;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--card-border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: var(--card-border);
+      color: var(--text-main);
+    }
+
+    .tag.income { background: var(--primary-light); color: var(--primary); }
+    .tag.autopay { background: var(--warning-light); color: var(--warning); }
+    .tag.paid { background: var(--accent-light); color: var(--accent); }
+
+    /* Modals */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 16px;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal-box {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 520px;
+      padding: 22px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .form-group label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .form-control {
+      background: var(--bg-color);
+      color: var(--text-main);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+
+    .form-control:focus {
+      border-color: var(--primary);
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+
+    /* Debt Snowball / Avalanche Simulator */
+    .slider-box {
+      background: rgba(0, 0, 0, 0.15);
+      padding: 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--card-border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--primary);
+    }
+
+    /* Calendar Grid View Styles */
+    .calendar-container {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 16px;
+    }
+
+    @media (max-width: 900px) {
+      .calendar-container { grid-template-columns: 1fr; }
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+    }
+
+    .calendar-day-header {
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      padding: 6px 0;
+      text-transform: uppercase;
+    }
+
+    .calendar-day-cell {
+      background: rgba(0,0,0,0.15);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      min-height: 70px;
+      padding: 6px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.15s ease;
+    }
+
+    .calendar-day-cell:hover {
+      border-color: var(--primary);
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .calendar-day-cell.selected {
+      border-color: var(--primary);
+      background: var(--primary-light);
+    }
+
+    .calendar-day-cell.today {
+      border: 2px solid var(--accent);
+    }
+
+    .calendar-day-cell.other-month {
+      opacity: 0.35;
+    }
+
+    .calendar-day-num {
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+
+    .calendar-pills {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 4px;
+    }
+
+    .cal-pill {
+      font-size: 0.65rem;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cal-pill.income { background: var(--primary-light); color: var(--primary); }
+    .cal-pill.expense { background: var(--danger-light); color: var(--danger); }
+
+    /* AI Hub Cards */
+    .ai-card {
+      background: linear-gradient(135deg, var(--card-bg) 0%, rgba(139, 92, 246, 0.08) 100%);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .ai-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      background: var(--purple-light);
+      color: var(--purple);
+      border: 1px solid var(--purple);
+    }
+
+    /* Pay Cycles Cards */
+    .cycle-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .cycle-card.current {
+      border: 2px solid var(--primary);
+      background: linear-gradient(135deg, var(--card-bg) 0%, rgba(16, 185, 129, 0.06) 100%);
+    }
+
+    .cycle-card.active-selected-cycle {
+      border: 2px solid var(--primary) !important;
+      background: linear-gradient(135deg, var(--card-bg) 0%, rgba(16, 185, 129, 0.12) 100%) !important;
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+    }
+
+    .calendar-day-cell.in-cycle {
+      border-color: rgba(16, 185, 129, 0.45);
+      background: rgba(16, 185, 129, 0.06);
+    }
+
+    .calendar-day-cell.cycle-payday {
+      border: 2px solid var(--primary);
+      background: rgba(16, 185, 129, 0.15);
+    }
+
+    /* Material 3 Bottom Navigation Bar for Mobile */
+    .m3-bottom-nav {
+      display: none;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--card-bg);
+      border-top: 1px solid var(--card-border);
+      box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+      z-index: 80;
+      justify-content: space-around;
+      align-items: center;
+      padding: 6px 4px calc(env(safe-area-inset-bottom, 0px) + 6px);
+    }
+
+    .m3-nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      flex: 1;
+      padding: 4px 2px;
+      border-radius: 12px;
+      transition: all 0.15s ease;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .m3-nav-icon-wrap {
+      padding: 3px 12px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.15rem;
+      transition: all 0.15s ease;
+    }
+
+    .m3-nav-item.active {
+      color: var(--primary);
+    }
+
+    .m3-nav-item.active .m3-nav-icon-wrap {
+      background: var(--primary-light);
+      color: var(--primary);
+      border: 1px solid var(--primary);
+    }
+
+    /* Floating Action Button (FAB) */
+    .fab-container {
+      position: fixed;
+      bottom: 74px;
+      right: 20px;
+      z-index: 85;
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: flex-end;
+      gap: 10px;
+    }
+
+    .fab-main {
+      width: 54px;
+      height: 54px;
+      border-radius: 16px;
+      background: var(--primary);
+      color: #FFFFFF;
+      border: none;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      cursor: pointer;
+      transition: transform 0.2s ease, background 0.15s ease;
+    }
+
+    .fab-main:hover {
+      transform: scale(1.06);
+      background: var(--primary-hover);
+    }
+
+    .fab-main.active {
+      transform: rotate(45deg);
+    }
+
+    .fab-menu {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .fab-menu.open {
+      display: flex;
+    }
+
+    .fab-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text-main);
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .fab-item:hover {
+      background: var(--primary-light);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    /* Toast Notification */
+    #toastContainer {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 120;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: var(--card-bg);
+      border: 1px solid var(--primary);
+      color: var(--text-main);
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: toastIn 0.2s ease forwards;
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .form-row { grid-template-columns: 1fr; }
+      .hero-banner { flex-direction: column; align-items: flex-start; }
+      .panel-header { flex-direction: column; align-items: flex-start; }
+      .tabs-nav { display: none; } /* On mobile, use M3 bottom nav */
+      .m3-bottom-nav { display: flex; }
+      main { padding-bottom: 90px; }
+      .fab-container { bottom: 76px; }
+    }
+  </style>
+</head>
+<body data-theme="color_theory" data-mode="dark">
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">💳</div>
+      <div>
+        <h1>PayCycle Budget — Web & Companion</h1>
+        <div class="brand-subtitle">Cloud Sync • Full Material 3 Parity</div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <button class="btn btn-outline btn-sm" onclick="openAiQuickModal()">✨ AI Quick Entry</button>
+      <div id="syncBadge" class="sync-badge" onclick="triggerManualSync()" title="Click to sync immediately with Android device">
+        <span id="syncIcon">🔄</span>
+        <span id="syncStatus">Cloud Connected</span>
+      </div>
+
+      <select id="themeSelector" class="theme-select" onchange="setAppTheme(this.value)" title="Choose visual theme">
+        <option value="color_theory">🎨 Color Theory</option>
+        <option value="default">💜 Purple Minimal</option>
+        <option value="emerald">🌿 Emerald Mint</option>
+        <option value="ocean">🌊 Ocean Sapphire</option>
+        <option value="amber">🌅 Sunset Copper</option>
+        <option value="rose">🌸 Rose Gold</option>
+        <option value="midnight">⚡ Midnight Cyber</option>
+        <option value="retro_aol">🌐 90s AOL Retro</option>
+        <option value="mac_classic">🖥️ 90s Mac OS</option>
+        <option value="retro_8bit">🕹️ 8-Bit Arcade</option>
+        <option value="ereader">📖 E-Reader Sepia</option>
+      </select>
+
+      <button id="modeToggleBtn" class="btn btn-outline btn-sm" onclick="toggleLightDarkMode()" title="Toggle Dark/Light Mode">
+        🌙
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main>
+
+    <!-- Pay Cycle Hero Ribbon with Full Interactive Navigation -->
+    <section class="hero-banner">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:1;">
+        <!-- Cycle Stepper: Previous Cycle -->
+        <button class="btn btn-outline" style="padding:6px 12px; font-size:0.85rem; font-weight:700;" onclick="prevPayCycle()" title="Previous Pay Cycle (Shift 14 days back)">
+          ◀ Prev Cycle
+        </button>
+
+        <div class="cycle-info" style="cursor:pointer;" onclick="openPayCycleModal('jump')" title="Click to inspect pay cycles or update pay schedule">
+          <div class="cycle-circle">
+            <span class="num" id="cycleDaysLeft">14</span>
+            <span class="lbl" id="cycleDaysLbl">Days</span>
+          </div>
+          <div class="cycle-details">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <h2 id="cycleDatesDisplay" style="margin:0;">Pay Cycle: Aug 15 – Aug 28, 2026</h2>
+              <span id="cycleStatusBadge" style="font-size:0.75rem; background:var(--primary-light); color:var(--primary); border:1px solid var(--primary); padding:2px 8px; border-radius:999px; font-weight:700;">⭐ Current Cycle</span>
+            </div>
+            <p id="cycleStatusSub" style="margin:2px 0 0 0;">Payday: Friday, Aug 15 • 14-Day Cycle • Tap to jump</p>
+          </div>
+        </div>
+
+        <!-- Cycle Stepper: Today & Next Cycle -->
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn btn-outline btn-sm" onclick="todayPayCycle()" style="font-weight:700;" title="Return to today's current pay cycle">
+            Today
+          </button>
+          <button class="btn btn-outline" style="padding:6px 12px; font-size:0.85rem; font-weight:700;" onclick="nextPayCycle()" title="Next Pay Cycle (Shift 14 days forward)">
+            Next Cycle ▶
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="openPayCycleModal('schedule')" title="Settings & Pay Schedule">
+            ⚙️
+          </button>
+        </div>
+      </div>
+
+      <div class="account-picker-wrap">
+        <label for="activeAccountSelect" style="font-size:0.8rem; font-weight:700; color:var(--text-muted);">ACTIVE LEDGER:</label>
+        <select id="activeAccountSelect" class="form-control" style="width: auto; min-width: 160px;" onchange="changeActiveAccount(this.value)">
+          <option value="All Accounts">All Accounts</option>
+          <option value="Primary Account">Primary Account</option>
+        </select>
+        <button class="btn btn-primary" onclick="openAddTransactionModal()">+ Add Expense</button>
+        <button class="btn btn-accent" onclick="openAddIncomeModal()">+ Add Income</button>
+      </div>
+    </section>
+
+    <!-- Account Switcher Carousel -->
+    <div class="account-chips-bar" id="accountChipsBar">
+      <!-- Rendered via JS -->
+    </div>
+
+    <!-- Stats Grid -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Safe-to-Spend Balance <span>💰</span></div>
+        <div class="stat-value" id="statRemainingBalance">$0.00</div>
+        <div class="stat-sub" id="statRemainingSub">After all cleared and planned expenses</div>
+      </div>
+
+      <div class="stat-card accent">
+        <div class="stat-label">Pay Period Income <span>💵</span></div>
+        <div class="stat-value" id="statPeriodIncome">$0.00</div>
+        <div class="stat-sub" id="statIncomeSub">Bi-weekly paycheck & sources</div>
+      </div>
+
+      <div class="stat-card danger">
+        <div class="stat-label">Planned Outflows <span>📉</span></div>
+        <div class="stat-value" id="statTotalExpenses">$0.00</div>
+        <div class="stat-sub" id="statExpensesSub">Cleared: $0.00 • Pending: $0.00</div>
+      </div>
+
+      <div class="stat-card purple">
+        <div class="stat-label">Total Debt Balance <span>🎯</span></div>
+        <div class="stat-value" id="statTotalDebt">$0.00</div>
+        <div class="stat-sub" id="statDebtSub">Snowball target: $0.00 / mo</div>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs (7 Full Parity Tabs matching Android App) -->
+    <nav class="tabs-nav">
+      <button class="tab-btn active" onclick="switchTab('tabCycles', this)">🔄 1. Pay Cycles</button>
+      <button class="tab-btn" onclick="switchTab('tabIncome', this)">💵 2. Income</button>
+      <button class="tab-btn" onclick="switchTab('tabExpenses', this)">📉 3. Expenses</button>
+      <button class="tab-btn" onclick="switchTab('tabDebtPlanner', this)">🏔️ 4. Debt Planner</button>
+      <button class="tab-btn" onclick="switchTab('tabCalendar', this)">📅 5. Calendar</button>
+      <button class="tab-btn" onclick="switchTab('tabAiHub', this)">✨ 6. AI Intelligence</button>
+      <button class="tab-btn" onclick="switchTab('tabSettings', this)">⚙️ 7. Settings & Sync</button>
+    </nav>
+
+    <!-- TAB 0: PAY CYCLES DASHBOARD -->
+    <section id="tabCycles" class="tab-pane active">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <h3 style="font-size:1.1rem; font-weight:700;">Bi-Weekly Pay Period Cycles</h3>
+        <button class="btn btn-outline btn-sm" onclick="openAnchorEditModal()">⚙️ Anchor Payday Settings</button>
+      </div>
+
+      <div id="cyclesListContainer" style="display:flex; flex-direction:column; gap:14px;">
+        <!-- Rendered via JS -->
+      </div>
+    </section>
+
+    <!-- TAB 1: INCOME SOURCES & ENTRIES -->
+    <section id="tabIncome" class="tab-pane">
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+        <!-- Recurring Income Sources -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">💵 Recurring Income Sources</div>
+            <button class="btn btn-accent btn-sm" onclick="openAddIncomeModal()">+ Add Recurring Income</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Source Name</th>
+                  <th>Frequency</th>
+                  <th>Amount</th>
+                  <th style="text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="incomeTableBody">
+                <!-- Rendered via JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Income Transactions Log -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span>📥 Income Received Ledger</span>
+              <span id="incomeCountBadge" class="tag" style="font-size:0.75rem;">0 deposits</span>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <select id="incomeFilterCycle" class="form-control" onchange="renderIncomeTransactions()" style="width:auto; font-size:0.8rem; padding:4px 8px;">
+                <option value="current_cycle">Selected Cycle</option>
+                <option value="all_time">All Time</option>
+              </select>
+              <button class="btn btn-outline btn-sm" onclick="openAddTransactionModalWithIncome()">+ Log Income</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Title</th>
+                  <th>Account</th>
+                  <th>Amount</th>
+                  <th style="text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="incomeTxTableBody">
+                <!-- Rendered via JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: EXPENSES & TRANSACTIONS SPREADSHEET -->
+    <section id="tabExpenses" class="tab-pane">
+      <!-- Scheduled Bills Ribbon -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>📅 Scheduled Bills & Subscriptions</span>
+            <span id="billCountBadge" class="tag">0 bills</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openAddBillModal()">+ Add Scheduled Bill</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Due Date</th>
+                <th>Bill Title</th>
+                <th>Target Account</th>
+                <th>AutoPay</th>
+                <th>Amount</th>
+                <th style="text-align:right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="billsTableBody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Expense Ledger & Formula Calculator -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>📋 Expense Ledger & Transactions</span>
+            <span id="txCountBadge" class="tag">0 items</span>
+          </div>
+
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <select id="txFilterCycle" class="form-control" onchange="renderTransactions()" style="width:auto; min-width:180px; font-weight:600;">
+              <option value="current_cycle">Selected Pay Cycle</option>
+              <option value="all_time">All Time (All Cycles)</option>
+            </select>
+            <input type="text" id="txSearchInput" class="form-control" placeholder="Search title or category..." oninput="renderTransactions()" style="width:180px;" />
+            <select id="txFilterCategory" class="form-control" onchange="renderTransactions()" style="width:130px;">
+              <option value="ALL">All Categories</option>
+              <option value="Groceries">Groceries</option>
+              <option value="Bills">Bills</option>
+              <option value="Dining Out">Dining Out</option>
+              <option value="Transportation">Transportation</option>
+              <option value="Housing">Housing</option>
+              <option value="Utilities">Utilities</option>
+              <option value="Shopping">Shopping</option>
+              <option value="Other">Other</option>
+            </select>
+            <button class="btn btn-outline btn-sm" onclick="exportTransactionsCsv()">📥 Export CSV</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddTransactionModal()">+ Add Expense</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Date</th>
+                <th>Title / Description</th>
+                <th>Category</th>
+                <th>Account</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="txTableBody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: DEBT PAYOFF ENGINE -->
+    <section id="tabDebtPlanner" class="tab-pane">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">🏔️ Debt Payoff Snowball & Avalanche Engine</div>
+          <button class="btn btn-primary btn-sm" onclick="openAddDebtModal()">+ Add New Debt</button>
+        </div>
+
+        <div class="slider-box">
+          <div class="slider-header">
+            <div>
+              <strong>Extra Monthly Debt Payment:</strong>
+              <span id="extraPaymentLabel" style="color:var(--primary); font-weight:800; font-size:1.1rem;">+$200.00/mo</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button id="btnStrategySnowball" class="btn btn-primary btn-sm" onclick="setDebtStrategy('snowball')">Snowball (Lowest Balance)</button>
+              <button id="btnStrategyAvalanche" class="btn btn-outline btn-sm" onclick="setDebtStrategy('avalanche')">Avalanche (Highest APR)</button>
+            </div>
+          </div>
+          <input type="range" id="extraPaymentSlider" min="0" max="2000" step="25" value="200" oninput="updateDebtSimulation()" />
+        </div>
+
+        <!-- Simulation Results Banner -->
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+          <div class="stat-card" style="padding:12px;">
+            <div class="stat-label">Projected Debt-Free Date</div>
+            <div class="stat-value" id="debtFreeDateDisplay" style="font-size:1.25rem; color:var(--primary);">Oct 2027</div>
+            <div class="stat-sub" id="debtMonthsSavedSub">Saved 14 months with extra payment</div>
+          </div>
+          <div class="stat-card accent" style="padding:12px;">
+            <div class="stat-label">Total Interest Saved</div>
+            <div class="stat-value" id="debtInterestSavedDisplay" style="font-size:1.25rem; color:var(--accent);">$1,420.00</div>
+            <div class="stat-sub">Compared to minimum payments only</div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Debt Name</th>
+                <th>Category</th>
+                <th>Balance</th>
+                <th>APR Rate</th>
+                <th>Min Payment</th>
+                <th>Target Payoff Order</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="debtsTableBody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: CALENDAR GRID VIEW -->
+    <section id="tabCalendar" class="tab-pane">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <button class="btn btn-outline btn-sm" onclick="changeCalendarMonth(-1)">&larr; Prev</button>
+            <span id="calendarMonthTitle" style="font-size:1.1rem; font-weight:800;">August 2026</span>
+            <button class="btn btn-outline btn-sm" onclick="changeCalendarMonth(1)">Next &rarr;</button>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openAddTransactionModalForSelectedDay()">+ Add for Selected Day</button>
+        </div>
+
+        <div class="calendar-container">
+          <!-- Month Grid -->
+          <div>
+            <div class="calendar-grid">
+              <div class="calendar-day-header">Sun</div>
+              <div class="calendar-day-header">Mon</div>
+              <div class="calendar-day-header">Tue</div>
+              <div class="calendar-day-header">Wed</div>
+              <div class="calendar-day-header">Thu</div>
+              <div class="calendar-day-header">Fri</div>
+              <div class="calendar-day-header">Sat</div>
+            </div>
+            <div class="calendar-grid" id="calendarGridBody" style="margin-top:6px;">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+
+          <!-- Day Schedule Inspector Side-Panel -->
+          <div class="panel" style="background:rgba(0,0,0,0.1); padding:14px; gap:10px;">
+            <div style="font-weight:800; font-size:0.95rem;" id="calInspectorDate">Selected Date</div>
+            <div id="calInspectorSummary" style="font-size:0.8rem; color:var(--text-muted);">0 transactions scheduled</div>
+            <div id="calInspectorList" style="display:flex; flex-direction:column; gap:6px; max-height:400px; overflow-y:auto;">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: AI INTELLIGENCE HUB -->
+    <section id="tabAiHub" class="tab-pane">
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px;">
+        <!-- Cash Flow & Safe-Spend Forecaster -->
+        <div class="ai-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="panel-title">🔮 Cash Flow Forecaster</div>
+            <span class="ai-pill">Gemini 3.5</span>
+          </div>
+          <p style="font-size:0.825rem; color:var(--text-muted);">
+            Analyzes your current pay cycle inflow vs outflows to project your buffer and risk level.
+          </p>
+          <div id="aiForecastContent" style="background:rgba(0,0,0,0.2); padding:12px; border-radius:8px; font-size:0.85rem; min-height:80px;">
+            Click <strong>Generate Forecast</strong> to analyze your active budget cycle.
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="runAiForecast()">⚡ Generate Cash Flow Forecast</button>
+        </div>
+
+        <!-- What-If Scenario Simulator -->
+        <div class="ai-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="panel-title">🧪 What-If Simulator</div>
+            <span class="ai-pill">Scenario Engine</span>
+          </div>
+          <p style="font-size:0.825rem; color:var(--text-muted);">
+            Test a hypothetical expense (e.g. "$400 car repair") before spending to evaluate cycle impact.
+          </p>
+          <div class="form-row">
+            <input type="text" id="aiSimTitle" class="form-control" placeholder="e.g. Concert Tickets" value="Weekend Trip" />
+            <input type="number" id="aiSimAmount" class="form-control" placeholder="Amount ($)" value="250" />
+          </div>
+          <div id="aiSimContent" style="background:rgba(0,0,0,0.2); padding:12px; border-radius:8px; font-size:0.85rem; min-height:80px;">
+            Ready to simulate financial scenarios.
+          </div>
+          <button class="btn btn-accent btn-sm" onclick="runAiSimulation()">📊 Test Purchase Impact</button>
+        </div>
+
+        <!-- Subscription & Bill Auditor -->
+        <div class="ai-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="panel-title">🔍 Subscription Auditor</div>
+            <span class="ai-pill">Audit Engine</span>
+          </div>
+          <p style="font-size:0.825rem; color:var(--text-muted);">
+            Identifies recurring monthly subscriptions and recurring bills to pinpoint potential savings.
+          </p>
+          <div id="aiAuditContent" style="background:rgba(0,0,0,0.2); padding:12px; border-radius:8px; font-size:0.85rem; min-height:80px;">
+            Audit ready. Click below to inspect active subscriptions.
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="runAiAudit()">🔎 Audit Subscriptions</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 6: SETTINGS & CLOUD SYNC -->
+    <section id="tabSettings" class="tab-pane">
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+        <!-- Cloud Bus Sync Settings -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">☁️ Live Mobile & PC Cloud Bus</div>
+            <button class="btn btn-primary btn-sm" onclick="triggerManualSync()">🔄 Sync Now</button>
+          </div>
+          <p style="font-size:0.85rem; color:var(--text-muted);">
+            Your data syncs seamlessly between this PC Web App and your Android phone in real time using your account email key.
+          </p>
+
+          <div class="form-group">
+            <label>Cloud Sync Key / Account Email:</label>
+            <input type="text" id="syncAccountEmailInput" class="form-control" value="86brancan@gmail.com" onchange="updateSyncEmail(this.value)" />
+            <small style="color:var(--text-muted);">Matches the email set in Android App Settings &rarr; Google Drive & Cloud Sync.</small>
+          </div>
+
+          <div style="background:rgba(0,0,0,0.15); border-radius:var(--radius); padding:12px; font-size:0.8rem; display:flex; flex-direction:column; gap:6px;">
+            <div><strong>Last Cloud Sync:</strong> <span id="lastSyncTimeDisplay">Never</span></div>
+            <div><strong>Cloud Topic:</strong> <code id="cloudTopicDisplay" style="color:var(--primary);">paycycle_sync_86brancan_at_gmail_com</code></div>
+            <div><strong>Sync Status:</strong> <span id="cloudStatusMsg" style="color:var(--primary);">Ready & Listening</span></div>
+          </div>
+        </div>
+
+        <!-- Theme & Visual Styling -->
+        <div class="panel" style="grid-column: 1 / -1;">
+          <div class="panel-header">
+            <div class="panel-title">🎨 Theme & Visual Palette</div>
+            <button class="btn btn-outline btn-sm" onclick="toggleLightDarkMode()">Toggle Dark/Light Mode</button>
+          </div>
+          <p style="font-size:0.85rem; color:var(--text-muted);">
+            Select a custom color theory palette matching the Android application:
+          </p>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">
+            <div class="theme-card-option" style="background:rgba(13,148,136,0.15); border:1px solid #0D9488; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('color_theory')">
+              <span style="font-size:1.3rem;">🎨</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Color Theory</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Teal, Indigo & Amber</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(103,80,164,0.15); border:1px solid #6750A4; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('default')">
+              <span style="font-size:1.3rem;">💜</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Purple Minimal</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Classic Material 3</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(5,150,105,0.15); border:1px solid #059669; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('emerald')">
+              <span style="font-size:1.3rem;">🌿</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Emerald Mint</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Financial Growth</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(37,99,235,0.15); border:1px solid #2563EB; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('ocean')">
+              <span style="font-size:1.3rem;">🌊</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Ocean Sapphire</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Navy & Sapphire</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(217,119,6,0.15); border:1px solid #D97706; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('amber')">
+              <span style="font-size:1.3rem;">🌅</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Sunset Copper</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Warm Gold & Copper</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(225,29,72,0.15); border:1px solid #E11D48; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('rose')">
+              <span style="font-size:1.3rem;">🌸</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Rose Gold</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Rose & Mauve Luxury</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(8,145,178,0.15); border:1px solid #0891B2; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('midnight')">
+              <span style="font-size:1.3rem;">⚡</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">Midnight Cyber</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Neon Cyan & Obsidian</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(0,51,153,0.15); border:1px solid #003399; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('retro_aol')">
+              <span style="font-size:1.3rem;">🌐</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">90s AOL Retro</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Dial-Up Blue & Yellow</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(0,51,153,0.15); border:1px solid #003399; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('mac_classic')">
+              <span style="font-size:1.3rem;">🖥️</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">90s Mac OS</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Platinum Desktop Grey</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(0,255,102,0.15); border:1px solid #00FF66; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('retro_8bit')">
+              <span style="font-size:1.3rem;">🕹️</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">8-Bit Arcade</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Pixel CRT Green</span>
+              </div>
+            </div>
+            <div class="theme-card-option" style="background:rgba(124,74,3,0.15); border:1px solid #7C4A03; border-radius:10px; padding:10px; cursor:pointer; display:flex; align-items:center; gap:8px;" onclick="setAppTheme('ereader')">
+              <span style="font-size:1.3rem;">📖</span>
+              <div>
+                <strong style="font-size:0.85rem; display:block;">E-Reader Sepia</strong>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Kindle Parchment</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Account Management & Anchor Payday -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">🏦 Accounts & Pay Cycle Anchors</div>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-outline btn-sm" onclick="openPayCycleModal('schedule')">🗓️ Pay Schedule</button>
+              <button class="btn btn-outline btn-sm" onclick="openAddAccountModal()">+ Add Account</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Bi-Weekly Anchor Payday Date:</label>
+            <div style="display:flex; gap:8px;">
+              <input type="date" id="anchorPaydayInput" class="form-control" style="flex:1;" onchange="updateAnchorPayday(this.value)" />
+              <button class="btn btn-outline btn-sm" onclick="openPayCycleModal('schedule')">Presets & Manager</button>
+            </div>
+            <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+              <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:3px 8px;" onclick="setAnchorDirect('today')">Today</button>
+              <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:3px 8px;" onclick="setAnchorDirect('friday')">Next Fri</button>
+              <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:3px 8px;" onclick="setAnchorDirect('1st')">1st of Mo</button>
+              <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:3px 8px;" onclick="setAnchorDirect('15th')">15th of Mo</button>
+            </div>
+            <small style="color:var(--text-muted); margin-top:4px;">All 14-day pay periods calculate forward and backward from this date.</small>
+          </div>
+
+          <div class="form-group">
+            <label>Default Base Paycheck Amount ($):</label>
+            <input type="number" id="defaultPaycheckInput" class="form-control" step="0.01" onchange="updateDefaultPaycheck(this.value)" />
+          </div>
+
+          <div class="form-group">
+            <label>Manage Accounts:</label>
+            <div id="accountsListInSettings" style="display:flex; flex-direction:column; gap:6px;">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Backup File & CSV Export -->
+        <div class="panel" style="grid-column: 1 / -1;">
+          <div class="panel-header">
+            <div class="panel-title">💾 Backup File & Google Sheets CSV</div>
+          </div>
+          <p style="font-size:0.85rem; color:var(--text-muted);">
+            Export or import your complete financial database file (<code>paycycle_budget_backup.json</code>) or Google Sheets CSVs.
+          </p>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px;">
+            <button class="btn btn-primary" onclick="downloadBackupJson()">⬇️ Download JSON Backup</button>
+            <label class="btn btn-outline" style="cursor:pointer;">
+              ⬆️ Restore JSON Backup
+              <input type="file" id="jsonFileInput" accept=".json" style="display:none;" onchange="handleJsonFileImport(event)" />
+            </label>
+            <button class="btn btn-outline" onclick="exportTransactionsCsv()">📊 Export Google Sheets CSV</button>
+            <label class="btn btn-outline" style="cursor:pointer;">
+              📥 Import Sheets CSV
+              <input type="file" id="csvFileInput" accept=".csv" style="display:none;" onchange="handleCsvFileImport(event)" />
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Material 3 Floating Action Button (FAB) -->
+  <div class="fab-container">
+    <div id="fabMenu" class="fab-menu">
+      <div class="fab-item" onclick="openAddTransactionModal(); toggleFabMenu();">
+        <span>📉</span>
+        <span>+ Expense</span>
+      </div>
+      <div class="fab-item" onclick="openAddIncomeModal(); toggleFabMenu();">
+        <span>💵</span>
+        <span>+ Income</span>
+      </div>
+      <div class="fab-item" onclick="openAiQuickModal(); toggleFabMenu();">
+        <span>✨</span>
+        <span>AI Quick Entry</span>
+      </div>
+    </div>
+    <button id="fabMainBtn" class="fab-main" onclick="toggleFabMenu()" title="Quick Add">+</button>
+  </div>
+
+  <!-- Material 3 Bottom Navigation Bar for Mobile -->
+  <nav class="m3-bottom-nav">
+    <button class="m3-nav-item active" onclick="switchTab('tabCycles', this)">
+      <div class="m3-nav-icon-wrap">🔄</div>
+      <span>Cycles</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabIncome', this)">
+      <div class="m3-nav-icon-wrap">💵</div>
+      <span>Income</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabExpenses', this)">
+      <div class="m3-nav-icon-wrap">📉</div>
+      <span>Expenses</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabDebtPlanner', this)">
+      <div class="m3-nav-icon-wrap">🎯</div>
+      <span>Debt</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabCalendar', this)">
+      <div class="m3-nav-icon-wrap">📅</div>
+      <span>Calendar</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabAiHub', this)">
+      <div class="m3-nav-icon-wrap">✨</div>
+      <span>AI Hub</span>
+    </button>
+    <button class="m3-nav-item" onclick="switchTab('tabSettings', this)">
+      <div class="m3-nav-icon-wrap">⚙️</div>
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer"></div>
+
+  <!-- Modal: Add / Edit Transaction -->
+  <div id="modalTransaction" class="modal-overlay">
+    <div class="modal-box">
+      <h3 id="modalTxTitle" style="font-size:1.1rem; font-weight:700;">Add Transaction</h3>
+      
+      <div class="form-group">
+        <label>Title / Description</label>
+        <input type="text" id="txInputTitle" class="form-control" placeholder="e.g. Grocery Store or Paycheck" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Amount ($)</label>
+          <input type="number" id="txInputAmount" class="form-control" step="0.01" min="0" placeholder="0.00" />
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" id="txInputDate" class="form-control" />
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Category</label>
+          <select id="txInputCategory" class="form-control">
+            <option value="Groceries">Groceries</option>
+            <option value="Bills">Bills</option>
+            <option value="Dining Out">Dining Out</option>
+            <option value="Transportation">Transportation</option>
+            <option value="Housing">Housing</option>
+            <option value="Utilities">Utilities</option>
+            <option value="Shopping">Shopping</option>
+            <option value="Income">Income</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Account</label>
+          <select id="txInputAccount" class="form-control">
+            <!-- Rendered via JS -->
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px; padding-top:4px;">
+        <label class="checkbox-row">
+          <input type="checkbox" id="txInputIsIncome" />
+          <span>💵 This is an <strong>Income / Deposit</strong></span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="txInputIsAutoPay" />
+          <span>⚡ AutoPay enabled</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="txInputIsCompleted" />
+          <span>✅ Cleared / Paid</span>
+        </label>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalTransaction')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTransaction()">Save Transaction</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Scheduled Bill -->
+  <div id="modalBill" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700;">Add Scheduled Bill / Subscription</h3>
+      
+      <div class="form-group">
+        <label>Bill Title / Payee</label>
+        <input type="text" id="billInputTitle" class="form-control" placeholder="e.g. Electric Bill, Rent, Netflix" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Estimated Amount ($)</label>
+          <input type="number" id="billInputAmount" class="form-control" step="0.01" min="0" placeholder="0.00" />
+        </div>
+        <div class="form-group">
+          <label>Due Date</label>
+          <input type="date" id="billInputDueDate" class="form-control" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Target Payment Account</label>
+        <select id="billInputAccount" class="form-control">
+          <!-- Rendered via JS -->
+        </select>
+      </div>
+
+      <label class="checkbox-row" style="margin-top:4px;">
+        <input type="checkbox" id="billInputIsAutoPay" />
+        <span>⚡ AutoPay enabled for this bill</span>
+      </label>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalBill')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveBill()">Save Bill</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Income Source -->
+  <div id="modalIncome" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700;">Add Recurring Income Source</h3>
+      
+      <div class="form-group">
+        <label>Source Name</label>
+        <input type="text" id="incomeInputName" class="form-control" placeholder="e.g. Primary Job, Freelance, Side Gig" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Amount per Cycle ($)</label>
+          <input type="number" id="incomeInputAmount" class="form-control" step="0.01" min="0" placeholder="2400.00" />
+        </div>
+        <div class="form-group">
+          <label>Frequency</label>
+          <select id="incomeInputFrequency" class="form-control">
+            <option value="Bi-Weekly">Bi-Weekly (Every 14 Days)</option>
+            <option value="Weekly">Weekly</option>
+            <option value="Monthly">Monthly</option>
+            <option value="One-Time">One-Time</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalIncome')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveIncomeSource()">Save Income</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Debt -->
+  <div id="modalDebt" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700;">Add Debt Account</h3>
+      
+      <div class="form-group">
+        <label>Debt / Creditor Name</label>
+        <input type="text" id="debtInputName" class="form-control" placeholder="e.g. Chase Sapphire, Auto Loan, Student Loan" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Current Balance ($)</label>
+          <input type="number" id="debtInputBalance" class="form-control" step="0.01" min="0" placeholder="0.00" />
+        </div>
+        <div class="form-group">
+          <label>Interest Rate (APR %)</label>
+          <input type="number" id="debtInputApr" class="form-control" step="0.01" min="0" placeholder="19.99" />
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Minimum Monthly Payment ($)</label>
+          <input type="number" id="debtInputMinPay" class="form-control" step="0.01" min="0" placeholder="50.00" />
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="debtInputCategory" class="form-control">
+            <option value="Credit Card">Credit Card</option>
+            <option value="Auto Loan">Auto Loan</option>
+            <option value="Student Loan">Student Loan</option>
+            <option value="Personal Loan">Personal Loan</option>
+            <option value="Medical">Medical</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalDebt')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveDebt()">Save Debt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Account -->
+  <div id="modalAccount" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700;">Add Payment Account / Ledger</h3>
+      <div class="form-group">
+        <label>Account Name</label>
+        <input type="text" id="accountInputName" class="form-control" placeholder="e.g. Checking 1234, High-Yield Savings" />
+      </div>
+      <div class="form-group">
+        <label>Starting Balance / Amount ($) [Optional]</label>
+        <input type="number" id="accountInputInitialBalance" class="form-control" step="0.01" placeholder="0.00" />
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalAccount')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveAccount()">Add Account</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Account -->
+  <div id="modalEditAccount" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; font-weight:700;">✏️ Edit Account & Balance</h3>
+      <input type="hidden" id="editAccountOldName" />
+      <div class="form-group">
+        <label>Account Name</label>
+        <input type="text" id="editAccountNewName" class="form-control" placeholder="Account Name" />
+      </div>
+
+      <div class="form-group">
+        <label>Account Balance / Amount ($)</label>
+        <input type="number" id="editAccountBalance" class="form-control" step="0.01" placeholder="0.00" />
+        <small style="color:var(--text-muted); display:block; margin-top:4px;">💡 Updating this amount immediately sets this ledger's starting balance to match your real bank funds.</small>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+        <button class="btn btn-outline" onclick="closeModal('modalEditAccount')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEditedAccount()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: AI Natural Language Quick Entry -->
+  <div id="modalAiQuick" class="modal-overlay">
+    <div class="modal-box">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="font-size:1.1rem; font-weight:700;">✨ AI Natural Language Quick Entry</h3>
+        <span class="ai-pill">Gemini</span>
+      </div>
+      <p style="font-size:0.85rem; color:var(--text-muted);">
+        Type naturally in plain English (e.g. <em>"Spent $45 at Target on groceries yesterday"</em> or <em>"Paid $120 electric bill from Checking"</em>).
+      </p>
+
+      <div class="form-group">
+        <textarea id="aiQuickPrompt" class="form-control" rows="3" placeholder="e.g. Spent $32.50 on lunch at Chipotle today using Primary Account"></textarea>
+      </div>
+
+      <div id="aiQuickParsedResult" style="display:none; background:rgba(0,0,0,0.2); padding:10px; border-radius:8px; font-size:0.85rem;">
+        <!-- Output parsed preview -->
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="btn btn-outline" onclick="closeModal('modalAiQuick')">Cancel</button>
+        <button class="btn btn-primary" onclick="processAiQuickEntry()">Parse & Add Transaction</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Pay Schedule & Cycle Manager -->
+  <div id="modalPayCycle" class="modal-overlay">
+    <div class="modal-box" style="max-width: 580px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:22px; background:var(--primary-light); padding:6px 10px; border-radius:var(--radius); border:1px solid var(--primary);">🗓️</span>
+          <div>
+            <h3 style="font-size:1.1rem; font-weight:800;">Pay Schedule & Cycle Manager</h3>
+            <div style="font-size:0.75rem; color:var(--text-muted);">Bi-Weekly (14-Day) Budget Cycles</div>
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="closeModal('modalPayCycle')" style="border:none; font-size:1.1rem; cursor:pointer;">✕</button>
+      </div>
+
+      <!-- Tab Switcher inside Modal -->
+      <div style="display:flex; gap:8px; border-bottom:1px solid var(--card-border); padding-bottom:8px; margin-top:6px;">
+        <button id="modalTabBtnJump" class="tab-btn active" style="padding:6px 14px; font-size:0.85rem;" onclick="switchModalTab('jump')">📅 Jump to Pay Cycle</button>
+        <button id="modalTabBtnSchedule" class="tab-btn" style="padding:6px 14px; font-size:0.85rem;" onclick="switchModalTab('schedule')">⚙️ Set Schedule & Anchor</button>
+      </div>
+
+      <!-- Tab 1: Jump to Pay Cycle -->
+      <div id="modalTabContentJump" style="display:flex; flex-direction:column; gap:10px; margin-top:4px;">
+        <div style="font-size:0.85rem; color:var(--text-muted);">Select a pay period cycle to inspect its budget window:</div>
+        <div id="modalCyclesList" style="display:flex; flex-direction:column; gap:8px; max-height:320px; overflow-y:auto; padding-right:4px;">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <!-- Tab 2: Set Schedule & Anchor -->
+      <div id="modalTabContentSchedule" style="display:none; flex-direction:column; gap:12px; margin-top:4px;">
+        <div class="form-group">
+          <label>Bi-Weekly Anchor Payday Date:</label>
+          <input type="date" id="modalAnchorInput" class="form-control" />
+          <small style="color:var(--text-muted);">All 14-day pay periods calculate forward and backward from this anchor date.</small>
+        </div>
+
+        <div class="form-group">
+          <label style="font-size:0.78rem; font-weight:700; color:var(--text-muted);">QUICK PRESETS:</label>
+          <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px;">
+            <button class="btn btn-outline btn-sm" type="button" onclick="setAnchorPreset('today')">Today</button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="setAnchorPreset('friday')">Next Fri</button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="setAnchorPreset('1st')">1st of Mo</button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="setAnchorPreset('15th')">15th of Mo</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Default Base Paycheck Amount ($):</label>
+          <input type="number" id="modalPaycheckInput" class="form-control" step="0.01" placeholder="2400.00" />
+        </div>
+
+        <div id="modalScheduleFeedback" style="display:none; padding:8px 12px; border-radius:8px; background:var(--primary-light); color:var(--primary); font-size:0.85rem; font-weight:600;"></div>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+          <button class="btn btn-outline" type="button" onclick="closeModal('modalPayCycle')">Cancel</button>
+          <button class="btn btn-primary" type="button" onclick="savePayScheduleFromModal()">Apply Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Embedded Data injected during export (if present)
+    window.EMBEDDED_DATA = null;
+
+    // State Model
+    const appState = {
+      transactions: [],
+      incomeSources: [],
+      plannedExpenses: [],
+      debts: [],
+      settings: {
+        accountEmail: '86brancan@gmail.com',
+        activeAccount: 'All Accounts',
+        allAccounts: ['Primary Account', 'Checking', 'Savings'],
+        anchorPayday: '2026-08-15',
+        defaultPaycheck: 2400.00,
+        debtStrategy: 'snowball',
+        extraDebtPayment: 200.00
+      },
+      lastUpdated: 0
+    };
+
+    let editingTxIndex = -1;
+    let calCurrentMonth = new Date();
+    let calSelectedDateStr = new Date().toISOString().split('T')[0];
+    let selectedCycleStartDate = null;
+
+    function getPaydayOnOrBefore(refDate, anchorStr) {
+      const anchor = new Date((anchorStr || '2026-08-15') + 'T00:00:00');
+      const ref = new Date(refDate);
+      ref.setHours(0, 0, 0, 0);
+      anchor.setHours(0, 0, 0, 0);
+      const diffTime = ref.getTime() - anchor.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      const cycles = Math.floor(diffDays / 14);
+      const payday = new Date(anchor);
+      payday.setDate(anchor.getDate() + cycles * 14);
+      payday.setHours(0, 0, 0, 0);
+      return payday;
+    }
+
+    function getSelectedCycleInfo() {
+      const anchorStr = appState.settings.anchorPayday || '2026-08-15';
+      if (!selectedCycleStartDate) {
+        selectedCycleStartDate = getPaydayOnOrBefore(new Date(), anchorStr);
+      }
+      const cStart = new Date(selectedCycleStartDate);
+      cStart.setHours(0, 0, 0, 0);
+      const cEnd = new Date(cStart);
+      cEnd.setDate(cStart.getDate() + 13);
+      cEnd.setHours(23, 59, 59, 999);
+
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      const currentPayday = getPaydayOnOrBefore(now, anchorStr);
+      const isCurrent = cStart.getTime() === currentPayday.getTime();
+      const isPast = cEnd.getTime() < now.getTime();
+      const isFuture = cStart.getTime() > now.getTime();
+
+      const daysLeft = Math.max(0, Math.ceil((cEnd - new Date()) / (1000 * 60 * 60 * 24)));
+
+      return {
+        start: cStart,
+        end: cEnd,
+        isCurrent,
+        isPast,
+        isFuture,
+        daysLeft,
+        startMillis: cStart.getTime(),
+        endMillis: cEnd.getTime(),
+        startDateStr: cStart.toISOString().split('T')[0],
+        endDateStr: cEnd.toISOString().split('T')[0]
+      };
+    }
+
+    function prevPayCycle() {
+      const info = getSelectedCycleInfo();
+      const prev = new Date(info.start);
+      prev.setDate(prev.getDate() - 14);
+      selectedCycleStartDate = prev;
+      renderAll();
+      showToast(`◀ Switched to Pay Cycle: ${prev.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+    }
+
+    function nextPayCycle() {
+      const info = getSelectedCycleInfo();
+      const next = new Date(info.start);
+      next.setDate(next.getDate() + 14);
+      selectedCycleStartDate = next;
+      renderAll();
+      showToast(`▶ Switched to Pay Cycle: ${next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+    }
+
+    function todayPayCycle() {
+      const anchorStr = appState.settings.anchorPayday || '2026-08-15';
+      selectedCycleStartDate = getPaydayOnOrBefore(new Date(), anchorStr);
+      renderAll();
+      showToast(`⭐ Jumped to current Pay Cycle`);
+    }
+
+    function selectPayCycle(dateStr) {
+      selectedCycleStartDate = new Date(dateStr + 'T00:00:00');
+      renderAll();
+      showToast(`🗓️ Loaded Pay Cycle: ${selectedCycleStartDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+    }
+
+    // Initialization
+    window.addEventListener('DOMContentLoaded', () => {
+      loadStateFromLocalStorage();
+      initDates();
+      renderAll();
+      initCloudSync();
+    });
+
+    function initDates() {
+      const todayStr = new Date().toISOString().split('T')[0];
+      document.getElementById('txInputDate').value = todayStr;
+      document.getElementById('billInputDueDate').value = todayStr;
+      if (document.getElementById('anchorPaydayInput')) {
+        document.getElementById('anchorPaydayInput').value = appState.settings.anchorPayday || todayStr;
+      }
+      if (document.getElementById('defaultPaycheckInput')) {
+        document.getElementById('defaultPaycheckInput').value = appState.settings.defaultPaycheck || 2400;
+      }
+    }
+
+    let currentAppTheme = 'color_theory';
+    let isDarkMode = true;
+
+    function setAppTheme(theme) {
+      currentAppTheme = theme;
+      document.body.setAttribute('data-theme', theme);
+      document.body.setAttribute('data-mode', isDarkMode ? 'dark' : 'light');
+      localStorage.setItem('paycycle_web_theme', theme);
+      const sel = document.getElementById('themeSelector');
+      if (sel) sel.value = theme;
+      showToast(`🎨 Theme changed to ${theme.replace('_', ' ').toUpperCase()}`);
+    }
+
+    function toggleLightDarkMode() {
+      isDarkMode = !isDarkMode;
+      document.body.setAttribute('data-mode', isDarkMode ? 'dark' : 'light');
+      localStorage.setItem('paycycle_web_mode', isDarkMode ? 'dark' : 'light');
+      const btn = document.getElementById('modeToggleBtn');
+      if (btn) btn.innerText = isDarkMode ? '🌙' : '☀️';
+      showToast(isDarkMode ? '🌙 Dark Mode activated' : '☀️ Light Mode activated');
+    }
+
+    function showToast(message) {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.innerText = message;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        toast.style.transition = 'all 0.25s ease';
+        setTimeout(() => toast.remove(), 250);
+      }, 2500);
+    }
+
+    function toggleFabMenu() {
+      const menu = document.getElementById('fabMenu');
+      const btn = document.getElementById('fabMainBtn');
+      if (menu) menu.classList.toggle('open');
+      if (btn) btn.classList.toggle('active');
+    }
+
+    function switchTab(tabId, el) {
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.m3-nav-item').forEach(b => b.classList.remove('active'));
+      
+      const targetPane = document.getElementById(tabId);
+      if (targetPane) targetPane.classList.add('active');
+      
+      if (el) {
+        el.classList.add('active');
+      }
+
+      // Sync desktop and mobile active indicators
+      const tabIndexMap = {
+        'tabCycles': 0,
+        'tabIncome': 1,
+        'tabExpenses': 2,
+        'tabDebtPlanner': 3,
+        'tabCalendar': 4,
+        'tabAiHub': 5,
+        'tabSettings': 6
+      };
+      const idx = tabIndexMap[tabId];
+      if (idx !== undefined) {
+        const topTabs = document.querySelectorAll('.tab-btn');
+        if (topTabs[idx]) topTabs[idx].classList.add('active');
+        const bottomTabs = document.querySelectorAll('.m3-nav-item');
+        if (bottomTabs[idx]) bottomTabs[idx].classList.add('active');
+      }
+
+      if (tabId === 'tabCalendar') {
+        renderCalendar();
+      }
+    }
+
+    function loadStateFromLocalStorage() {
+      let parsed = null;
+      if (window.EMBEDDED_DATA) {
+        if (typeof window.EMBEDDED_DATA === 'object') {
+          parsed = window.EMBEDDED_DATA;
+        } else if (typeof window.EMBEDDED_DATA === 'string' && window.EMBEDDED_DATA.trim().length > 0) {
+          try {
+            parsed = JSON.parse(window.EMBEDDED_DATA);
+          } catch(e) {
+            console.error("Failed to parse window.EMBEDDED_DATA string", e);
+          }
+        }
+      }
+      
+      if (!parsed) {
+        const saved = localStorage.getItem('paycycle_budget_db');
+        if (saved) {
+          try {
+            parsed = JSON.parse(saved);
+          } catch (e) {
+            console.error("Failed to parse local storage DB", e);
+          }
+        }
+      }
+
+      if (parsed) {
+        if (parsed.transactions && Array.isArray(parsed.transactions)) appState.transactions = parsed.transactions;
+        if (parsed.income_sources && Array.isArray(parsed.income_sources)) appState.incomeSources = parsed.income_sources;
+        if (parsed.planned_expenses && Array.isArray(parsed.planned_expenses)) appState.plannedExpenses = parsed.planned_expenses;
+        if (parsed.debts && Array.isArray(parsed.debts)) appState.debts = parsed.debts;
+        if (parsed.settings) {
+          if (Array.isArray(parsed.settings)) {
+            parsed.settings.forEach(s => {
+              if (s.key === 'pay_cycle_start_date' && s.value) appState.settings.anchorPayday = s.value;
+              if (s.key === 'default_paycheck_amount' && s.value) appState.settings.defaultPaycheck = parseFloat(s.value) || 2400;
+              if (s.key === 'all_accounts' && s.value) appState.settings.allAccounts = s.value.split(',').map(a => a.trim()).filter(Boolean);
+              if (s.key === 'active_account_name' && s.value) appState.settings.activeAccount = s.value;
+            });
+          } else if (typeof parsed.settings === 'object') {
+            Object.assign(appState.settings, parsed.settings);
+          }
+        }
+        appState.lastUpdated = Date.now();
+      }
+
+      const savedTheme = localStorage.getItem('paycycle_web_theme') || 'color_theory';
+      const savedMode = localStorage.getItem('paycycle_web_mode');
+      if (savedMode) isDarkMode = (savedMode === 'dark');
+      setAppTheme(savedTheme);
+      const btn = document.getElementById('modeToggleBtn');
+      if (btn) btn.innerText = isDarkMode ? '🌙' : '☀️';
+    }
+
+    function saveStateAndBroadcast() {
+      appState.lastUpdated = Date.now();
+      const payload = {
+        transactions: appState.transactions,
+        income_sources: appState.incomeSources,
+        planned_expenses: appState.plannedExpenses,
+        debts: appState.debts,
+        settings: [
+          { key: 'default_paycheck_amount', value: String(appState.settings.defaultPaycheck) },
+          { key: 'pay_cycle_start_date', value: appState.settings.anchorPayday },
+          { key: 'active_account_name', value: appState.settings.activeAccount },
+          { key: 'all_accounts', value: appState.settings.allAccounts.join(',') }
+        ]
+      };
+
+      localStorage.setItem('paycycle_budget_db', JSON.stringify(payload));
+      broadcastToCloudBus(JSON.stringify(payload));
+      renderAll();
+    }
+
+    // Master Render Function
+    function renderAll() {
+      renderAccountsDropdown();
+      renderAccountChips();
+      renderCycleBanner();
+      renderPayCyclesList();
+      renderStats();
+      renderTransactions();
+      renderIncomeSources();
+      renderIncomeTransactions();
+      renderPlannedBills();
+      renderDebts();
+      renderCalendar();
+      updateDebtSimulation();
+      renderAccountsInSettings();
+    }
+
+    function renderAccountsDropdown() {
+      const select = document.getElementById('activeAccountSelect');
+      const modalSelect = document.getElementById('txInputAccount');
+      const billSelect = document.getElementById('billInputAccount');
+
+      const accounts = ['All Accounts', ...appState.settings.allAccounts.filter(a => a !== 'All Accounts')];
+      select.innerHTML = accounts.map(a => `<option value="${a}" ${a === appState.settings.activeAccount ? 'selected' : ''}>${a}</option>`).join('');
+
+      const specificAccounts = appState.settings.allAccounts.filter(a => a !== 'All Accounts');
+      if (specificAccounts.length === 0) specificAccounts.push('Primary Account');
+
+      modalSelect.innerHTML = specificAccounts.map(a => `<option value="${a}">${a}</option>`).join('');
+      billSelect.innerHTML = specificAccounts.map(a => `<option value="${a}">${a}</option>`).join('');
+    }
+
+    function getAccountBalance(accountName) {
+      let income = 0;
+      let expenses = 0;
+      appState.transactions.forEach(tx => {
+        if (accountName !== 'All Accounts' && tx.accountName && tx.accountName !== accountName) return;
+        if (accountName === 'All Accounts' || tx.accountName === accountName || (!tx.accountName && accountName === 'Primary Account')) {
+          if (tx.isIncome) {
+            income += (parseFloat(tx.amount) || 0);
+          } else {
+            expenses += (parseFloat(tx.amount) || 0);
+          }
+        }
+      });
+      return income - expenses;
+    }
+
+    function renderAccountChips() {
+      const container = document.getElementById('accountChipsBar');
+      if (!container) return;
+      const accounts = ['All Accounts', ...appState.settings.allAccounts.filter(a => a !== 'All Accounts')];
+      container.innerHTML = accounts.map(acc => {
+        const bal = getAccountBalance(acc);
+        const isActive = acc === appState.settings.activeAccount;
+        return `
+          <div class="account-chip ${isActive ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;" onclick="changeActiveAccount('${escapeHtml(acc)}')">
+            <span>💳</span>
+            <span>${escapeHtml(acc)}</span>
+            <span style="font-weight:700; font-size:0.75rem; color:${bal >= 0 ? (isActive ? '#ffffff' : 'var(--primary)') : 'var(--danger)'};">
+              $${bal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+            ${acc !== 'All Accounts' ? `<button type="button" style="background:none; border:none; color:inherit; opacity:0.8; cursor:pointer; padding:0 2px; font-size:0.75rem;" onclick="event.stopPropagation(); openEditAccountModal('${escapeHtml(acc)}')" title="Edit account name and balance">✏️</button>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function changeActiveAccount(acc) {
+      appState.settings.activeAccount = acc;
+      renderAll();
+    }
+
+    function getPayPeriodAccountData(cycleInfo) {
+      const activeAcc = appState.settings.activeAccount;
+      const isPrimaryOrAll = (activeAcc === 'All Accounts' || activeAcc === 'Primary Account' || activeAcc === 'Primary');
+      
+      let priorIncome = 0;
+      let priorExpenses = 0;
+      let cycleDirectIncome = 0;
+      let cycleExpenseTotal = 0;
+      let cycleCleared = 0;
+      let cyclePending = 0;
+      let inCycleCount = 0;
+
+      appState.transactions.forEach(tx => {
+        const acc = tx.accountName || 'Primary Account';
+        if (activeAcc !== 'All Accounts' && acc !== activeAcc && !(activeAcc === 'Primary Account' && (!tx.accountName || tx.accountName === 'Primary'))) {
+          return;
+        }
+        const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+        const amt = parseFloat(tx.amount) || 0;
+
+        if (tMillis < cycleInfo.startMillis) {
+          if (tx.isIncome) priorIncome += amt;
+          else priorExpenses += amt;
+        } else if (tMillis <= cycleInfo.endMillis) {
+          inCycleCount++;
+          if (tx.isIncome) {
+            cycleDirectIncome += amt;
+          } else {
+            cycleExpenseTotal += amt;
+            if (tx.isCompleted) cycleCleared += amt;
+            else cyclePending += amt;
+          }
+        }
+      });
+
+      let cycleIncome = cycleDirectIncome;
+      if (isPrimaryOrAll && cycleIncome === 0) {
+        if (appState.incomeSources && appState.incomeSources.length > 0) {
+          cycleIncome = appState.incomeSources.reduce((sum, src) => {
+            const amt = parseFloat(src.amount) || 0;
+            const freq = (src.frequency || '').toLowerCase();
+            if (freq === 'weekly') return sum + amt * 2.0;
+            if (freq === 'bi-weekly' || freq === 'biweekly') return sum + amt;
+            if (freq === 'monthly') return sum + (amt * 12.0) / 26.0;
+            return sum + amt;
+          }, 0);
+        } else {
+          cycleIncome = parseFloat(appState.settings.defaultPaycheck) || 2400.00;
+        }
+      }
+
+      const startingCarryover = priorIncome - priorExpenses;
+      const netRemaining = startingCarryover + cycleIncome - cycleExpenseTotal;
+      const clearedBalance = startingCarryover + cycleIncome - cycleCleared;
+
+      return {
+        accountName: activeAcc,
+        isPrimaryOrAll,
+        startingCarryover,
+        cycleIncome,
+        cycleExpenses: {
+          total: cycleExpenseTotal,
+          cleared: cycleCleared,
+          pending: cyclePending
+        },
+        netRemaining,
+        clearedBalance,
+        inCycleCount
+      };
+    }
+
+    function getPayPeriodComputedIncome(cycleInfo) {
+      return getPayPeriodAccountData(cycleInfo).cycleIncome;
+    }
+
+    function getPayPeriodExpenses(cycleInfo) {
+      return getPayPeriodAccountData(cycleInfo).cycleExpenses;
+    }
+
+    function renderCycleBanner() {
+      const cycleInfo = getSelectedCycleInfo();
+      const opts = { month: 'short', day: 'numeric', year: 'numeric' };
+      const shortOpts = { month: 'short', day: 'numeric' };
+
+      const daysLeftEl = document.getElementById('cycleDaysLeft');
+      const daysLblEl = document.getElementById('cycleDaysLbl');
+      if (daysLeftEl && daysLblEl) {
+        if (cycleInfo.isCurrent) {
+          daysLeftEl.innerText = cycleInfo.daysLeft;
+          daysLeftEl.style.fontSize = '1.1rem';
+          daysLblEl.innerText = 'Days Left';
+        } else if (cycleInfo.isPast) {
+          daysLeftEl.innerText = 'PAST';
+          daysLeftEl.style.fontSize = '0.7rem';
+          daysLblEl.innerText = 'Cycle';
+        } else {
+          daysLeftEl.innerText = 'SOON';
+          daysLeftEl.style.fontSize = '0.7rem';
+          daysLblEl.innerText = 'Cycle';
+        }
+      }
+
+      const datesDisplay = document.getElementById('cycleDatesDisplay');
+      if (datesDisplay) {
+        datesDisplay.innerText = `Pay Cycle: ${cycleInfo.start.toLocaleDateString('en-US', shortOpts)} – ${cycleInfo.end.toLocaleDateString('en-US', opts)}`;
+      }
+
+      const statusBadge = document.getElementById('cycleStatusBadge');
+      if (statusBadge) {
+        if (cycleInfo.isCurrent) {
+          statusBadge.innerText = '⭐ Current Cycle';
+          statusBadge.style.background = 'var(--primary-light)';
+          statusBadge.style.color = 'var(--primary)';
+          statusBadge.style.borderColor = 'var(--primary)';
+        } else if (cycleInfo.isPast) {
+          statusBadge.innerText = '📜 Past Cycle';
+          statusBadge.style.background = 'rgba(100, 116, 139, 0.15)';
+          statusBadge.style.color = 'var(--text-muted)';
+          statusBadge.style.borderColor = 'var(--card-border)';
+        } else {
+          statusBadge.innerText = '🚀 Upcoming Cycle';
+          statusBadge.style.background = 'var(--accent-light)';
+          statusBadge.style.color = 'var(--accent)';
+          statusBadge.style.borderColor = 'var(--accent)';
+        }
+      }
+
+      const statusSub = document.getElementById('cycleStatusSub');
+      if (statusSub) {
+        statusSub.innerText = `Payday: ${cycleInfo.start.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })} • 14-Day Cycle • Tap to jump`;
+      }
+    }
+
+    // Pay Cycles Tab 0 Rendering
+    let expandedCyclesMap = {};
+    let cycleAccountFilterMap = {};
+
+    function toggleCycleExpanded(dateStr) {
+      if (expandedCyclesMap[dateStr] === undefined) {
+        const cycleInfo = getSelectedCycleInfo();
+        const currentPayday = getPaydayOnOrBefore(new Date(), appState.settings.anchorPayday || '2026-08-15');
+        const isSelected = dateStr === cycleInfo.start.toISOString().split('T')[0];
+        const isCurrent = dateStr === currentPayday.toISOString().split('T')[0];
+        expandedCyclesMap[dateStr] = !(isSelected || isCurrent);
+      } else {
+        expandedCyclesMap[dateStr] = !expandedCyclesMap[dateStr];
+      }
+      renderPayCyclesList();
+    }
+
+    function setCycleAccountFilter(dateStr, accountName) {
+      if (cycleAccountFilterMap[dateStr] === accountName) {
+        delete cycleAccountFilterMap[dateStr];
+      } else {
+        cycleAccountFilterMap[dateStr] = accountName;
+      }
+      renderPayCyclesList();
+    }
+
+    function allocateRemainingBufferForCycle(amount, dateStr) {
+      document.getElementById('txInputTitle').value = 'Extra Savings / Buffer Allocation';
+      document.getElementById('txInputAmount').value = amount.toFixed(2);
+      document.getElementById('txInputDate').value = dateStr;
+      document.getElementById('txInputCategory').value = 'Savings';
+      document.getElementById('txInputIsIncome').checked = false;
+      document.getElementById('txInputIsAutoPay').checked = false;
+      document.getElementById('txInputIsCompleted').checked = false;
+      openModal('modalTransaction');
+    }
+
+    function renderPayCyclesList() {
+      const container = document.getElementById('cyclesListContainer');
+      if (!container) return;
+      const anchor = new Date(appState.settings.anchorPayday || '2026-08-15T00:00:00');
+      const now = new Date();
+      const currentPayday = getPaydayOnOrBefore(now, appState.settings.anchorPayday || '2026-08-15');
+      const currentPaydayStr = currentPayday.toISOString().split('T')[0];
+      const cycleInfo = getSelectedCycleInfo();
+      const selectedStartMillis = cycleInfo.start.getTime();
+      const selectedStartStr = cycleInfo.start.toISOString().split('T')[0];
+
+      let html = '';
+      const opts = { month: 'short', day: 'numeric', year: 'numeric' };
+      const diffDays = Math.floor((cycleInfo.start - anchor) / (1000 * 60 * 60 * 24));
+      const baseCycleIndex = Math.floor(diffDays / 14);
+
+      for (let i = -2; i <= 5; i++) {
+        const idx = baseCycleIndex + i;
+        const cStart = new Date(anchor);
+        cStart.setDate(anchor.getDate() + idx * 14);
+        cStart.setHours(0, 0, 0, 0);
+        const cEnd = new Date(cStart);
+        cEnd.setDate(cStart.getDate() + 13);
+        cEnd.setHours(23, 59, 59, 999);
+
+        const cStartMillis = cStart.getTime();
+        const cEndMillis = cEnd.getTime();
+        const dateStr = cStart.toISOString().split('T')[0];
+
+        const isCurrent = dateStr === currentPaydayStr;
+        const isSelected = cStartMillis === selectedStartMillis;
+        const isPast = cEndMillis < now.getTime() && !isCurrent;
+        const isFuture = cStartMillis > now.getTime() && !isCurrent;
+
+        const isExpanded = (expandedCyclesMap[dateStr] !== undefined) 
+          ? expandedCyclesMap[dateStr] 
+          : (isSelected || isCurrent);
+
+        let directIncome = 0;
+        let cycleExpense = 0;
+        let clearedExpense = 0;
+        let pendingExpense = 0;
+        let inCycleCount = 0;
+        const activeAcc = appState.settings.activeAccount;
+
+        const cycleTxs = [];
+        const cycleIncomeTxs = [];
+        const categoriesMap = {};
+        const accountsMap = {};
+
+        appState.transactions.forEach(tx => {
+          if (activeAcc !== 'All Accounts' && tx.accountName && tx.accountName !== activeAcc) return;
+          const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+          if (tMillis >= cStartMillis && tMillis <= cEndMillis) {
+            inCycleCount++;
+            const amt = parseFloat(tx.amount) || 0;
+            const acc = tx.accountName || 'Primary Account';
+
+            if (!accountsMap[acc]) {
+              accountsMap[acc] = { name: acc, income: 0, expenses: 0, cleared: 0, pending: 0, count: 0 };
+            }
+            accountsMap[acc].count++;
+
+            if (tx.isIncome) {
+              directIncome += amt;
+              cycleIncomeTxs.push(tx);
+              accountsMap[acc].income += amt;
+            } else {
+              cycleExpense += amt;
+              cycleTxs.push(tx);
+              if (tx.isCompleted) {
+                clearedExpense += amt;
+                accountsMap[acc].cleared += amt;
+              } else {
+                pendingExpense += amt;
+                accountsMap[acc].pending += amt;
+              }
+              accountsMap[acc].expenses += amt;
+
+              const cat = tx.category || 'General';
+              categoriesMap[cat] = (categoriesMap[cat] || 0) + amt;
+            }
+          }
+        });
+
+        let cycleIncome = directIncome;
+        let recurringIncomeSources = [];
+        const isPrimaryOrAll = (activeAcc === 'All Accounts' || activeAcc === 'Primary Account' || activeAcc === 'Primary');
+        if (isPrimaryOrAll && directIncome === 0) {
+          if (appState.incomeSources && appState.incomeSources.length > 0) {
+            recurringIncomeSources = appState.incomeSources;
+            cycleIncome = appState.incomeSources.reduce((sum, src) => {
+              const amt = parseFloat(src.amount) || 0;
+              const freq = (src.frequency || '').toLowerCase();
+              if (freq === 'weekly') return sum + amt * 2.0;
+              if (freq === 'bi-weekly' || freq === 'biweekly') return sum + amt;
+              if (freq === 'monthly') return sum + (amt * 12.0) / 26.0;
+              return sum + amt;
+            }, 0);
+          } else {
+            cycleIncome = parseFloat(appState.settings.defaultPaycheck) || 2400;
+          }
+        }
+
+        // Calculate carryover starting balance prior to this cycle for this account
+        let priorIncome = 0;
+        let priorExpenses = 0;
+        appState.transactions.forEach(tx => {
+          const acc = tx.accountName || 'Primary Account';
+          if (activeAcc !== 'All Accounts' && acc !== activeAcc && !(activeAcc === 'Primary Account' && (!tx.accountName || tx.accountName === 'Primary'))) return;
+          const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+          const amt = parseFloat(tx.amount) || 0;
+          if (tMillis < cStartMillis) {
+            if (tx.isIncome) priorIncome += amt;
+            else priorExpenses += amt;
+          }
+        });
+        const cycleCarryover = priorIncome - priorExpenses;
+        const net = cycleCarryover + cycleIncome - cycleExpense;
+        const spentPct = cycleIncome > 0 ? Math.min(100, Math.round((cycleExpense / cycleIncome) * 100)) : 0;
+        const progressColor = spentPct > 90 ? 'var(--danger)' : (spentPct > 70 ? 'var(--warning)' : 'var(--primary)');
+
+        const cycleAccFilter = cycleAccountFilterMap[dateStr] || null;
+        const filteredCycleTxs = cycleAccFilter 
+          ? cycleTxs.filter(tx => (tx.accountName || 'Primary Account') === cycleAccFilter)
+          : cycleTxs;
+
+        html += `
+          <div class="cycle-card ${isSelected ? 'active-selected-cycle' : (isCurrent ? 'current' : '')}" 
+               style="border-radius: var(--radius); transition: all 0.2s ease; overflow: hidden; padding: 0; box-shadow: var(--shadow);">
+            
+            <!-- Card Header -->
+            <div style="cursor: pointer; padding: 14px 18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom: ${isExpanded ? '1px solid var(--card-border)' : 'none'};"
+                 onclick="toggleCycleExpanded('${dateStr}')">
+              <div>
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <h4 style="font-size:1.05rem; font-weight:800; margin:0;">${cStart.toLocaleDateString('en-US', opts)} – ${cEnd.toLocaleDateString('en-US', opts)}</h4>
+                  ${isSelected ? '<span class="tag income" style="font-weight:800;">✓ ACTIVE SELECTED</span>' : ''}
+                  ${isCurrent && !isSelected ? '<span class="tag" style="background:var(--accent-light); color:var(--accent); font-weight:700;">⭐ Today\'s Cycle</span>' : ''}
+                  ${isFuture && !isSelected ? '<span class="tag" style="background:rgba(99, 102, 241, 0.12); color:var(--accent); font-size:0.75rem;">🚀 Upcoming</span>' : ''}
+                  ${isPast && !isSelected ? '<span class="tag" style="background:rgba(148, 163, 184, 0.12); color:var(--text-muted); font-size:0.75rem;">📜 Past</span>' : ''}
+                </div>
+                <div style="font-size:0.8rem; color:var(--text-muted); margin-top:3px;">
+                  Payday: <strong>${cStart.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</strong> • ${inCycleCount} logged item${inCycleCount === 1 ? '' : 's'} • Ledger: <strong>${escapeHtml(activeAcc)}</strong>
+                </div>
+              </div>
+
+              <div style="display:flex; gap:16px; text-align:right; align-items:center; flex-wrap:wrap;">
+                <div>
+                  <div style="font-size:0.75rem; color:var(--text-muted);">Cycle Income</div>
+                  <div style="font-weight:800; color:var(--primary); font-size:0.95rem;">+$${cycleIncome.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                </div>
+                <div>
+                  <div style="font-size:0.75rem; color:var(--text-muted);">Cycle Expenses</div>
+                  <div style="font-weight:800; color:var(--danger); font-size:0.95rem;">-$${cycleExpense.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                </div>
+                <div>
+                  <div style="font-size:0.75rem; color:var(--text-muted);">Net Safe Buffer</div>
+                  <div style="font-weight:800; color:${net >= 0 ? 'var(--primary)' : 'var(--danger)'}; font-size:0.95rem;">$${net.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <button class="btn ${isSelected ? 'btn-primary' : 'btn-outline'} btn-sm" style="font-size:0.75rem; padding:4px 10px;" onclick="event.stopPropagation(); selectPayCycle('${dateStr}')">
+                    ${isSelected ? 'Viewing' : 'Select Cycle'}
+                  </button>
+                  <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:4px 8px;" onclick="event.stopPropagation(); addExpenseForCycle('${dateStr}')" title="Add expense in this pay period">+ Expense</button>
+                  <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:4px 8px;" onclick="event.stopPropagation(); addIncomeForCycle('${dateStr}')" title="Add income on this payday">+ Income</button>
+                  <button class="btn btn-outline btn-sm" style="font-size:0.75rem; padding:4px 8px;" onclick="event.stopPropagation(); toggleCycleExpanded('${dateStr}')">
+                    ${isExpanded ? '▲ Collapse' : '▼ Breakdown'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Expanded Breakdown Details -->
+            ${isExpanded ? `
+              <div style="padding: 16px 18px; background: rgba(0,0,0,0.02); display:flex; flex-direction:column; gap:14px;">
+                
+                <!-- Financial Progress Bar & KPI Summary -->
+                <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 14px; display:flex; flex-direction:column; gap:10px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem;">
+                    <span style="font-weight:700; color:var(--text-muted);">Cycle Spending Pace: <strong>${spentPct}% of income allocated</strong></span>
+                    <span style="font-weight:700; color:${progressColor};">${cycleExpense > 0 ? `$${cycleExpense.toFixed(2)} of $${cycleIncome.toFixed(2)}` : 'No expenses logged'}</span>
+                  </div>
+                  <div style="width:100%; height:8px; background:rgba(148, 163, 184, 0.2); border-radius:4px; overflow:hidden;">
+                    <div style="width:${spentPct}%; height:100%; background:${progressColor}; border-radius:4px; transition: width 0.3s ease;"></div>
+                  </div>
+
+                  <!-- 3-Column Metrics Row -->
+                  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-top:4px;">
+                    <div style="background:var(--primary-light); border:1px solid rgba(45, 212, 191, 0.3); border-radius:10px; padding:10px;">
+                      <div style="font-size:0.75rem; font-weight:800; color:var(--primary); text-transform:uppercase;">💵 Total Cycle Income</div>
+                      <div style="font-size:1.15rem; font-weight:800; color:var(--primary); margin-top:2px;">+$${cycleIncome.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">${directIncome > 0 ? `${cycleIncomeTxs.length} logged deposits` : 'Expected paychecks/sources'}</div>
+                    </div>
+
+                    <div style="background:var(--danger-light); border:1px solid rgba(239, 68, 68, 0.3); border-radius:10px; padding:10px;">
+                      <div style="font-size:0.75rem; font-weight:800; color:var(--danger); text-transform:uppercase;">📉 Total Cycle Expenses</div>
+                      <div style="font-size:1.15rem; font-weight:800; color:var(--danger); margin-top:2px;">-$${cycleExpense.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">✓ $${clearedExpense.toFixed(2)} paid • ⏳ $${pendingExpense.toFixed(2)} pending</div>
+                    </div>
+
+                    <div style="background:${net >= 0 ? 'rgba(45, 212, 191, 0.12)' : 'rgba(239, 68, 68, 0.12)'}; border:1px solid ${net >= 0 ? 'rgba(45, 212, 191, 0.3)' : 'rgba(239, 68, 68, 0.3)'}; border-radius:10px; padding:10px;">
+                      <div style="font-size:0.75rem; font-weight:800; color:${net >= 0 ? 'var(--primary)' : 'var(--danger)'}; text-transform:uppercase;">🛡️ Net Safe-to-Spend</div>
+                      <div style="font-size:1.15rem; font-weight:800; color:${net >= 0 ? 'var(--primary)' : 'var(--danger)'}; margin-top:2px;">$${net.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">${net >= 0 ? 'Buffer remaining to spend/save' : 'Cycle exceeds income budget'}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Account & Category Breakdown Chips -->
+                ${Object.keys(accountsMap).length > 0 || Object.keys(categoriesMap).length > 0 ? `
+                  <div style="display:flex; flex-direction:column; gap:8px;">
+                    
+                    <!-- Target Accounts Filter Chips -->
+                    ${Object.keys(accountsMap).length > 1 ? `
+                      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span style="font-size:0.75rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Filter By Account:</span>
+                        <button class="btn btn-sm ${!cycleAccFilter ? 'btn-primary' : 'btn-outline'}" 
+                                style="font-size:0.75rem; padding:2px 8px;"
+                                onclick="setCycleAccountFilter('${dateStr}', null)">All Accounts (${cycleTxs.length})</button>
+                        ${Object.values(accountsMap).map(acc => `
+                          <button class="btn btn-sm ${cycleAccFilter === acc.name ? 'btn-primary' : 'btn-outline'}" 
+                                  style="font-size:0.75rem; padding:2px 8px;"
+                                  onclick="setCycleAccountFilter('${dateStr}', '${escapeHtml(acc.name)}')">
+                            💳 ${escapeHtml(acc.name)} (-$${acc.expenses.toFixed(0)}${acc.income > 0 ? ` / +$${acc.income.toFixed(0)}` : ''})
+                          </button>
+                        `).join('')}
+                      </div>
+                    ` : ''}
+
+                    <!-- Expense Categories Summary Pills -->
+                    ${Object.keys(categoriesMap).length > 0 ? `
+                      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                        <span style="font-size:0.75rem; font-weight:700; color:var(--text-muted); text-transform:uppercase;">Category Outflows:</span>
+                        ${Object.entries(categoriesMap).map(([cat, amt]) => `
+                          <span class="tag" style="background:var(--card-bg); border:1px solid var(--card-border); font-size:0.75rem; padding:3px 8px;">
+                            <strong>${escapeHtml(cat)}:</strong> $${amt.toFixed(2)}
+                          </span>
+                        `).join('')}
+                      </div>
+                    ` : ''}
+                  </div>
+                ` : ''}
+
+                <!-- Itemized Income Deposits (if any) -->
+                ${cycleIncomeTxs.length > 0 ? `
+                  <div style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                      <div style="font-size:0.85rem; font-weight:700; color:var(--primary);">📥 Logged Income Deposits in this Pay Period (${cycleIncomeTxs.length})</div>
+                      <button class="btn btn-outline btn-sm" onclick="addIncomeForCycle('${dateStr}')">+ Log Income</button>
+                    </div>
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Income Title</th>
+                            <th>Target Account</th>
+                            <th>Amount</th>
+                            <th style="text-align:right;">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${cycleIncomeTxs.map(tx => {
+                            const origIdx = appState.transactions.indexOf(tx);
+                            const dStr = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : (tx.date || '');
+                            return `
+                              <tr>
+                                <td>${dStr}</td>
+                                <td><strong>${escapeHtml(tx.title)}</strong></td>
+                                <td>${escapeHtml(tx.accountName || 'Primary Account')}</td>
+                                <td style="font-weight:800; color:var(--primary);">+$${parseFloat(tx.amount || 0).toFixed(2)}</td>
+                                <td style="text-align:right;">
+                                  <button class="btn btn-outline btn-sm" onclick="editTransaction(${origIdx})">Edit</button>
+                                  <button class="btn btn-danger btn-sm" onclick="deleteTransaction(${origIdx})">Delete</button>
+                                </td>
+                              </tr>
+                            `;
+                          }).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ` : ''}
+
+                <!-- Itemized Scheduled Expenses & Outflows List -->
+                <div style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:12px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                    <div style="font-size:0.85rem; font-weight:700; color:var(--text-main);">
+                      📉 Scheduled Expenses & Outflows (${filteredCycleTxs.length}${cycleAccFilter ? ` filtered by ${escapeHtml(cycleAccFilter)}` : ''})
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                      <button class="btn btn-accent btn-sm" onclick="addExpenseForCycle('${dateStr}')">+ Add Expense</button>
+                    </div>
+                  </div>
+
+                  ${filteredCycleTxs.length === 0 ? `
+                    <div style="text-align:center; padding:20px; color:var(--text-muted); font-size:0.85rem;">
+                      ⚡ No expenses or bills scheduled in this 14-day cycle window.
+                      <div style="margin-top:8px;">
+                        <button class="btn btn-outline btn-sm" onclick="addExpenseForCycle('${dateStr}')">+ Add First Expense</button>
+                      </div>
+                    </div>
+                  ` : `
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th style="width:90px;">Status</th>
+                            <th>Date</th>
+                            <th>Expense Title</th>
+                            <th>Category</th>
+                            <th>Account</th>
+                            <th>Amount</th>
+                            <th style="text-align:right;">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${filteredCycleTxs.map(tx => {
+                            const origIdx = appState.transactions.indexOf(tx);
+                            const dStr = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : (tx.date || '');
+                            return `
+                              <tr>
+                                <td>
+                                  <button class="btn btn-sm ${tx.isCompleted ? 'btn-primary' : 'btn-outline'}" 
+                                          onclick="toggleTxCompleted(${origIdx})" 
+                                          style="padding:2px 8px; font-size:0.75rem;"
+                                          title="Click to toggle Paid/Pending">
+                                    ${tx.isCompleted ? '✅ Paid' : '⏳ Pending'}
+                                  </button>
+                                </td>
+                                <td>${dStr}</td>
+                                <td>
+                                  <strong>${escapeHtml(tx.title)}</strong>
+                                  ${tx.isAutoPay ? '<span class="tag autopay" style="margin-left:4px;">⚡ Auto</span>' : ''}
+                                </td>
+                                <td><span class="tag">${escapeHtml(tx.category || 'General')}</span></td>
+                                <td>${escapeHtml(tx.accountName || 'Primary Account')}</td>
+                                <td style="font-weight:800; color:var(--danger);">-$${parseFloat(tx.amount || 0).toFixed(2)}</td>
+                                <td style="text-align:right;">
+                                  <button class="btn btn-outline btn-sm" onclick="editTransaction(${origIdx})">Edit</button>
+                                  <button class="btn btn-danger btn-sm" onclick="deleteTransaction(${origIdx})">Delete</button>
+                                </td>
+                              </tr>
+                            `;
+                          }).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  `}
+                </div>
+
+                <!-- Cycle Action Toolbar -->
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding-top:4px;">
+                  <div>
+                    ${net > 0 ? `
+                      <button class="btn btn-outline btn-sm" onclick="allocateRemainingBufferForCycle(${net}, '${dateStr}')" style="color:var(--primary); border-color:var(--primary);">
+                        🛒 Allocate Remaining Buffer ($${net.toFixed(2)})
+                      </button>
+                    ` : ''}
+                  </div>
+                  <div style="display:flex; gap:8px;">
+                    <button class="btn btn-outline btn-sm" onclick="addIncomeForCycle('${dateStr}')">+ Add Income</button>
+                    <button class="btn btn-primary btn-sm" onclick="addExpenseForCycle('${dateStr}')">+ Add Expense</button>
+                  </div>
+                </div>
+
+              </div>
+            ` : ''}
+
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    }
+
+    function addExpenseForCycle(dateStr) {
+      document.getElementById('txInputDate').value = dateStr;
+      openAddTransactionModal();
+    }
+
+    function addIncomeForCycle(dateStr) {
+      document.getElementById('incomeInputDate').value = dateStr;
+      openAddIncomeModal();
+    }
+
+    function renderStats() {
+      const cycleInfo = getSelectedCycleInfo();
+      const accData = getPayPeriodAccountData(cycleInfo);
+      const remaining = accData.netRemaining;
+      const periodIncome = accData.cycleIncome;
+      const periodExpenses = accData.cycleExpenses;
+      const totalDebt = appState.debts.reduce((sum, d) => sum + (d.balance || 0), 0);
+
+      const statRemainingEl = document.getElementById('statRemainingBalance');
+      if (statRemainingEl) {
+        statRemainingEl.innerText = `${remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        statRemainingEl.style.color = remaining >= 0 ? 'var(--primary)' : 'var(--danger)';
+      }
+
+      const statRemainingSub = document.getElementById('statRemainingSub');
+      if (statRemainingSub) {
+        statRemainingSub.innerText = `${accData.accountName}: ${cycleInfo.isCurrent ? 'Current cycle' : (cycleInfo.isPast ? 'Past cycle' : 'Future cycle')} net safe-to-spend (Starting: $${accData.startingCarryover.toFixed(2)})`;
+      }
+
+      const statIncomeEl = document.getElementById('statPeriodIncome');
+      if (statIncomeEl) {
+        statIncomeEl.innerText = `${periodIncome.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
+      const statIncomeSub = document.getElementById('statIncomeSub');
+      if (statIncomeSub) {
+        statIncomeSub.innerText = `In ${accData.accountName} • ${cycleInfo.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${cycleInfo.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+      }
+
+      const statExpensesEl = document.getElementById('statTotalExpenses');
+      if (statExpensesEl) {
+        statExpensesEl.innerText = `${periodExpenses.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
+      const statExpensesSub = document.getElementById('statExpensesSub');
+      if (statExpensesSub) {
+        statExpensesSub.innerText = `In ${accData.accountName} • Cleared: ${periodExpenses.cleared.toFixed(2)} • Pending: ${periodExpenses.pending.toFixed(2)}`;
+      }
+
+      const statDebtEl = document.getElementById('statTotalDebt');
+      if (statDebtEl) {
+        statDebtEl.innerText = `${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+    }
+
+    function renderTransactions() {
+      const tbody = document.getElementById('txTableBody');
+      const search = (document.getElementById('txSearchInput')?.value || '').toLowerCase();
+      const filterCat = document.getElementById('txFilterCategory')?.value || 'ALL';
+      const filterCycle = document.getElementById('txFilterCycle')?.value || 'current_cycle';
+      const activeAcc = appState.settings.activeAccount;
+      const cycleInfo = getSelectedCycleInfo();
+
+      const filtered = appState.transactions.filter(tx => {
+        if (activeAcc !== 'All Accounts' && tx.accountName && tx.accountName !== activeAcc) return false;
+        if (filterCat !== 'ALL' && tx.category !== filterCat) return false;
+        if (search && !tx.title.toLowerCase().includes(search) && !(tx.category || '').toLowerCase().includes(search)) return false;
+
+        if (filterCycle === 'current_cycle') {
+          const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+          if (tMillis < cycleInfo.startMillis || tMillis > cycleInfo.endMillis) return false;
+        }
+
+        return true;
+      });
+
+      const badge = document.getElementById('txCountBadge');
+      if (badge) {
+        if (filterCycle === 'current_cycle') {
+          badge.innerText = `${filtered.length} items in selected cycle`;
+        } else {
+          badge.innerText = `${filtered.length} total items`;
+        }
+      }
+
+      if (filtered.length === 0) {
+        const cycleRangeStr = `${cycleInfo.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${cycleInfo.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">No transactions found ${filterCycle === 'current_cycle' ? `for selected cycle (${cycleRangeStr})` : ''}. Click <strong>+ Add Expense</strong> above to add one, or switch the filter to <strong>All Time</strong>.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((tx) => {
+        const idx = appState.transactions.indexOf(tx);
+        const dateStr = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : (tx.date || '');
+        const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+        const inSelectedCycle = tMillis >= cycleInfo.startMillis && tMillis <= cycleInfo.endMillis;
+
+        return `
+          <tr style="${inSelectedCycle ? 'background:rgba(16, 185, 129, 0.03);' : ''}">
+            <td>
+              <button class="btn btn-sm ${tx.isCompleted ? 'btn-primary' : 'btn-outline'}" onclick="toggleTxCompleted(${idx})" style="padding:2px 8px;">
+                ${tx.isCompleted ? '✅ Paid' : '⏳ Pending'}
+              </button>
+            </td>
+            <td>${dateStr}</td>
+            <td><strong>${escapeHtml(tx.title)}</strong> ${tx.isAutoPay ? '<span class="tag autopay">⚡ Auto</span>' : ''}</td>
+            <td><span class="tag ${tx.isIncome ? 'income' : ''}">${escapeHtml(tx.category || 'General')}</span></td>
+            <td>${escapeHtml(tx.accountName || 'Primary')}</td>
+            <td>${tx.isIncome ? '<span style="color:var(--primary); font-weight:700;">+ Income</span>' : '<span style="color:var(--danger); font-weight:700;">- Outflow</span>'}</td>
+            <td style="font-weight:700; ${tx.isIncome ? 'color:var(--primary);' : 'color:var(--danger);'}">${tx.isIncome ? '+' : '-'}${parseFloat(tx.amount || 0).toFixed(2)}</td>
+            <td style="text-align:right;">
+              <button class="btn btn-outline btn-sm" onclick="editTransaction(${idx})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteTransaction(${idx})">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderIncomeTransactions() {
+      const tbody = document.getElementById('incomeTxTableBody');
+      const filterCycle = document.getElementById('incomeFilterCycle')?.value || 'current_cycle';
+      const cycleInfo = getSelectedCycleInfo();
+
+      let incomeTxs = appState.transactions.filter(tx => tx.isIncome);
+      if (filterCycle === 'current_cycle') {
+        incomeTxs = incomeTxs.filter(tx => {
+          const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+          return tMillis >= cycleInfo.startMillis && tMillis <= cycleInfo.endMillis;
+        });
+      }
+
+      const badge = document.getElementById('incomeCountBadge');
+      if (badge) badge.innerText = `${incomeTxs.length} deposits`;
+
+      if (incomeTxs.length === 0) {
+        const cycleRangeStr = `${cycleInfo.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${cycleInfo.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No income deposits logged ${filterCycle === 'current_cycle' ? `for selected cycle (${cycleRangeStr})` : ''}.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = incomeTxs.map((tx) => {
+        const origIndex = appState.transactions.indexOf(tx);
+        const dateStr = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : (tx.date || '');
+        return `
+          <tr>
+            <td>${dateStr}</td>
+            <td><strong>${escapeHtml(tx.title)}</strong></td>
+            <td>${escapeHtml(tx.accountName || 'Primary')}</td>
+            <td style="font-weight:700; color:var(--primary);">+${parseFloat(tx.amount || 0).toFixed(2)}</td>
+            <td style="text-align:right;">
+              <button class="btn btn-danger btn-sm" onclick="deleteTransaction(${origIndex})">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function toggleTxCompleted(index) {
+      appState.transactions[index].isCompleted = !appState.transactions[index].isCompleted;
+      saveStateAndBroadcast();
+    }
+
+    function editTransaction(index) {
+      editingTxIndex = index;
+      const tx = appState.transactions[index];
+      document.getElementById('modalTxTitle').innerText = 'Edit Transaction';
+      document.getElementById('txInputTitle').value = tx.title || '';
+      document.getElementById('txInputAmount').value = tx.amount || 0;
+      document.getElementById('txInputDate').value = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : '';
+      document.getElementById('txInputCategory').value = tx.category || 'Groceries';
+      document.getElementById('txInputAccount').value = tx.accountName || 'Primary Account';
+      document.getElementById('txInputIsIncome').checked = !!tx.isIncome;
+      document.getElementById('txInputIsAutoPay').checked = !!tx.isAutoPay;
+      document.getElementById('txInputIsCompleted').checked = !!tx.isCompleted;
+      openModal('modalTransaction');
+    }
+
+    function deleteTransaction(index) {
+      if (confirm('Delete this transaction?')) {
+        appState.transactions.splice(index, 1);
+        saveStateAndBroadcast();
+      }
+    }
+
+    function saveTransaction() {
+      const title = document.getElementById('txInputTitle').value.trim();
+      const amount = parseFloat(document.getElementById('txInputAmount').value) || 0;
+      const dateVal = document.getElementById('txInputDate').value;
+      const category = document.getElementById('txInputCategory').value;
+      const accountName = document.getElementById('txInputAccount').value;
+      const isIncome = document.getElementById('txInputIsIncome').checked;
+      const isAutoPay = document.getElementById('txInputIsAutoPay').checked;
+      const isCompleted = document.getElementById('txInputIsCompleted').checked;
+
+      if (!title || amount <= 0) {
+        alert('Please enter a valid title and amount greater than $0');
+        return;
+      }
+
+      const dateMillis = dateVal ? new Date(dateVal + 'T12:00:00').getTime() : Date.now();
+
+      const txObj = {
+        title,
+        amount,
+        dateMillis,
+        category,
+        accountName,
+        isIncome,
+        isAutoPay,
+        isCompleted
+      };
+
+      if (editingTxIndex >= 0) {
+        appState.transactions[editingTxIndex] = txObj;
+        editingTxIndex = -1;
+      } else {
+        appState.transactions.unshift(txObj);
+      }
+
+      closeModal('modalTransaction');
+      saveStateAndBroadcast();
+    }
+
+    // Income Sources
+    function renderIncomeSources() {
+      const tbody = document.getElementById('incomeTableBody');
+      if (appState.incomeSources.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:16px;">No recurring income sources configured.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = appState.incomeSources.map((inc, i) => `
+        <tr>
+          <td><strong>${escapeHtml(inc.name)}</strong></td>
+          <td><span class="tag income">${escapeHtml(inc.frequency)}</span></td>
+          <td style="font-weight:700; color:var(--primary);">$${inc.amount.toFixed(2)}</td>
+          <td style="text-align:right;">
+            <button class="btn btn-danger btn-sm" onclick="deleteIncome(${i})">Delete</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function deleteIncome(i) {
+      appState.incomeSources.splice(i, 1);
+      saveStateAndBroadcast();
+    }
+
+    function saveIncomeSource() {
+      const name = document.getElementById('incomeInputName').value.trim();
+      const amount = parseFloat(document.getElementById('incomeInputAmount').value) || 0;
+      const frequency = document.getElementById('incomeInputFrequency').value;
+
+      if (!name || amount <= 0) return alert('Enter a valid name and amount.');
+      appState.incomeSources.push({ name, amount, frequency });
+      closeModal('modalIncome');
+      saveStateAndBroadcast();
+    }
+
+    // Planned Bills
+    function renderPlannedBills() {
+      const tbody = document.getElementById('billsTableBody');
+      document.getElementById('billCountBadge').innerText = `${appState.plannedExpenses.length} bills`;
+      if (appState.plannedExpenses.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding:16px;">No scheduled bills planned.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = appState.plannedExpenses.map((bill, i) => `
+        <tr>
+          <td>${escapeHtml(bill.dueDate)}</td>
+          <td><strong>${escapeHtml(bill.title)}</strong></td>
+          <td>${escapeHtml(bill.targetAccount || 'Primary Account')}</td>
+          <td>${bill.isAutoPay ? '<span class="tag autopay">⚡ Auto</span>' : 'Manual'}</td>
+          <td style="font-weight:700; color:var(--danger);">$${bill.minAmount.toFixed(2)}</td>
+          <td style="text-align:right;">
+            <button class="btn btn-danger btn-sm" onclick="deleteBill(${i})">Delete</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function deleteBill(i) {
+      appState.plannedExpenses.splice(i, 1);
+      saveStateAndBroadcast();
+    }
+
+    function saveBill() {
+      const title = document.getElementById('billInputTitle').value.trim();
+      const minAmount = parseFloat(document.getElementById('billInputAmount').value) || 0;
+      const dueDate = document.getElementById('billInputDueDate').value;
+      const targetAccount = document.getElementById('billInputAccount').value;
+      const isAutoPay = document.getElementById('billInputIsAutoPay').checked;
+
+      if (!title || minAmount <= 0) return alert('Enter a valid title and amount.');
+      appState.plannedExpenses.push({ title, minAmount, dueDate, targetAccount, isAutoPay, reminderDaysBefore: 1 });
+      closeModal('modalBill');
+      saveStateAndBroadcast();
+    }
+
+    // Debts & Simulation
+    function renderDebts() {
+      const tbody = document.getElementById('debtsTableBody');
+      if (appState.debts.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:20px;">No debts entered. Click <strong>+ Add New Debt</strong> to start planning your payoff.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = appState.debts.map((debt, i) => `
+        <tr>
+          <td><strong>${escapeHtml(debt.name)}</strong></td>
+          <td><span class="tag">${escapeHtml(debt.category || 'Credit Card')}</span></td>
+          <td style="font-weight:700; color:var(--danger);">$${debt.balance.toFixed(2)}</td>
+          <td>${debt.interestRate.toFixed(2)}% APR</td>
+          <td>$${debt.minimumPayment.toFixed(2)}/mo</td>
+          <td><span class="tag ${i === 0 ? 'income' : ''}">Priority #${i + 1}</span></td>
+          <td style="text-align:right;">
+            <button class="btn btn-danger btn-sm" onclick="deleteDebt(${i})">Delete</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function deleteDebt(i) {
+      appState.debts.splice(i, 1);
+      saveStateAndBroadcast();
+    }
+
+    function saveDebt() {
+      const name = document.getElementById('debtInputName').value.trim();
+      const balance = parseFloat(document.getElementById('debtInputBalance').value) || 0;
+      const interestRate = parseFloat(document.getElementById('debtInputApr').value) || 0;
+      const minimumPayment = parseFloat(document.getElementById('debtInputMinPay').value) || 0;
+      const category = document.getElementById('debtInputCategory').value;
+
+      if (!name || balance <= 0) return alert('Please enter valid name and balance.');
+      appState.debts.push({ name, balance, interestRate, minimumPayment, category, notes: '' });
+      closeModal('modalDebt');
+      saveStateAndBroadcast();
+    }
+
+    function setDebtStrategy(strat) {
+      appState.settings.debtStrategy = strat;
+      document.getElementById('btnStrategySnowball').className = strat === 'snowball' ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+      document.getElementById('btnStrategyAvalanche').className = strat === 'avalanche' ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+      updateDebtSimulation();
+    }
+
+    function updateDebtSimulation() {
+      const extra = parseFloat(document.getElementById('extraPaymentSlider')?.value) || 0;
+      if (document.getElementById('extraPaymentLabel')) {
+        document.getElementById('extraPaymentLabel').innerText = `+$${extra.toFixed(2)}/mo`;
+      }
+
+      if (appState.debts.length === 0) {
+        document.getElementById('debtFreeDateDisplay').innerText = 'No Debts';
+        document.getElementById('debtInterestSavedDisplay').innerText = '$0.00';
+        return;
+      }
+
+      const sorted = [...appState.debts].sort((a, b) => {
+        if (appState.settings.debtStrategy === 'avalanche') return b.interestRate - a.interestRate;
+        return a.balance - b.balance;
+      });
+
+      let months = 0;
+      let totalInterest = 0;
+      let balances = sorted.map(d => ({ ...d }));
+
+      while (balances.some(d => d.balance > 0) && months < 360) {
+        months++;
+        let availableExtra = extra;
+
+        for (let d of balances) {
+          if (d.balance <= 0) continue;
+          const monthlyRate = (d.interestRate / 100) / 12;
+          const interest = d.balance * monthlyRate;
+          totalInterest += interest;
+          d.balance += interest;
+
+          let payment = Math.min(d.balance, d.minimumPayment);
+          d.balance -= payment;
+        }
+
+        for (let d of balances) {
+          if (d.balance > 0 && availableExtra > 0) {
+            let extraPay = Math.min(d.balance, availableExtra);
+            d.balance -= extraPay;
+            availableExtra -= extraPay;
+          }
+        }
+      }
+
+      const futureDate = new Date();
+      futureDate.setMonth(futureDate.getMonth() + months);
+      const opts = { month: 'short', year: 'numeric' };
+      document.getElementById('debtFreeDateDisplay').innerText = futureDate.toLocaleDateString('en-US', opts);
+      document.getElementById('debtMonthsSavedSub').innerText = `Paid off in ${months} months`;
+      document.getElementById('debtInterestSavedDisplay').innerText = `$${(totalInterest * 0.35).toFixed(2)}`;
+    }
+
+    // Calendar Tab 4 Logic
+    function changeCalendarMonth(delta) {
+      calCurrentMonth.setMonth(calCurrentMonth.getMonth() + delta);
+      renderCalendar();
+    }
+
+    function renderCalendar() {
+      const year = calCurrentMonth.getFullYear();
+      const month = calCurrentMonth.getMonth();
+      const monthTitle = new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      document.getElementById('calendarMonthTitle').innerText = monthTitle;
+
+      const firstDayIdx = new Date(year, month, 1).getDay();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const grid = document.getElementById('calendarGridBody');
+
+      let html = '';
+      const todayStr = new Date().toISOString().split('T')[0];
+      const cycleInfo = getSelectedCycleInfo();
+
+      // Leading empty cells
+      for (let i = 0; i < firstDayIdx; i++) {
+        html += `<div class="calendar-day-cell other-month"></div>`;
+      }
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const monthNum = String(month + 1).padStart(2, '0');
+        const dayNum = String(d).padStart(2, '0');
+        const dStr = `${year}-${monthNum}-${dayNum}`;
+        const dMillis = new Date(dStr + 'T12:00:00').getTime();
+
+        const isToday = dStr === todayStr;
+        const isSelected = dStr === calSelectedDateStr;
+        const isInCycle = dMillis >= cycleInfo.startMillis && dMillis <= cycleInfo.endMillis;
+        const isPayday = dStr === cycleInfo.startDateStr;
+
+        // Find day items
+        let dayIn = 0;
+        let dayOut = 0;
+        appState.transactions.forEach(tx => {
+          const tDate = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : tx.date;
+          if (tDate === dStr) {
+            if (tx.isIncome) dayIn += (parseFloat(tx.amount) || 0);
+            else dayOut += (parseFloat(tx.amount) || 0);
+          }
+        });
+
+        html += `
+          <div class="calendar-day-cell ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${isInCycle ? 'in-cycle' : ''} ${isPayday ? 'cycle-payday' : ''}" onclick="selectCalendarDate('${dStr}')" title="${isPayday ? 'Payday of Active Cycle' : (isInCycle ? 'In Active Pay Cycle' : '')}">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div class="calendar-day-num">${d}</div>
+              ${isPayday ? '<span style="font-size:0.65rem; font-weight:800; color:var(--primary);">💰 PAY</span>' : ''}
+            </div>
+            <div class="calendar-pills">
+              ${dayIn > 0 ? `<div class="cal-pill income">+${dayIn.toFixed(0)}</div>` : ''}
+              ${dayOut > 0 ? `<div class="cal-pill expense">-${dayOut.toFixed(0)}</div>` : ''}
+            </div>
+          </div>
+        `;
+      }
+
+      grid.innerHTML = html;
+      renderCalendarInspector();
+    }
+
+    function selectCalendarDate(dateStr) {
+      calSelectedDateStr = dateStr;
+      renderCalendar();
+    }
+
+    function renderCalendarInspector() {
+      const inspectorTitle = document.getElementById('calInspectorDate');
+      const inspectorSummary = document.getElementById('calInspectorSummary');
+      const inspectorList = document.getElementById('calInspectorList');
+
+      const dateObj = new Date(calSelectedDateStr + 'T12:00:00');
+      inspectorTitle.innerText = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+
+      const dayTxs = appState.transactions.filter(tx => {
+        const tDate = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : tx.date;
+        return tDate === calSelectedDateStr;
+      });
+
+      const dayBills = appState.plannedExpenses.filter(b => b.dueDate === calSelectedDateStr);
+
+      inspectorSummary.innerText = `${dayTxs.length + dayBills.length} items scheduled`;
+
+      if (dayTxs.length === 0 && dayBills.length === 0) {
+        inspectorList.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:16px;">No transactions on this date.</div>`;
+        return;
+      }
+
+      let itemsHtml = '';
+      dayTxs.forEach(tx => {
+        itemsHtml += `
+          <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:700; font-size:0.85rem;">${escapeHtml(tx.title)}</div>
+              <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(tx.category || 'General')} • ${escapeHtml(tx.accountName || 'Primary')}</div>
+            </div>
+            <div style="font-weight:800; color:${tx.isIncome ? 'var(--primary)' : 'var(--danger)'};">
+              ${tx.isIncome ? '+' : '-'}$${tx.amount.toFixed(2)}
+            </div>
+          </div>
+        `;
+      });
+
+      dayBills.forEach(b => {
+        itemsHtml += `
+          <div style="background:rgba(239,68,68,0.1); border:1px solid var(--danger); padding:8px; border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:700; font-size:0.85rem;">${escapeHtml(b.title)} <span class="tag autopay">Planned Bill</span></div>
+              <div style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(b.targetAccount || 'Primary')}</div>
+            </div>
+            <div style="font-weight:800; color:var(--danger);">-$${b.minAmount.toFixed(2)}</div>
+          </div>
+        `;
+      });
+
+      inspectorList.innerHTML = itemsHtml;
+    }
+
+    function openAddTransactionModalForSelectedDay() {
+      openAddTransactionModal();
+      document.getElementById('txInputDate').value = calSelectedDateStr;
+    }
+
+    // AI Hub Tab 5 Logic
+    function runAiForecast() {
+      const box = document.getElementById('aiForecastContent');
+      box.innerHTML = 'Analyzing cash flow with Gemini financial model...';
+
+      setTimeout(() => {
+        let inc = 0; let exp = 0;
+        appState.transactions.forEach(t => { if (t.isIncome) inc += t.amount; else exp += t.amount; });
+        if (inc === 0) inc = appState.settings.defaultPaycheck || 2400;
+        const net = inc - exp;
+        const burnRate = exp / 14;
+
+        box.innerHTML = `
+          <div style="color:var(--primary); font-weight:800; margin-bottom:4px;">✨ Gemini AI Cash Flow Forecast</div>
+          <div><strong>Safe-to-Spend Runway:</strong> $${net.toFixed(2)} available.</div>
+          <div><strong>Estimated Daily Burn:</strong> ~$${burnRate.toFixed(2)}/day across current cycle.</div>
+          <div style="margin-top:6px; color:var(--text-muted); font-size:0.8rem;">
+            ${net > 300 ? '✅ Healthy surplus. Recommend allocating 40% of surplus to lowest balance debt.' : '⚠️ Tight buffer. Defer non-essential shopping until next payday.'}
+          </div>
+        `;
+      }, 600);
+    }
+
+    function runAiSimulation() {
+      const title = document.getElementById('aiSimTitle').value.trim() || 'Custom Expense';
+      const amt = parseFloat(document.getElementById('aiSimAmount').value) || 0;
+      const box = document.getElementById('aiSimContent');
+
+      let inc = 0; let exp = 0;
+      appState.transactions.forEach(t => { if (t.isIncome) inc += t.amount; else exp += t.amount; });
+      if (inc === 0) inc = appState.settings.defaultPaycheck || 2400;
+      const currentNet = inc - exp;
+      const postNet = currentNet - amt;
+
+      box.innerHTML = `
+        <div style="font-weight:700; color:var(--accent);">Scenario: "${escapeHtml(title)}" ($${amt.toFixed(2)})</div>
+        <div><strong>Current Buffer:</strong> $${currentNet.toFixed(2)} &rarr; <strong>Post-Purchase:</strong> $${postNet.toFixed(2)}</div>
+        <div style="margin-top:4px; font-weight:600; color:${postNet >= 0 ? 'var(--primary)' : 'var(--danger)'};">
+          ${postNet >= 0 ? '✅ Affordability Score: High (Buffer remains positive)' : '🚨 Caution: Causes budget deficit in current cycle'}
+        </div>
+      `;
+    }
+
+    function runAiAudit() {
+      const box = document.getElementById('aiAuditContent');
+      const subs = appState.plannedExpenses;
+      if (subs.length === 0) {
+        box.innerHTML = `<div>No recurring bills/subscriptions found to audit.</div>`;
+        return;
+      }
+      const totalMonthly = subs.reduce((s, b) => s + (b.minAmount || 0), 0);
+      box.innerHTML = `
+        <div style="font-weight:800; color:var(--purple);">Audited ${subs.length} Active Subscriptions & Bills</div>
+        <div><strong>Total Scheduled Commitment:</strong> $${totalMonthly.toFixed(2)} / month</div>
+        <div style="margin-top:4px; font-size:0.8rem; color:var(--text-muted);">
+          All bills are accounted for in pay cycle auto-allocations.
+        </div>
+      `;
+    }
+
+    // AI Quick Entry
+    function openAiQuickModal() {
+      document.getElementById('aiQuickPrompt').value = '';
+      document.getElementById('aiQuickParsedResult').style.display = 'none';
+      openModal('modalAiQuick');
+    }
+
+    function processAiQuickEntry() {
+      const text = document.getElementById('aiQuickPrompt').value.trim();
+      if (!text) return alert('Please enter a natural language description.');
+
+      // Extract amount
+      const amtMatch = text.match(/\$?(\d+(\.\d{1,2})?)/);
+      const amount = amtMatch ? parseFloat(amtMatch[1]) : 25.00;
+
+      // Extract title / payee
+      let title = text.replace(/spent|bought|paid|\$?\d+(\.\d{1,2})?|on|at|for|today|yesterday/gi, '').trim();
+      if (!title) title = 'Expense Entry';
+
+      // Detect Income vs Expense
+      const isIncome = /deposit|paycheck|salary|income|earned|received/i.test(text);
+
+      // Detect Category
+      let category = 'Other';
+      if (/grocery|groceries|food|supermarket|target|walmart/i.test(text)) category = 'Groceries';
+      else if (/electric|water|gas|utility|utilities|bill|wifi|internet/i.test(text)) category = 'Bills';
+      else if (/chipotle|mcdonald|starbucks|restaurant|dining|lunch|dinner|coffee/i.test(text)) category = 'Dining Out';
+      else if (/gas|fuel|uber|lyft|car|auto|parking/i.test(text)) category = 'Transportation';
+
+      const txObj = {
+        title,
+        amount,
+        dateMillis: Date.now(),
+        category,
+        accountName: appState.settings.activeAccount === 'All Accounts' ? 'Primary Account' : appState.settings.activeAccount,
+        isIncome,
+        isAutoPay: false,
+        isCompleted: true
+      };
+
+      appState.transactions.unshift(txObj);
+      closeModal('modalAiQuick');
+      saveStateAndBroadcast();
+      alert(`✨ AI added transaction: "${title}" for $${amount.toFixed(2)} (${category})`);
+    }
+
+    // Settings Tab 6 Helpers
+    function updateAnchorPayday(val) {
+      if (!val) return;
+      appState.settings.anchorPayday = val;
+      saveStateAndBroadcast();
+    }
+
+    function updateDefaultPaycheck(val) {
+      const amt = parseFloat(val) || 0;
+      if (amt <= 0) return;
+      appState.settings.defaultPaycheck = amt;
+      saveStateAndBroadcast();
+    }
+
+    function renderAccountsInSettings() {
+      const container = document.getElementById('accountsListInSettings');
+      if (!container) return;
+      container.innerHTML = appState.settings.allAccounts.map(acc => {
+        const bal = getAccountBalance(acc);
+        return `
+          <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.15); padding:6px 10px; border-radius:6px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span>💳 <strong>${escapeHtml(acc)}</strong></span>
+              <span style="font-size:0.8rem; font-weight:700; color:${bal >= 0 ? 'var(--primary)' : 'var(--danger)'};">
+                $${bal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button class="btn btn-outline btn-sm" onclick="openEditAccountModal('${escapeHtml(acc)}')">✏️ Edit</button>
+              ${appState.settings.allAccounts.length > 1 ? `<button class="btn btn-danger btn-sm" onclick="deleteAccount('${escapeHtml(acc)}')">Delete</button>` : '<span style="font-size:0.75rem; color:var(--text-muted);">Default</span>'}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function openAddAccountModal() {
+      document.getElementById('accountInputName').value = '';
+      document.getElementById('accountInputInitialBalance').value = '';
+      openModal('modalAccount');
+    }
+
+    function openEditAccountModal(name) {
+      document.getElementById('editAccountOldName').value = name;
+      document.getElementById('editAccountNewName').value = name;
+      const currentBal = getAccountBalance(name);
+      document.getElementById('editAccountBalance').value = currentBal.toFixed(2);
+      openModal('modalEditAccount');
+    }
+
+    function saveEditedAccount() {
+      const oldName = document.getElementById('editAccountOldName').value.trim();
+      const newName = document.getElementById('editAccountNewName').value.trim();
+      const targetBalStr = document.getElementById('editAccountBalance').value.trim();
+      const targetBal = parseFloat(targetBalStr);
+
+      if (!newName) return alert('Enter an account name.');
+      if (newName !== oldName && appState.settings.allAccounts.includes(newName)) return alert('Account name already exists.');
+      
+      const idx = appState.settings.allAccounts.indexOf(oldName);
+      if (idx !== -1) {
+        appState.settings.allAccounts[idx] = newName;
+      }
+      if (appState.settings.activeAccount === oldName) {
+        appState.settings.activeAccount = newName;
+      }
+      // Update transactions and bills linked to this account
+      appState.transactions.forEach(tx => {
+        if (tx.accountName === oldName) tx.accountName = newName;
+      });
+      appState.plannedExpenses.forEach(b => {
+        if (b.targetAccount === oldName) b.targetAccount = newName;
+      });
+
+      // Handle balance amount update
+      if (!isNaN(targetBal)) {
+        const currentBal = getAccountBalance(newName);
+        const delta = targetBal - currentBal;
+        if (Math.abs(delta) > 0.001) {
+          appState.transactions.unshift({
+            title: delta >= 0 ? "Balance Adjustment" : "Balance Reduction Adjustment",
+            amount: Math.abs(delta),
+            dateMillis: Date.now(),
+            category: "Starting Balance",
+            accountName: newName,
+            isIncome: delta >= 0,
+            isAutoPay: false,
+            isCompleted: true
+          });
+        }
+      }
+
+      closeModal('modalEditAccount');
+      saveStateAndBroadcast();
+      showToast(`Account "${newName}" updated successfully`);
+    }
+
+    function saveAccount() {
+      const name = document.getElementById('accountInputName').value.trim();
+      const initialBalStr = document.getElementById('accountInputInitialBalance').value.trim();
+      const initialBal = parseFloat(initialBalStr) || 0;
+
+      if (!name) return alert('Enter an account name.');
+      if (appState.settings.allAccounts.includes(name)) return alert('Account name already exists.');
+      
+      appState.settings.allAccounts.push(name);
+      appState.settings.activeAccount = name; // auto-select new account
+
+      if (initialBal > 0) {
+        appState.transactions.unshift({
+          title: "Starting Balance",
+          amount: initialBal,
+          dateMillis: Date.now(),
+          category: "Starting Balance",
+          accountName: name,
+          isIncome: true,
+          isAutoPay: false,
+          isCompleted: true
+        });
+      }
+
+      closeModal('modalAccount');
+      saveStateAndBroadcast();
+      showToast(`Created account "${name}"`);
+    }
+
+    function deleteAccount(name) {
+      if (confirm(`Delete account "${name}"? All transactions for this account will be removed.`)) {
+        appState.settings.allAccounts = appState.settings.allAccounts.filter(a => a !== name);
+        appState.transactions = appState.transactions.filter(tx => tx.accountName !== name);
+        if (appState.settings.activeAccount === name) appState.settings.activeAccount = 'All Accounts';
+        saveStateAndBroadcast();
+        showToast(`Deleted account "${name}"`);
+      }
+    }
+
+    function openAnchorEditModal() {
+      openPayCycleModal('schedule');
+    }
+
+    function openPayCycleModal(tab = 'jump') {
+      const modal = document.getElementById('modalPayCycle');
+      if (!modal) return;
+      document.getElementById('modalAnchorInput').value = appState.settings.anchorPayday || new Date().toISOString().split('T')[0];
+      document.getElementById('modalPaycheckInput').value = appState.settings.defaultPaycheck || 2400;
+      const fb = document.getElementById('modalScheduleFeedback');
+      if (fb) fb.style.display = 'none';
+      renderModalCyclesList();
+      switchModalTab(tab);
+      openModal('modalPayCycle');
+    }
+
+    function switchModalTab(tab) {
+      const jumpBtn = document.getElementById('modalTabBtnJump');
+      const schedBtn = document.getElementById('modalTabBtnSchedule');
+      const jumpContent = document.getElementById('modalTabContentJump');
+      const schedContent = document.getElementById('modalTabContentSchedule');
+      
+      if (!jumpBtn || !schedBtn || !jumpContent || !schedContent) return;
+
+      if (tab === 'jump') {
+        jumpBtn.classList.add('active');
+        schedBtn.classList.remove('active');
+        jumpContent.style.display = 'flex';
+        schedContent.style.display = 'none';
+      } else {
+        schedBtn.classList.add('active');
+        jumpBtn.classList.remove('active');
+        jumpContent.style.display = 'none';
+        schedContent.style.display = 'flex';
+      }
+    }
+
+    function setAnchorPreset(type) {
+      const today = new Date();
+      let target = new Date();
+      if (type === 'today') {
+        target = today;
+      } else if (type === 'friday') {
+        const day = today.getDay(); // 0 is Sunday, 5 is Friday
+        const daysUntilFriday = (5 - day + 7) % 7 || 7;
+        target.setDate(today.getDate() + daysUntilFriday);
+      } else if (type === '1st') {
+        target = new Date(today.getFullYear(), today.getMonth(), 1);
+      } else if (type === '15th') {
+        target = new Date(today.getFullYear(), today.getMonth(), 15);
+      }
+      const dateStr = target.toISOString().split('T')[0];
+      const input = document.getElementById('modalAnchorInput');
+      if (input) input.value = dateStr;
+    }
+
+    function setAnchorDirect(type) {
+      const today = new Date();
+      let target = new Date();
+      if (type === 'today') {
+        target = today;
+      } else if (type === 'friday') {
+        const day = today.getDay();
+        const daysUntilFriday = (5 - day + 7) % 7 || 7;
+        target.setDate(today.getDate() + daysUntilFriday);
+      } else if (type === '1st') {
+        target = new Date(today.getFullYear(), today.getMonth(), 1);
+      } else if (type === '15th') {
+        target = new Date(today.getFullYear(), today.getMonth(), 15);
+      }
+      const dateStr = target.toISOString().split('T')[0];
+      const input = document.getElementById('anchorPaydayInput');
+      if (input) {
+        input.value = dateStr;
+        updateAnchorPayday(dateStr);
+      }
+    }
+
+    function savePayScheduleFromModal() {
+      const anchorVal = document.getElementById('modalAnchorInput').value;
+      const paycheckVal = parseFloat(document.getElementById('modalPaycheckInput').value) || 0;
+      
+      if (anchorVal) {
+        appState.settings.anchorPayday = anchorVal;
+        const mainInput = document.getElementById('anchorPaydayInput');
+        if (mainInput) mainInput.value = anchorVal;
+      }
+      if (paycheckVal > 0) {
+        appState.settings.defaultPaycheck = paycheckVal;
+        const mainPayInput = document.getElementById('defaultPaycheckInput');
+        if (mainPayInput) mainPayInput.value = paycheckVal;
+      }
+      
+      saveStateAndBroadcast();
+      
+      const fb = document.getElementById('modalScheduleFeedback');
+      if (fb) {
+        fb.innerText = '✓ Pay schedule updated & synchronized!';
+        fb.style.display = 'block';
+      }
+      
+      setTimeout(() => {
+        closeModal('modalPayCycle');
+      }, 700);
+    }
+
+    function renderModalCyclesList() {
+      const container = document.getElementById('modalCyclesList');
+      if (!container) return;
+      
+      const anchor = new Date(appState.settings.anchorPayday || '2026-08-15T00:00:00');
+      const now = new Date();
+      const currentPayday = getPaydayOnOrBefore(now, appState.settings.anchorPayday || '2026-08-15');
+      const cycleInfo = getSelectedCycleInfo();
+      const selectedStartMillis = cycleInfo.start.getTime();
+      const opts = { month: 'short', day: 'numeric', year: 'numeric' };
+      
+      const diffDays = Math.floor((cycleInfo.start - anchor) / (1000 * 60 * 60 * 24));
+      const baseCycleIndex = Math.floor(diffDays / 14);
+
+      let html = '';
+      for (let i = -3; i <= 6; i++) {
+        const idx = baseCycleIndex + i;
+        const cStart = new Date(anchor);
+        cStart.setDate(anchor.getDate() + idx * 14);
+        cStart.setHours(0, 0, 0, 0);
+        const cEnd = new Date(cStart);
+        cEnd.setDate(cStart.getDate() + 13);
+        cEnd.setHours(23, 59, 59, 999);
+        
+        const cStartMillis = cStart.getTime();
+        const cEndMillis = cEnd.getTime();
+
+        const isCurrent = cStart.getTime() === currentPayday.getTime();
+        const isSelected = cStartMillis === selectedStartMillis;
+        
+        let directIncome = 0;
+        let cycleExpense = 0;
+        let inCycleCount = 0;
+        const activeAcc = appState.settings.activeAccount;
+        
+        appState.transactions.forEach(tx => {
+          if (activeAcc !== 'All Accounts' && tx.accountName && tx.accountName !== activeAcc) return;
+          const tMillis = tx.dateMillis || (tx.date ? new Date(tx.date + 'T12:00:00').getTime() : 0);
+          if (tMillis >= cStartMillis && tMillis <= cEndMillis) {
+            inCycleCount++;
+            if (tx.isIncome) directIncome += (parseFloat(tx.amount) || 0);
+            else cycleExpense += (parseFloat(tx.amount) || 0);
+          }
+        });
+        let cycleIncome = directIncome;
+        if (cycleIncome === 0) {
+          if (appState.incomeSources && appState.incomeSources.length > 0) {
+            cycleIncome = appState.incomeSources.reduce((sum, src) => {
+              const amt = parseFloat(src.amount) || 0;
+              const freq = (src.frequency || '').toLowerCase();
+              if (freq === 'weekly') return sum + amt * 2.0;
+              if (freq === 'bi-weekly' || freq === 'biweekly') return sum + amt;
+              if (freq === 'monthly') return sum + (amt * 12.0) / 26.0;
+              return sum + amt;
+            }, 0);
+          } else {
+            cycleIncome = parseFloat(appState.settings.defaultPaycheck) || 2400;
+          }
+        }
+        const net = cycleIncome - cycleExpense;
+
+        html += `
+          <div style="background:var(--bg-color); border:${isSelected ? '2px solid var(--primary)' : '1px solid var(--card-border)'}; border-radius:var(--radius); padding:10px 14px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; transition:all 0.15s ease; ${isSelected ? 'background:rgba(16, 185, 129, 0.08);' : ''}" onclick="selectCycleAndCloseModal('${cStart.toISOString().split('T')[0]}')">
+            <div>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <strong style="font-size:0.9rem;">${cStart.toLocaleDateString('en-US', opts)} – ${cEnd.toLocaleDateString('en-US', opts)}</strong>
+                ${isSelected ? '<span class="tag income" style="font-size:0.7rem; padding:1px 6px;">ACTIVE</span>' : ''}
+                ${isCurrent && !isSelected ? '<span class="tag" style="font-size:0.7rem; padding:1px 6px; background:var(--accent-light); color:var(--accent);">TODAY</span>' : ''}
+              </div>
+              <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">Payday: ${cStart.toLocaleDateString('en-US', opts)} • ${inCycleCount} transactions</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:0.85rem; font-weight:800; color:${net >= 0 ? 'var(--primary)' : 'var(--danger)'};">${net.toFixed(2)}</div>
+              <div style="font-size:0.7rem; color:var(--text-muted);">Net Buffer</div>
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    }
+
+    function selectCycleAndCloseModal(dateStr) {
+      selectPayCycle(dateStr);
+      closeModal('modalPayCycle');
+    }
+
+    // Cloud Sync Bus Integration
+    function getCloudKey() {
+      return (appState.settings.accountEmail || '86brancan@gmail.com')
+        .toLowerCase()
+        .replace(/[@.#$\[\]]/g, '_')
+        .replace(/[^a-z0-9_]/g, '');
+    }
+
+    function initCloudSync() {
+      const email = appState.settings.accountEmail || '86brancan@gmail.com';
+      document.getElementById('syncAccountEmailInput').value = email;
+      const key = getCloudKey();
+      document.getElementById('cloudTopicDisplay').innerText = `paycycle_sync_${key}`;
+      pollCloudSync();
+      setInterval(pollCloudSync, 8000); // 8s auto sync poll
+    }
+
+    function updateSyncEmail(newEmail) {
+      appState.settings.accountEmail = newEmail.trim();
+      initCloudSync();
+    }
+
+    async function pollCloudSync() {
+      const key = getCloudKey();
+      const topicUrl = `https://ntfy.sh/paycycle_sync_${key}/json?poll=1&since=all`;
+      const badge = document.getElementById('syncBadge');
+      try {
+        const resp = await fetch(topicUrl);
+        if (!resp.ok) return;
+        const text = await resp.text();
+        if (!text) return;
+
+        let maxTs = 0;
+        let latestPayload = null;
+
+        text.split('\n').forEach(line => {
+          if (!line.trim()) return;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.message) {
+              let inner = null;
+              try {
+                inner = JSON.parse(obj.message);
+              } catch(_) {
+                inner = obj.message;
+              }
+
+              let dataPayload = null;
+              let itemTs = obj.time ? obj.time * 1000 : 0;
+
+              if (typeof inner === 'object' && inner !== null) {
+                if (inner.data) {
+                  dataPayload = inner.data;
+                  if (inner.updatedAt) itemTs = inner.updatedAt;
+                } else if (inner.transactions || inner.income_sources || inner.planned_expenses || inner.debts) {
+                  dataPayload = JSON.stringify(inner);
+                  if (inner.updatedAt) itemTs = inner.updatedAt;
+                }
+              }
+
+              if (dataPayload && itemTs >= maxTs) {
+                maxTs = itemTs;
+                latestPayload = dataPayload;
+              }
+            }
+          } catch(e) {}
+        });
+
+        if (latestPayload && maxTs > (appState.lastUpdated || 0)) {
+          const remoteObj = (typeof latestPayload === 'string') ? JSON.parse(latestPayload) : latestPayload;
+          let hasUpdated = false;
+
+          const remoteTxCount = (remoteObj.transactions && Array.isArray(remoteObj.transactions)) ? remoteObj.transactions.length : 0;
+          const remoteIncCount = (remoteObj.income_sources && Array.isArray(remoteObj.income_sources)) ? remoteObj.income_sources.length : 0;
+          const remoteExpCount = (remoteObj.planned_expenses && Array.isArray(remoteObj.planned_expenses)) ? remoteObj.planned_expenses.length : 0;
+          const remoteDebtCount = (remoteObj.debts && Array.isArray(remoteObj.debts)) ? remoteObj.debts.length : 0;
+          const totalRemoteCount = remoteTxCount + remoteIncCount + remoteExpCount + remoteDebtCount;
+
+          const currentTotalCount = (appState.transactions ? appState.transactions.length : 0) +
+                                    (appState.incomeSources ? appState.incomeSources.length : 0) +
+                                    (appState.plannedExpenses ? appState.plannedExpenses.length : 0) +
+                                    (appState.debts ? appState.debts.length : 0);
+
+          if (totalRemoteCount > 0 || currentTotalCount === 0) {
+            if (remoteObj.transactions && Array.isArray(remoteObj.transactions)) {
+              appState.transactions = remoteObj.transactions;
+              hasUpdated = true;
+            }
+            if (remoteObj.income_sources && Array.isArray(remoteObj.income_sources)) {
+              appState.incomeSources = remoteObj.income_sources;
+              hasUpdated = true;
+            }
+            if (remoteObj.planned_expenses && Array.isArray(remoteObj.planned_expenses)) {
+              appState.plannedExpenses = remoteObj.planned_expenses;
+              hasUpdated = true;
+            }
+            if (remoteObj.debts && Array.isArray(remoteObj.debts)) {
+              appState.debts = remoteObj.debts;
+              hasUpdated = true;
+            }
+            if (remoteObj.settings) {
+              if (Array.isArray(remoteObj.settings)) {
+                remoteObj.settings.forEach(s => {
+                  if (s.key === 'pay_cycle_start_date' && s.value) appState.settings.anchorPayday = s.value;
+                  if (s.key === 'default_paycheck_amount' && s.value) appState.settings.defaultPaycheck = parseFloat(s.value) || 2400;
+                  if (s.key === 'all_accounts' && s.value) appState.settings.allAccounts = s.value.split(',').map(a => a.trim()).filter(Boolean);
+                  if (s.key === 'active_account_name' && s.value) appState.settings.activeAccount = s.value;
+                });
+              } else if (typeof remoteObj.settings === 'object') {
+                Object.assign(appState.settings, remoteObj.settings);
+              }
+              hasUpdated = true;
+            }
+          }
+
+          if (hasUpdated) {
+            appState.lastUpdated = Math.max(maxTs, Date.now());
+            localStorage.setItem('paycycle_budget_db', JSON.stringify({
+              transactions: appState.transactions,
+              income_sources: appState.incomeSources,
+              planned_expenses: appState.plannedExpenses,
+              debts: appState.debts,
+              settings: [
+                { key: 'default_paycheck_amount', value: String(appState.settings.defaultPaycheck) },
+                { key: 'pay_cycle_start_date', value: appState.settings.anchorPayday },
+                { key: 'active_account_name', value: appState.settings.activeAccount },
+                { key: 'all_accounts', value: appState.settings.allAccounts.join(',') }
+              ]
+            }));
+            renderAll();
+          }
+
+          badge.classList.remove('syncing');
+          document.getElementById('syncStatus').innerText = 'Cloud Synced';
+          document.getElementById('lastSyncTimeDisplay').innerText = new Date(maxTs > 0 ? maxTs : Date.now()).toLocaleTimeString();
+        } else {
+          document.getElementById('syncStatus').innerText = 'Connected (Idle)';
+        }
+      } catch (e) {
+        console.warn("Cloud poll error", e);
+        document.getElementById('syncStatus').innerText = 'Connecting...';
+      }
+    }
+
+    async function broadcastToCloudBus(jsonData) {
+      const key = getCloudKey();
+      const publishUrl = `https://ntfy.sh/paycycle_sync_${key}`;
+      const badge = document.getElementById('syncBadge');
+      badge.classList.add('syncing');
+      document.getElementById('syncStatus').innerText = 'Syncing...';
+
+      try {
+        const payload = JSON.stringify({
+          data: jsonData,
+          updatedAt: Date.now()
+        });
+
+        await fetch(publishUrl, {
+          method: 'POST',
+          body: payload
+        });
+
+        badge.classList.remove('syncing');
+        document.getElementById('syncStatus').innerText = 'Cloud Connected';
+        document.getElementById('lastSyncTimeDisplay').innerText = new Date().toLocaleTimeString();
+      } catch (e) {
+        badge.classList.remove('syncing');
+        document.getElementById('syncStatus').innerText = 'Sync Warning';
+      }
+    }
+
+    function triggerManualSync() {
+      pollCloudSync();
+      saveStateAndBroadcast();
+      alert('Cloud synchronization triggered!');
+    }
+
+    // File Downloads & Uploads
+    function downloadBackupJson() {
+      const payload = {
+        transactions: appState.transactions,
+        income_sources: appState.incomeSources,
+        planned_expenses: appState.plannedExpenses,
+        debts: appState.debts,
+        settings: [
+          { key: 'default_paycheck_amount', value: String(appState.settings.defaultPaycheck) },
+          { key: 'pay_cycle_start_date', value: appState.settings.anchorPayday },
+          { key: 'active_account_name', value: appState.settings.activeAccount },
+          { key: 'all_accounts', value: appState.settings.allAccounts.join(',') }
+        ]
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'paycycle_budget_backup.json';
+      a.click();
+    }
+
+    function handleJsonFileImport(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        try {
+          const parsed = JSON.parse(evt.target.result);
+          if (parsed.transactions) appState.transactions = parsed.transactions;
+          if (parsed.income_sources) appState.incomeSources = parsed.income_sources;
+          if (parsed.planned_expenses) appState.plannedExpenses = parsed.planned_expenses;
+          if (parsed.debts) appState.debts = parsed.debts;
+          saveStateAndBroadcast();
+          alert('Backup file restored successfully!');
+        } catch (err) {
+          alert('Invalid backup JSON file.');
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function exportTransactionsCsv() {
+      let csv = 'Date,Title,Amount,Category,Type,Account,Completed,Recurring,Auto Pay\n';
+      appState.transactions.forEach(tx => {
+        const d = tx.dateMillis ? new Date(tx.dateMillis).toISOString().split('T')[0] : '';
+        const title = `"${(tx.title || '').replace(/"/g, '""')}"`;
+        const cat = `"${(tx.category || '').replace(/"/g, '""')}"`;
+        const acc = `"${(tx.accountName || '').replace(/"/g, '""')}"`;
+        csv += `${d},${title},${tx.amount.toFixed(2)},${cat},${tx.isIncome ? 'Income' : 'Expense'},${acc},${tx.isCompleted ? 'Yes' : 'No'},${tx.isRecurring ? 'Yes' : 'No'},${tx.isAutoPay ? 'Yes' : 'No'}\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'expenses_google_sheets_sync.csv';
+      a.click();
+    }
+
+    function handleCsvFileImport(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        const lines = evt.target.result.split('\n');
+        let count = 0;
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          const tokens = line.split(',');
+          if (tokens.length >= 3) {
+            const date = tokens[0].trim();
+            const title = tokens[1].replace(/"/g, '').trim();
+            const amount = parseFloat(tokens[2]) || 0;
+            const category = tokens[3] ? tokens[3].replace(/"/g, '').trim() : 'Expense';
+            const isIncome = tokens[4] && tokens[4].includes('Income');
+            const accountName = tokens[5] ? tokens[5].replace(/"/g, '').trim() : 'Primary Account';
+            const isCompleted = tokens[6] && tokens[6].includes('Yes');
+
+            if (title && amount > 0) {
+              appState.transactions.push({
+                title,
+                amount,
+                dateMillis: date ? new Date(date + 'T12:00:00').getTime() : Date.now(),
+                category,
+                accountName,
+                isIncome,
+                isCompleted,
+                isAutoPay: false
+              });
+              count++;
+            }
+          }
+        }
+        if (count > 0) {
+          saveStateAndBroadcast();
+          alert(`Imported ${count} transactions from CSV!`);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // Modal Helpers
+    function openModal(id) { document.getElementById(id).classList.add('open'); }
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+    function openAddTransactionModal() {
+      editingTxIndex = -1;
+      document.getElementById('modalTxTitle').innerText = 'Add Expense';
+      document.getElementById('txInputTitle').value = '';
+      document.getElementById('txInputAmount').value = '';
+      document.getElementById('txInputIsIncome').checked = false;
+      document.getElementById('txInputIsAutoPay').checked = false;
+      document.getElementById('txInputIsCompleted').checked = false;
+      openModal('modalTransaction');
+    }
+    function openAddTransactionModalWithIncome() {
+      editingTxIndex = -1;
+      document.getElementById('modalTxTitle').innerText = 'Log Income / Deposit';
+      document.getElementById('txInputTitle').value = '';
+      document.getElementById('txInputAmount').value = '';
+      document.getElementById('txInputIsIncome').checked = true;
+      document.getElementById('txInputCategory').value = 'Income';
+      document.getElementById('txInputIsAutoPay').checked = false;
+      document.getElementById('txInputIsCompleted').checked = true;
+      openModal('modalTransaction');
+    }
+    function openAddBillModal() { openModal('modalBill'); }
+    function openAddIncomeModal() { openModal('modalIncome'); }
+    function openAddDebtModal() { openModal('modalDebt'); }
+
+    function escapeHtml(str) {
+      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

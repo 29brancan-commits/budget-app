@@ -1,0 +1,231 @@
+package com.example.notification
+
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.util.Log
+import com.example.data.DateUtils
+import com.example.data.PlannedExpenseEntity
+import com.example.data.TransactionEntity
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+
+object BillReminderScheduler {
+
+    const val CHANNEL_ID = "channel_bill_reminders"
+    const val CHANNEL_NAME = "Bill & Expense Reminders"
+    const val ACTION_BILL_REMINDER = "com.example.notification.ACTION_BILL_REMINDER"
+
+    const val EXTRA_BILL_ID = "extra_bill_id"
+    const val EXTRA_TITLE = "extra_title"
+    const val EXTRA_AMOUNT = "extra_amount"
+    const val EXTRA_DUE_DATE = "extra_due_date"
+    const val EXTRA_DAYS_BEFORE = "extra_days_before"
+    const val EXTRA_IS_AUTOPAY = "extra_is_autopay"
+
+    fun createNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications and alerts for upcoming bills and scheduled expenses"
+                enableVibration(true)
+                enableLights(true)
+            }
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    fun sendTestNotification(context: Context, title: String = "Test Expense Reminder", amount: Double = 49.99) {
+        val receiver = BillReminderReceiver()
+        val intent = Intent(context, BillReminderReceiver::class.java).apply {
+            action = ACTION_BILL_REMINDER
+            putExtra(EXTRA_BILL_ID, 99999)
+            putExtra(EXTRA_TITLE, title)
+            putExtra(EXTRA_AMOUNT, amount)
+            putExtra(EXTRA_DUE_DATE, LocalDate.now().plusDays(1).toString())
+            putExtra(EXTRA_DAYS_BEFORE, 1)
+            putExtra(EXTRA_IS_AUTOPAY, false)
+        }
+        receiver.onReceive(context, intent)
+    }
+
+    fun scheduleReminder(context: Context, bill: PlannedExpenseEntity) {
+        scheduleGenericReminder(
+            context = context,
+            id = bill.id,
+            title = bill.title,
+            amount = bill.minAmount,
+            dueDateStr = bill.dueDate,
+            daysBefore = bill.reminderDaysBefore,
+            isAutoPay = bill.isAutoPay,
+            isTx = false
+        )
+    }
+
+    fun scheduleTransactionReminder(context: Context, tx: TransactionEntity) {
+        if (tx.isIncome || tx.isCompleted) {
+            cancelTransactionReminder(context, tx.id)
+            return
+        }
+        val dueDateStr = DateUtils.millisToLocalDate(tx.dateMillis).toString()
+        scheduleGenericReminder(
+            context = context,
+            id = tx.id,
+            title = tx.title,
+            amount = tx.amount,
+            dueDateStr = dueDateStr,
+            daysBefore = tx.reminderDaysBefore,
+            isAutoPay = tx.isAutoPay,
+            isTx = true
+        )
+    }
+
+    private fun scheduleGenericReminder(
+        context: Context,
+        id: Int,
+        title: String,
+        amount: Double,
+        dueDateStr: String,
+        daysBefore: Int,
+        isAutoPay: Boolean,
+        isTx: Boolean
+    ) {
+        val requestCode = if (isTx) id + 100000 else id
+        cancelReminderByRequestCode(context, requestCode)
+
+        if (daysBefore < 0) {
+            return
+        }
+
+        val dueDate = try {
+            LocalDate.parse(dueDateStr)
+        } catch (e: Exception) {
+            Log.e("BillReminderScheduler", "Invalid date format for expense $title: $dueDateStr")
+            return
+        }
+
+        val today = LocalDate.now()
+        if (dueDate.isBefore(today)) {
+            return
+        }
+
+        val reminderDate = dueDate.minusDays(daysBefore.toLong())
+        val reminderDateTime = LocalDateTime.of(reminderDate, LocalTime.of(9, 0))
+        val now = LocalDateTime.now()
+
+        if (reminderDateTime.isBefore(now)) {
+            return
+        }
+
+        val triggerMillis = reminderDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+        val intent = Intent(context, BillReminderReceiver::class.java).apply {
+            action = ACTION_BILL_REMINDER
+            putExtra(EXTRA_BILL_ID, requestCode)
+            putExtra(EXTRA_TITLE, title)
+            putExtra(EXTRA_AMOUNT, amount)
+            putExtra(EXTRA_DUE_DATE, dueDateStr)
+            putExtra(EXTRA_DAYS_BEFORE, daysBefore)
+            putExtra(EXTRA_IS_AUTOPAY, isAutoPay)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        try {
+            createNotificationChannel(context)
+
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            var scheduledExact = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (alarmManager.canScheduleExactAlarms()) {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                    scheduledExact = true
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                scheduledExact = true
+            }
+
+            if (!scheduledExact) {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+            }
+            Log.d("BillReminderScheduler", "Scheduled expense reminder for '$title' at $reminderDateTime (RequestCode: $requestCode)")
+        } catch (e: SecurityException) {
+            Log.e("BillReminderScheduler", "SecurityException scheduling exact alarm, using fallback set()", e)
+            try {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+            } catch (e2: Exception) {
+                Log.e("BillReminderScheduler", "Fallback alarm scheduling failed", e2)
+            }
+        } catch (e: Exception) {
+            Log.e("BillReminderScheduler", "Failed to schedule alarm for expense $title", e)
+        }
+    }
+
+    fun cancelReminder(context: Context, billId: Int) {
+        cancelReminderByRequestCode(context, billId)
+    }
+
+    fun cancelTransactionReminder(context: Context, txId: Int) {
+        cancelReminderByRequestCode(context, txId + 100000)
+    }
+
+    private fun cancelReminderByRequestCode(context: Context, requestCode: Int) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, BillReminderReceiver::class.java).apply {
+            action = ACTION_BILL_REMINDER
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+            Log.d("BillReminderScheduler", "Cancelled reminder for request code $requestCode")
+        }
+    }
+
+    fun rescheduleAll(
+        context: Context,
+        bills: List<PlannedExpenseEntity>,
+        transactions: List<TransactionEntity> = emptyList()
+    ) {
+        val today = LocalDate.now()
+        // Only process bills with valid reminders set for today or future dates to optimize battery
+        for (bill in bills) {
+            if (bill.reminderDaysBefore >= 0) {
+                val dueDate = try { LocalDate.parse(bill.dueDate) } catch (_: Exception) { null }
+                if (dueDate != null && !dueDate.isBefore(today)) {
+                    scheduleReminder(context, bill)
+                }
+            }
+        }
+        for (tx in transactions) {
+            if (!tx.isIncome && !tx.isCompleted && tx.reminderDaysBefore >= 0) {
+                val dueDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                if (!dueDate.isBefore(today)) {
+                    scheduleTransactionReminder(context, tx)
+                }
+            }
+        }
+    }
+}

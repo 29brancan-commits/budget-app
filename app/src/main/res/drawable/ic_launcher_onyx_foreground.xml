@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Binder rings -->
+    <path
+        android:pathData="M38,20h4v10h-4z"
+        android:fillColor="#4ADE80" />
+    <path
+        android:pathData="M66,20h4v10h-4z"
+        android:fillColor="#4ADE80" />
+    <!-- Shadow -->
+    <path
+        android:pathData="M27,29h54a6,6 0 0 1 6,6v46a6,6 0 0 1 -6,6h-54a6,6 0 0 1 -6,-6v-46a6,6 0 0 1 6,-6z"
+        android:fillColor="#000000"
+        android:alpha="0.6" />
+    <!-- Card Base -->
+    <path
+        android:pathData="M26,27h56a6,6 0 0 1 6,6v46a6,6 0 0 1 -6,6h-56a6,6 0 0 1 -6,-6v-46a6,6 0 0 1 6,-6z"
+        android:fillColor="#09090B"
+        android:strokeColor="#22C55E"
+        android:strokeWidth="2" />
+    <!-- Header Bar -->
+    <path
+        android:pathData="M26,27h56a6,6 0 0 1 6,6v12h-68v-12a6,6 0 0 1 6,-6z"
+        android:fillColor="#27272A" />
+    <!-- Green Accent Line -->
+    <path
+        android:pathData="M26,38h56v2h-56z"
+        android:fillColor="#22C55E" />
+    <!-- Sparkline -->
+    <path
+        android:pathData="M32,70 L43,62 L51,66 L74,48"
+        android:strokeColor="#4ADE80"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M66,48 h8 v8"
+        android:strokeColor="#4ADE80"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Onyx Neon Badge -->
+    <path
+        android:pathData="M54,46 A15,15 0 1 1 53.99,46 Z"
+        android:fillColor="#15803D" />
+    <path
+        android:pathData="M54,48 A13,13 0 1 1 53.99,48 Z"
+        android:fillColor="#22C55E" />
+    <!-- Dollar Sign ($) -->
+    <path
+        android:pathData="M54,52v18"
+        android:strokeColor="#09090B"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M58.5,55.5h-6a2.5,2.5 0 0 0 -2.5,2.5v0a2.5,2.5 0 0 0 2.5,2.5h3a2.5,2.5 0 0 1 2.5,2.5v0a2.5,2.5 0 0 1 -2.5,2.5h-6"
+        android:strokeColor="#09090B"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round" />
+</vector>

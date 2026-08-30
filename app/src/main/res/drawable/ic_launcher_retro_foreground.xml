@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Pixel rings -->
+    <path
+        android:pathData="M38,20h4v8h-4z M66,20h4v8h-4z"
+        android:fillColor="#00FF66" />
+    <!-- Pixel Card Base -->
+    <path
+        android:pathData="M24,28h60v52h-60z"
+        android:fillColor="#001F0E"
+        android:strokeColor="#00FF66"
+        android:strokeWidth="3" />
+    <!-- Pixel Header -->
+    <path
+        android:pathData="M24,28h60v12h-60z"
+        android:fillColor="#00AA44" />
+    <!-- Pixel Sparkline Steps -->
+    <path
+        android:pathData="M30,68h8v-6h8v-4h8v-6h8v-8h10v-4"
+        android:strokeColor="#00FF66"
+        android:strokeWidth="3" />
+    <!-- Pixel Coin Box -->
+    <path
+        android:pathData="M48,42h16v16h-16z"
+        android:fillColor="#FFCC00" />
+    <path
+        android:pathData="M50,44h12v12h-12z"
+        android:fillColor="#FFE600" />
+    <!-- Pixel Dollar ($) -->
+    <path
+        android:pathData="M54,46h4v2h-4z M52,48h6v2h-6z M54,50h4v2h-4z M52,52h6v2h-6z M54,54h4v2h-4z"
+        android:fillColor="#05160E" />
+</vector>
