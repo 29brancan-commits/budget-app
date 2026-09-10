@@ -53,7 +53,7 @@ data class PlannedExpenseEntity(
     val minAmount: Double,
     val targetAccount: String = "Primary Account",
     val isAutoPay: Boolean = false,
-    val reminderDaysBefore: Int = 1 // -1 = off, 0 = on due date, 1 = 1 day before, 3 = 3 days before, 7 = 1 week before
+    val reminderDaysBefore: Int = 0 // -1 = off, 0 = on due date (day of), 1 = 1 day before, 3 = 3 days before, 7 = 1 week before
 )
 
 @Entity(tableName = "debts")

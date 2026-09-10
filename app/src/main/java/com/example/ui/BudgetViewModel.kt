@@ -65,6 +65,45 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     private val _isDriveAutoSyncEnabled = MutableStateFlow<Boolean>(true)
     val isDriveAutoSyncEnabled: StateFlow<Boolean> = _isDriveAutoSyncEnabled.asStateFlow()
 
+    // Undo Stack & Event
+    private val _undoStack = MutableStateFlow<List<UndoActionItem>>(emptyList())
+    val canUndo: StateFlow<Boolean> = _undoStack.map { it.isNotEmpty() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val lastUndoAction: StateFlow<UndoActionItem?> = _undoStack.map { it.lastOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private val _undoMessageEvent = MutableSharedFlow<String>(extraBufferCapacity = 10)
+    val undoMessageEvent: SharedFlow<String> = _undoMessageEvent.asSharedFlow()
+
+    fun pushUndoAction(title: String, description: String, onUndo: suspend () -> Unit) {
+        val item = UndoActionItem(
+            title = title,
+            description = description,
+            onUndo = onUndo
+        )
+        val updated = (_undoStack.value + item).takeLast(30)
+        _undoStack.value = updated
+        _undoMessageEvent.tryEmit(description)
+    }
+
+    fun undo() {
+        viewModelScope.launch {
+            val currentStack = _undoStack.value
+            if (currentStack.isNotEmpty()) {
+                val lastAction = currentStack.last()
+                _undoStack.value = currentStack.dropLast(1)
+                try {
+                    lastAction.onUndo()
+                    _undoMessageEvent.emit("Undone: ${lastAction.title}")
+                    autoSyncIfEnabled()
+                    com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
+                } catch (e: Exception) {
+                    Log.e("BudgetViewModel", "Error executing undo", e)
+                }
+            }
+        }
+    }
+
     private val settingsFlow = combine(
         _selectedDate,
         _anchorPayday,
@@ -88,7 +127,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         _syncState,
         _driveAccountEmail,
         _lastDriveSyncTime,
-        _isDriveAutoSyncEnabled
+        _isDriveAutoSyncEnabled,
+        _undoStack
     ) { args: Array<Any?> ->
         val settings = args[0] as SettingsBundle
         @Suppress("UNCHECKED_CAST")
@@ -106,6 +146,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val driveEmail = args[9] as String?
         val lastSync = args[10] as String?
         val autoSyncOn = args[11] as Boolean
+        @Suppress("UNCHECKED_CAST")
+        val undoStack = args[12] as List<UndoActionItem>
         val selectedDate = settings.selectedDate
         val anchor = settings.anchor
         val defaultAmount = settings.defaultAmount
@@ -515,7 +557,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             currentPayWeekStart = currentPayWeekStart,
             currentPayWeekEnd = currentPayWeekEnd,
             currentPayPeriodStart = currentPayPeriodStart,
-            currentPayPeriodEnd = currentPayPeriodEnd
+            currentPayPeriodEnd = currentPayPeriodEnd,
+            canUndo = undoStack.isNotEmpty(),
+            lastUndoDescription = undoStack.lastOrNull()?.description
         )
     }.stateIn(
         scope = viewModelScope,
@@ -1026,7 +1070,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         accountName: String = _activeAccountName.value,
         isCompleted: Boolean = false,
         isAutoPay: Boolean = false,
-        reminderDaysBefore: Int = -1
+        reminderDaysBefore: Int = if (isIncome) -1 else 0
     ) {
         viewModelScope.launch {
             val entity = TransactionEntity(
@@ -1042,9 +1086,22 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 reminderDaysBefore = reminderDaysBefore
             )
             repository.insertTransaction(entity)
-            if (!isIncome && reminderDaysBefore >= 0) {
+            if (!isIncome && !isCompleted && reminderDaysBefore >= 0) {
                 val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: entity
                 com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
+            }
+            pushUndoAction(
+                title = "Add $title",
+                description = "Added '$title'"
+            ) {
+                val allTx = repository.allTransactions.first()
+                val match = allTx.filter {
+                    it.title == entity.title && it.amount == entity.amount &&
+                            it.dateMillis == entity.dateMillis && it.isIncome == entity.isIncome
+                }.maxByOrNull { it.id }
+                if (match != null) {
+                    repository.deleteTransaction(match)
+                }
             }
             autoSyncIfEnabled()
         }
@@ -1054,16 +1111,47 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val allTx = repository.allTransactions.first()
             val existsInDb = transaction.id > 0 && allTx.any { it.id == transaction.id }
-            val newStatus = !transaction.isCompleted
+            val prevStatus = transaction.isCompleted
+            val newStatus = !prevStatus
             if (!existsInDb) {
                 // Synthetic / projected transaction: create real transaction record in DB with toggled completion
                 val newEntity = transaction.copy(id = 0, isCompleted = newStatus)
                 repository.insertTransaction(newEntity)
+                if (newStatus) {
+                    com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
+                } else if (!newEntity.isIncome && newEntity.reminderDaysBefore >= 0) {
+                    val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: newEntity
+                    com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
+                }
+                pushUndoAction(
+                    title = if (newStatus) "Mark Paid" else "Mark Unpaid",
+                    description = if (newStatus) "Marked '${transaction.title}' paid" else "Marked '${transaction.title}' unpaid"
+                ) {
+                    val all = repository.allTransactions.first()
+                    val match = all.firstOrNull {
+                        it.title == newEntity.title && it.dateMillis == newEntity.dateMillis && it.amount == newEntity.amount
+                    }
+                    if (match != null) {
+                        repository.updateTransaction(match.copy(isCompleted = prevStatus))
+                    }
+                }
             } else {
                 val updated = transaction.copy(isCompleted = newStatus)
                 repository.updateTransaction(updated)
                 if (newStatus) {
                     com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
+                } else if (!updated.isIncome && updated.reminderDaysBefore >= 0) {
+                    com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), updated)
+                }
+                pushUndoAction(
+                    title = if (newStatus) "Mark Paid" else "Mark Unpaid",
+                    description = if (newStatus) "Marked '${transaction.title}' paid" else "Marked '${transaction.title}' unpaid"
+                ) {
+                    val all = repository.allTransactions.first()
+                    val match = all.firstOrNull { it.id == transaction.id }
+                    if (match != null) {
+                        repository.updateTransaction(match.copy(isCompleted = prevStatus))
+                    }
                 }
             }
             autoSyncIfEnabled()
@@ -1138,7 +1226,16 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 // Synthetic / Scheduled transaction
                 if (transaction.category == "Paycheck" || transaction.isIncome) {
                     val payday = DateUtils.millisToLocalDate(transaction.dateMillis)
+                    val prevPaycheck = repository.allTransactions.first().firstOrNull {
+                        it.category == "Paycheck" && DateUtils.millisToLocalDate(it.dateMillis) == payday
+                    }?.amount ?: _defaultPaycheckAmount.value
                     saveOrUpdatePaycheck(payday, 0.0)
+                    pushUndoAction(
+                        title = "Delete Paycheck",
+                        description = "Deleted paycheck on $payday"
+                    ) {
+                        saveOrUpdatePaycheck(payday, prevPaycheck)
+                    }
                 } else {
                     val cancelled = TransactionEntity(
                         title = "Cancelled " + transaction.title.replace(" (Planned)", ""),
@@ -1149,16 +1246,48 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         accountName = if (transaction.accountName.isBlank()) "Primary Account" else transaction.accountName
                     )
                     repository.insertTransaction(cancelled)
+                    pushUndoAction(
+                        title = "Delete ${transaction.title}",
+                        description = "Deleted ${transaction.title}"
+                    ) {
+                        val all = repository.allTransactions.first()
+                        val match = all.firstOrNull {
+                            it.title == cancelled.title && it.dateMillis == cancelled.dateMillis
+                        }
+                        if (match != null) {
+                            repository.deleteTransaction(match)
+                        }
+                    }
                 }
             } else {
                 if (transaction.category == "Paycheck") {
+                    val prevAmount = transaction.amount
+                    val prevTitle = transaction.title
                     val updated = transaction.copy(amount = 0.0, title = "Cancelled Paycheck")
                     repository.updateTransaction(updated)
+                    pushUndoAction(
+                        title = "Delete Paycheck",
+                        description = "Deleted paycheck"
+                    ) {
+                        val all = repository.allTransactions.first()
+                        val match = all.firstOrNull { it.id == transaction.id }
+                        if (match != null) {
+                            repository.updateTransaction(match.copy(amount = prevAmount, title = prevTitle))
+                        }
+                    }
                 } else {
+                    val deletedCopy = transaction.copy()
                     repository.deleteTransaction(transaction)
+                    pushUndoAction(
+                        title = "Delete ${transaction.title}",
+                        description = "Deleted '${transaction.title}'"
+                    ) {
+                        repository.insertTransaction(deletedCopy.copy(id = 0))
+                    }
                 }
             }
             autoSyncIfEnabled()
+            com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
         }
     }
 
@@ -1182,13 +1311,18 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             val targetDate = item.dueDate
             val targetDateMillis = DateUtils.localDateToMillis(targetDate)
 
+            val deletedPlans = mutableListOf<PlannedExpenseEntity>()
+            val deletedTxs = mutableListOf<TransactionEntity>()
+
             // 1. Delete associated Planned Expense if item corresponds to one
             if (item.plannedExpenseRef != null) {
                 com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), item.plannedExpenseRef.id)
                 repository.deletePlannedExpenseById(item.plannedExpenseRef.id)
+                deletedPlans.add(item.plannedExpenseRef)
             } else if (item.id.startsWith("plan_")) {
                 val planId = item.id.split("_").getOrNull(1)?.toIntOrNull()
                 if (planId != null) {
+                    allPlanned.firstOrNull { it.id == planId }?.let { deletedPlans.add(it) }
                     com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), planId)
                     repository.deletePlannedExpenseById(planId)
                 }
@@ -1198,6 +1332,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 it.title.equals(item.title, ignoreCase = true) ||
                 (item.plannedExpenseRef != null && it.id == item.plannedExpenseRef.id)
             }.forEach { bill ->
+                if (deletedPlans.none { it.id == bill.id }) deletedPlans.add(bill)
                 com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), bill.id)
                 repository.deletePlannedExpenseById(bill.id)
             }
@@ -1207,9 +1342,11 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             if (txRef != null && txRef.id > 0) {
                 com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), txRef.id)
                 repository.deleteTransactionById(txRef.id)
+                deletedTxs.add(txRef)
             } else if (item.id.startsWith("tx_")) {
                 val directId = item.id.removePrefix("tx_").toIntOrNull()
                 if (directId != null && directId > 0) {
+                    allTx.firstOrNull { it.id == directId }?.let { deletedTxs.add(it) }
                     com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), directId)
                     repository.deleteTransactionById(directId)
                 }
@@ -1222,6 +1359,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                  (item.plannedExpenseRef != null && tx.title.equals(item.plannedExpenseRef.title, ignoreCase = true))) &&
                 (DateUtils.millisToLocalDate(tx.dateMillis) == targetDate || tx.dateMillis == targetDateMillis)
             }.forEach { matchingTx ->
+                if (deletedTxs.none { it.id == matchingTx.id }) deletedTxs.add(matchingTx)
                 com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), matchingTx.id)
                 repository.deleteTransactionById(matchingTx.id)
             }
@@ -1233,6 +1371,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                  (item.plannedExpenseRef != null && tx.title.equals(item.plannedExpenseRef.title, ignoreCase = true)))
             }
             recurringMatches.filter { DateUtils.millisToLocalDate(it.dateMillis) == targetDate }.forEach { recTx ->
+                if (deletedTxs.none { it.id == recTx.id }) deletedTxs.add(recTx)
                 com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), recTx.id)
                 repository.deleteTransactionById(recTx.id)
             }
@@ -1250,6 +1389,25 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             )
             repository.insertTransaction(cancelledPlaceholder)
 
+            pushUndoAction(
+                title = "Delete ${item.title}",
+                description = "Deleted '${item.title}'"
+            ) {
+                val currentTx = repository.allTransactions.first()
+                val matchCancelled = currentTx.firstOrNull {
+                    it.title == cancelledPlaceholder.title && it.dateMillis == cancelledPlaceholder.dateMillis
+                }
+                if (matchCancelled != null) {
+                    repository.deleteTransaction(matchCancelled)
+                }
+                for (dtx in deletedTxs) {
+                    repository.insertTransaction(dtx.copy(id = 0))
+                }
+                for (dp in deletedPlans) {
+                    repository.insertPlannedExpense(dp.copy(id = 0))
+                }
+            }
+
             autoSyncIfEnabled()
             com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
         }
@@ -1258,11 +1416,20 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     fun updateTransaction(transaction: TransactionEntity) {
         viewModelScope.launch {
             val allTx = repository.allTransactions.first()
-            val existsInDb = transaction.id > 0 && allTx.any { it.id == transaction.id }
+            val prevTx = allTx.firstOrNull { it.id == transaction.id }
+            val existsInDb = transaction.id > 0 && prevTx != null
             if (!existsInDb) {
                 repository.insertTransaction(transaction.copy(id = 0))
             } else {
                 repository.updateTransaction(transaction)
+                if (prevTx != null) {
+                    pushUndoAction(
+                        title = "Edit ${transaction.title}",
+                        description = "Edited '${transaction.title}'"
+                    ) {
+                        repository.updateTransaction(prevTx)
+                    }
+                }
             }
             if (!transaction.isIncome && transaction.reminderDaysBefore >= 0 && !transaction.isCompleted) {
                 com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), transaction)
@@ -1280,6 +1447,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             _allAccounts.value = emptyList()
             _activeAccountName.value = "All Accounts"
             _defaultPaycheckAmount.value = 0.0
+            _undoStack.value = emptyList()
             val now = System.currentTimeMillis()
             _lastLocalUpdateTime.value = now
 
@@ -1358,14 +1526,26 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteIncomeSource(incomeSource: IncomeSourceEntity) {
         viewModelScope.launch {
+            val copy = incomeSource.copy()
             repository.deleteIncomeSource(incomeSource)
+            pushUndoAction(
+                title = "Delete Income",
+                description = "Deleted income '${incomeSource.name}'"
+            ) {
+                repository.insertIncomeSource(copy.copy(id = 0))
+            }
             autoSyncIfEnabled()
         }
     }
 
     fun deleteIncomeSourceById(id: Int) {
         viewModelScope.launch {
-            repository.deleteIncomeSourceById(id)
+            val inc = repository.allIncomeSources.first().firstOrNull { it.id == id }
+            if (inc != null) {
+                deleteIncomeSource(inc)
+            } else {
+                repository.deleteIncomeSourceById(id)
+            }
             autoSyncIfEnabled()
         }
     }
@@ -1401,7 +1581,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         minAmount: Double,
         targetAccount: String,
         isAutoPay: Boolean = false,
-        reminderDaysBefore: Int = 1
+        reminderDaysBefore: Int = 0
     ) {
         viewModelScope.launch {
             // Save planned expense to database
@@ -1422,16 +1602,28 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deletePlannedExpense(plannedExpense: PlannedExpenseEntity) {
         viewModelScope.launch {
+            val copy = plannedExpense.copy()
             com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), plannedExpense.id)
             repository.deletePlannedExpense(plannedExpense)
+            pushUndoAction(
+                title = "Delete Bill",
+                description = "Deleted bill '${plannedExpense.title}'"
+            ) {
+                repository.insertPlannedExpense(copy.copy(id = 0))
+            }
             autoSyncIfEnabled()
         }
     }
 
     fun deletePlannedExpenseById(id: Int) {
         viewModelScope.launch {
-            com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), id)
-            repository.deletePlannedExpenseById(id)
+            val bill = repository.allPlannedExpenses.first().firstOrNull { it.id == id }
+            if (bill != null) {
+                deletePlannedExpense(bill)
+            } else {
+                com.example.notification.BillReminderScheduler.cancelReminder(getApplication(), id)
+                repository.deletePlannedExpenseById(id)
+            }
             autoSyncIfEnabled()
         }
     }
@@ -1460,7 +1652,14 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteDebt(debt: DebtEntity) {
         viewModelScope.launch {
+            val copy = debt.copy()
             repository.deleteDebt(debt)
+            pushUndoAction(
+                title = "Delete Debt",
+                description = "Deleted debt '${debt.name}'"
+            ) {
+                repository.insertDebt(copy.copy(id = 0))
+            }
             autoSyncIfEnabled()
         }
     }
@@ -2590,12 +2789,21 @@ data class BudgetUiState(
     val currentPayWeekStart: LocalDate = LocalDate.now(),
     val currentPayWeekEnd: LocalDate = LocalDate.now(),
     val currentPayPeriodStart: LocalDate = LocalDate.now(),
-    val currentPayPeriodEnd: LocalDate = LocalDate.now()
+    val currentPayPeriodEnd: LocalDate = LocalDate.now(),
+    val canUndo: Boolean = false,
+    val lastUndoDescription: String? = null
 ) {
     val debts: List<DebtEntity> get() = allDebts
     val currentPayPeriod: PayPeriod?
         get() = payPeriods.firstOrNull { it.startDate == currentPayPeriodStart } ?: payPeriods.firstOrNull()
 }
+
+data class UndoActionItem(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val description: String,
+    val onUndo: suspend () -> Unit
+)
 
 data class AccountBalance(
     val accountName: String,

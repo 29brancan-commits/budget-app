@@ -436,4 +436,91 @@ class ExampleUnitTest {
     assertEquals(100.0, allSummary.totalExpenses, 0.001)
     assertEquals(3400.0, allSummary.remainingBalance, 0.001)
   }
+
+  @Test
+  fun testUndoActionItemExecution() = kotlinx.coroutines.runBlocking {
+    var counter = 10
+    val undoStack = mutableListOf<com.example.ui.UndoActionItem>()
+
+    // Push action that incremented counter
+    counter += 5
+    undoStack.add(
+        com.example.ui.UndoActionItem(
+            title = "Increment",
+            description = "Incremented counter by 5",
+            onUndo = { counter -= 5 }
+        )
+    )
+
+    assertEquals(15, counter)
+    assertTrue(undoStack.isNotEmpty())
+
+    // Perform undo
+    val lastAction = undoStack.removeAt(undoStack.lastIndex)
+    lastAction.onUndo()
+
+    assertEquals(10, counter)
+    assertTrue(undoStack.isEmpty())
+  }
+
+  @Test
+  fun testPlannedExpenseDefaultsToDayOfDueDate() {
+    val planned = com.example.data.PlannedExpenseEntity(
+        title = "Electric Bill",
+        dueDate = "2026-09-15",
+        minAmount = 120.0
+    )
+    // 0 corresponds to Day of Due Date (at 9:00 AM)
+    assertEquals(0, planned.reminderDaysBefore)
+  }
+
+  @Test
+  fun testExpenseReminderExclusionWhenCompleted() {
+    val bill = com.example.data.PlannedExpenseEntity(
+        id = 1,
+        title = "Internet Bill",
+        dueDate = "2026-09-10",
+        minAmount = 75.0,
+        reminderDaysBefore = 0
+    )
+
+    val transactionsUncompleted = listOf(
+        com.example.data.TransactionEntity(
+            id = 10,
+            title = "Internet Bill",
+            amount = 75.0,
+            dateMillis = System.currentTimeMillis(),
+            category = "Utilities",
+            isIncome = false,
+            isCompleted = false,
+            reminderDaysBefore = 0
+        )
+    )
+
+    // Check completed status
+    val isCompletedUnpaid = transactionsUncompleted.any { tx ->
+        !tx.isIncome && tx.isCompleted &&
+                (tx.title.equals(bill.title, ignoreCase = true) || tx.title.contains(bill.title, ignoreCase = true))
+    }
+    assertFalse("Bill should not be completed when unpaid", isCompletedUnpaid)
+
+    val transactionsCompleted = listOf(
+        com.example.data.TransactionEntity(
+            id = 11,
+            title = "Internet Bill",
+            amount = 75.0,
+            dateMillis = System.currentTimeMillis(),
+            category = "Utilities",
+            isIncome = false,
+            isCompleted = true,
+            reminderDaysBefore = 0
+        )
+    )
+
+    val isCompletedPaid = transactionsCompleted.any { tx ->
+        !tx.isIncome && tx.isCompleted &&
+                (tx.title.equals(bill.title, ignoreCase = true) || tx.title.contains(bill.title, ignoreCase = true))
+    }
+    assertTrue("Bill should be recognized as completed when paid transaction exists", isCompletedPaid)
+  }
 }

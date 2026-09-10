@@ -357,20 +357,7 @@ object UpcomingExpenseCalculator {
 
             if (thisMonthTx != null) {
                 if (thisMonthTx.isCompleted) {
-                    // Current month bill is paid! Show next month's due date
-                    items.add(
-                        UpcomingExpenseItem(
-                            id = "plan_${bill.id}_next",
-                            title = bill.title,
-                            amount = bill.minAmount,
-                            dueDate = nextMonthDueDate,
-                            category = "Planned Bill",
-                            accountName = bill.targetAccount.ifEmpty { "Primary Account" },
-                            isTransaction = false,
-                            isAutoPay = bill.isAutoPay,
-                            plannedExpenseRef = bill
-                        )
-                    )
+                    // Current month bill is paid/cleared! It should not be carried over.
                 } else {
                     // Transaction exists and is uncompleted - already handled in uncompletedTx above!
                 }
@@ -381,7 +368,12 @@ object UpcomingExpenseCalculator {
                              tx.title.contains("Cancelled " + bill.title, ignoreCase = true)) &&
                             YearMonth.from(DateUtils.millisToLocalDate(tx.dateMillis)) == currentMonth
                 }
-                if (!thisMonthCancelled) {
+                val hasCompletedInMonth = expandedTransactions.any { tx ->
+                    !tx.isIncome && tx.isCompleted &&
+                            (tx.title.equals(bill.title, ignoreCase = true) || tx.title.contains(bill.title, ignoreCase = true)) &&
+                            DateUtils.millisToLocalDate(tx.dateMillis).isAfter(thisMonthDueDate.minusDays(20))
+                }
+                if (!thisMonthCancelled && !hasCompletedInMonth) {
                     if (!thisMonthDueDate.isBefore(today)) {
                         // Due today or later this month
                         items.add(
@@ -406,20 +398,6 @@ object UpcomingExpenseCalculator {
                                     title = bill.title,
                                     amount = bill.minAmount,
                                     dueDate = thisMonthDueDate,
-                                    category = "Planned Bill",
-                                    accountName = bill.targetAccount.ifEmpty { "Primary Account" },
-                                    isTransaction = false,
-                                    isAutoPay = bill.isAutoPay,
-                                    plannedExpenseRef = bill
-                                )
-                            )
-                        } else {
-                            items.add(
-                                UpcomingExpenseItem(
-                                    id = "plan_${bill.id}_next",
-                                    title = bill.title,
-                                    amount = bill.minAmount,
-                                    dueDate = nextMonthDueDate,
                                     category = "Planned Bill",
                                     accountName = bill.targetAccount.ifEmpty { "Primary Account" },
                                     isTransaction = false,

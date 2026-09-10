@@ -23,6 +23,8 @@ object BillReminderScheduler {
     const val ACTION_BILL_REMINDER = "com.example.notification.ACTION_BILL_REMINDER"
 
     const val EXTRA_BILL_ID = "extra_bill_id"
+    const val EXTRA_ORIGINAL_ID = "extra_original_id"
+    const val EXTRA_IS_TX = "extra_is_tx"
     const val EXTRA_TITLE = "extra_title"
     const val EXTRA_AMOUNT = "extra_amount"
     const val EXTRA_DUE_DATE = "extra_due_date"
@@ -50,10 +52,12 @@ object BillReminderScheduler {
         val intent = Intent(context, BillReminderReceiver::class.java).apply {
             action = ACTION_BILL_REMINDER
             putExtra(EXTRA_BILL_ID, 99999)
+            putExtra(EXTRA_ORIGINAL_ID, 99999)
+            putExtra(EXTRA_IS_TX, true)
             putExtra(EXTRA_TITLE, title)
             putExtra(EXTRA_AMOUNT, amount)
-            putExtra(EXTRA_DUE_DATE, LocalDate.now().plusDays(1).toString())
-            putExtra(EXTRA_DAYS_BEFORE, 1)
+            putExtra(EXTRA_DUE_DATE, LocalDate.now().toString())
+            putExtra(EXTRA_DAYS_BEFORE, 0)
             putExtra(EXTRA_IS_AUTOPAY, false)
         }
         receiver.onReceive(context, intent)
@@ -120,10 +124,20 @@ object BillReminderScheduler {
         }
 
         val reminderDate = dueDate.minusDays(daysBefore.toLong())
-        val reminderDateTime = LocalDateTime.of(reminderDate, LocalTime.of(9, 0))
-        val now = LocalDateTime.now()
+        if (reminderDate.isBefore(today)) {
+            // Target reminder date already passed
+            return
+        }
 
-        if (reminderDateTime.isBefore(now)) {
+        val now = LocalDateTime.now()
+        val standardReminderTime = LocalTime.of(9, 0)
+        var reminderDateTime = LocalDateTime.of(reminderDate, standardReminderTime)
+
+        // If reminder is scheduled for today (e.g. day of due date) and 9:00 AM has already passed today:
+        if (reminderDate == today && reminderDateTime.isBefore(now)) {
+            // Bill is due today and uncompleted: schedule immediate reminder (in 5 seconds)
+            reminderDateTime = now.plusSeconds(5)
+        } else if (reminderDateTime.isBefore(now)) {
             return
         }
 
@@ -132,6 +146,8 @@ object BillReminderScheduler {
         val intent = Intent(context, BillReminderReceiver::class.java).apply {
             action = ACTION_BILL_REMINDER
             putExtra(EXTRA_BILL_ID, requestCode)
+            putExtra(EXTRA_ORIGINAL_ID, id)
+            putExtra(EXTRA_IS_TX, isTx)
             putExtra(EXTRA_TITLE, title)
             putExtra(EXTRA_AMOUNT, amount)
             putExtra(EXTRA_DUE_DATE, dueDateStr)
@@ -202,6 +218,13 @@ object BillReminderScheduler {
             pendingIntent.cancel()
             Log.d("BillReminderScheduler", "Cancelled reminder for request code $requestCode")
         }
+        // Also cancel any posted notification from the system status bar
+        try {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(requestCode)
+        } catch (e: Exception) {
+            Log.e("BillReminderScheduler", "Error clearing notification tray for $requestCode", e)
+        }
     }
 
     fun rescheduleAll(
@@ -210,20 +233,40 @@ object BillReminderScheduler {
         transactions: List<TransactionEntity> = emptyList()
     ) {
         val today = LocalDate.now()
-        // Only process bills with valid reminders set for today or future dates to optimize battery
+        // 1. Process planned bills: only schedule if NOT completed by matching expense transaction
         for (bill in bills) {
             if (bill.reminderDaysBefore >= 0) {
                 val dueDate = try { LocalDate.parse(bill.dueDate) } catch (_: Exception) { null }
                 if (dueDate != null && !dueDate.isBefore(today)) {
-                    scheduleReminder(context, bill)
+                    val hasCompletedInTransactions = transactions.any { tx ->
+                        !tx.isIncome && tx.isCompleted &&
+                                (tx.title.equals(bill.title, ignoreCase = true) || tx.title.contains(bill.title, ignoreCase = true))
+                    }
+                    if (hasCompletedInTransactions) {
+                        cancelReminder(context, bill.id)
+                    } else {
+                        scheduleReminder(context, bill)
+                    }
+                } else {
+                    cancelReminder(context, bill.id)
                 }
+            } else {
+                cancelReminder(context, bill.id)
             }
         }
+
+        // 2. Process expense transactions: only schedule if active, uncompleted, and not in the past
         for (tx in transactions) {
-            if (!tx.isIncome && !tx.isCompleted && tx.reminderDaysBefore >= 0) {
-                val dueDate = DateUtils.millisToLocalDate(tx.dateMillis)
-                if (!dueDate.isBefore(today)) {
-                    scheduleTransactionReminder(context, tx)
+            if (!tx.isIncome) {
+                if (tx.isCompleted || tx.reminderDaysBefore < 0) {
+                    cancelTransactionReminder(context, tx.id)
+                } else {
+                    val dueDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                    if (!dueDate.isBefore(today)) {
+                        scheduleTransactionReminder(context, tx)
+                    } else {
+                        cancelTransactionReminder(context, tx.id)
+                    }
                 }
             }
         }

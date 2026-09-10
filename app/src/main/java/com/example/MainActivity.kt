@@ -21,7 +21,12 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.material.icons.automirrored.filled.Undo
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -275,6 +280,28 @@ fun BudgetAppMain(
     var editingPaycheckAmount by remember { mutableStateOf("") }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.undoMessageEvent.collectLatest { message ->
+            if (!message.startsWith("Undone:")) {
+                val result = snackbarHostState.showSnackbar(
+                    message = message,
+                    actionLabel = "UNDO",
+                    duration = SnackbarDuration.Short
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    viewModel.undo()
+                }
+            } else {
+                snackbarHostState.showSnackbar(
+                    message = message,
+                    duration = SnackbarDuration.Short
+                )
+            }
+        }
+    }
+
     // Formatters
     val monthTitleFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US) }
     val configuration = LocalConfiguration.current
@@ -285,6 +312,12 @@ fun BudgetAppMain(
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.testTag("undo_snackbar_host")
+                )
+            },
             topBar = {
                 Column(
                     modifier = Modifier
@@ -300,11 +333,28 @@ fun BudgetAppMain(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        IconButton(
-                            onClick = { viewModel.prevMonth() },
-                            modifier = Modifier.testTag("prev_month_button")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle")
+                            IconButton(
+                                onClick = { viewModel.prevMonth() },
+                                modifier = Modifier.testTag("prev_month_button")
+                            ) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle")
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.undo() },
+                                enabled = uiState.canUndo,
+                                modifier = Modifier.testTag("undo_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Undo,
+                                    contentDescription = if (uiState.canUndo) "Undo: ${uiState.lastUndoDescription ?: "last action"}" else "Undo",
+                                    tint = if (uiState.canUndo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                )
+                            }
                         }
 
                         val payCycleTitleFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
@@ -373,17 +423,37 @@ fun BudgetAppMain(
                 }
             },
             floatingActionButton = {
-                if (selectedTab != 3 && selectedTab != 5 && selectedTab != 6) {
-                    FloatingActionButton(
-                        onClick = {
-                            preselectedDateForAdd = null
-                            showAddDialog = true
-                        },
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.testTag("add_transaction_fab")
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AnimatedVisibility(
+                        visible = uiState.canUndo,
+                        enter = fadeIn() + slideInVertically { it / 2 },
+                        exit = fadeOut() + slideOutVertically { it / 2 }
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add Transaction")
+                        ExtendedFloatingActionButton(
+                            onClick = { viewModel.undo() },
+                            icon = { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null) },
+                            text = { Text("Undo", fontWeight = FontWeight.Bold) },
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.testTag("floating_undo_button")
+                        )
+                    }
+
+                    if (selectedTab != 3 && selectedTab != 5 && selectedTab != 6) {
+                        FloatingActionButton(
+                            onClick = {
+                                preselectedDateForAdd = null
+                                showAddDialog = true
+                            },
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.testTag("add_transaction_fab")
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Add Transaction")
+                        }
                     }
                 }
             }
@@ -5497,7 +5567,7 @@ fun SettingsView(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Automated alerts before expenses & bills are due",
+                                    text = "Automated alerts on the day bills & expenses are due (unless marked complete)",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -7175,7 +7245,7 @@ fun AddTransactionDialog(
     var isAutoPay by remember { mutableStateOf(false) }
     var selectedAccount by remember { mutableStateOf(if (initialAccountName == "All Accounts") (allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account") else initialAccountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
-    var reminderDaysBefore by remember { mutableIntStateOf(1) }
+    var reminderDaysBefore by remember { mutableIntStateOf(0) }
     var reminderDropdownExpanded by remember { mutableStateOf(false) }
 
     var errorMsg by remember { mutableStateOf("") }
@@ -7310,7 +7380,7 @@ fun AddTransactionDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 val label = when (reminderDaysBefore) {
-                                    0 -> "On Due Date (9:00 AM)"
+                                    0 -> "On Due Date (Day of at 9:00 AM)"
                                     1 -> "1 Day Before Due Date"
                                     3 -> "3 Days Before Due Date"
                                     7 -> "1 Week Before Due Date"
@@ -7326,8 +7396,8 @@ fun AddTransactionDialog(
                             modifier = Modifier.fillMaxWidth(0.7f)
                         ) {
                             listOf(
+                                0 to "On Due Date (Day of at 9:00 AM)",
                                 1 to "1 Day Before Due Date",
-                                0 to "On Due Date (9:00 AM)",
                                 3 to "3 Days Before Due Date",
                                 7 to "1 Week Before Due Date",
                                 -1 to "No Reminder"
@@ -7621,7 +7691,7 @@ fun EditTransactionDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 val label = when (reminderDaysBefore) {
-                                    0 -> "On Due Date (9:00 AM)"
+                                    0 -> "On Due Date (Day of at 9:00 AM)"
                                     1 -> "1 Day Before Due Date"
                                     3 -> "3 Days Before Due Date"
                                     7 -> "1 Week Before Due Date"
@@ -7637,8 +7707,8 @@ fun EditTransactionDialog(
                             modifier = Modifier.fillMaxWidth(0.7f)
                         ) {
                             listOf(
+                                0 to "On Due Date (Day of at 9:00 AM)",
                                 1 to "1 Day Before Due Date",
-                                0 to "On Due Date (9:00 AM)",
                                 3 to "3 Days Before Due Date",
                                 7 to "1 Week Before Due Date",
                                 -1 to "No Reminder"
@@ -9321,7 +9391,7 @@ fun PlannedBillsDialog(
     var targetAccount by remember { mutableStateOf(uiState.activeAccountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var isAutoPay by remember { mutableStateOf(false) }
-    var reminderDaysBefore by remember { mutableStateOf(1) } // Default 1 day before
+    var reminderDaysBefore by remember { mutableStateOf(0) } // Default on due date (day of)
     var reminderDropdownExpanded by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
 
@@ -9624,7 +9694,7 @@ fun PlannedBillsDialog(
                                     minAmount = ""
                                     dueDate = LocalDate.now().toString()
                                     isAutoPay = false
-                                    reminderDaysBefore = 1
+                                    reminderDaysBefore = 0
                                     errorMsg = ""
                                 }
                             },
@@ -9720,6 +9790,233 @@ fun PlannedBillsDialog(
                                             Text(
                                                 text = "Due: ${bill.dueDate}",
                                                 fontSize = 11.sp,
-                                                color = MaterialThexœÄY[oÛ6~÷¯àŒ°Oğ=v°³nX°v+ê¶{,™NˆH¤FQIİ4ÿ`Ï{°‡ı‘ı˜ı’êbË²›®»ğ!‘y9ä9ç;Äğ¸ÏÅÜ»&18›Çb‰=òŠ™l ÖÖšM—¨uI}ß Ñ,–ü5^µÑ½Õ²ã¶´ª]ã çèÙ‚,,.sÕÙ‹°İ9Šj"O ú
-KBôß&’-J94Àbeq&1…-İ‡IÂ¤µw;Î^—6ÔŞïÕ¨ö–|”ÇéF5	«³æ¿ş2Œ4“•jKà~N?)…÷ºF~¥_	½ºV§s×?“û‹ã©|A—”$ºÌ>/”]µ®¹ Ÿ”ö|6;è–I½¤£¯ÀzÔ¾ú«´V>û°™‡ÍzÃï].Ç™O¯X ]ü!â}6Ç_®ŞÊfB`vErÚ›_ Bğ]sÕš¬AKÔ·¾Ìâ–\XZ±„y«ÔM”Íp”RÓ-ÎXŠ<Ò6àƒİòÁT7ğÕf,%gzêàÌò©w§¾‡o›øD’×>fŒ,œ!aItÓFz²¨r5H¶5Ğs%ºaAÉA?€V®È{âÉDŠFdØd‰c_©Lôn<my‚†’r¦MJ…©ˆIe|DÌ‘4±õz¬!øq¿Vq½Ã=HŞŸ}*ßüøŒúÑê‘İŞíÍ¯‚u€Ş—T©1*»ÚZ¢fnl,‘F¢]ıUéG’H¾ÅW­f«¬¢Ï#òá2Ù°¹­*ËJÜyÓR‹J³¬&_íÆC£±À#ÏÇQ„f§<w’*ÎåÊÏòå[È¼<'LÏQò¯³¾äbQ7VL@³ÁF»ÑøÁâAÈ#|é“Æ2fèŠÈİıqÚó3È9šKINÑÈÆâæ™œû³öùîÁ3±¨í)s’t‚VÛğùï˜ŠI†î®	+ˆU­72ö£V3Â·pˆ¨ÙFŸ?—Ç‰ˆ¸©£ï^”£®1é¹«TV#ørÛV0•üou?ºnw<tf®ZØ¯1wÁhY‡Û"ÔëšÓI¯fQé.±Y5vœ3ól×U”ğ‡ˆ‘¯Â¿İsgÎH“×îh:OuyíGîp¼—×ÆîW	. *+‘äa±¨¸¥®p$š“uÿ;ü†VÏN ¿‰9²Ü±®J¬¡9rí'„Ÿc;S×ÑäõÌÌ[—×‘Ùï™§€äâJ%îÕ¾ş­Jg“Á¨ë JîhêtM]ñº–=>%”\ÇXgš¼ÚÓ³³®¶ÙLûÃn×9”(»…ìEİU«½™X…’WE’{7O³3˜Mf'€ÙÀœôõ=Öt`=­Ç²Mg¦í±ú£ñÀÑ6©3ìÎÜc`–pÿĞèO+r©±62&¦íNt¥eÎœñÓÆ²®Û×FF·?Öz­úTj0ÎzºÈx¨¾¶\0kåùdª<³¹ºTİ!Öƒ’Kì_0«A›Çp)f”hw…ª°¨Ÿıª0[?Y±¯À,Â*7Xêèçè‚Éª;“ù£ú‘U½Õõ1!RËòúe}{Jû±ïgR„3¾¤‘ü>]õ"æì]Ï÷™óXx@¹•ßÈò›˜²ÕwŒÂY×0¡Ê#X½› Ë\±\ÂÅ÷qrô¹º¿,[Kxnƒn“u;ï5¼ÁŒ·ß`ò^ê%ÖoF;P-›wÙNmª¾m=zm¶L¨˜ÉH…ß”ì®§Šñ^¬â|™ÛØwK¸üWDE•aë†§*J	 µ–üb’W
-f§\ş%%q­²wÅ+Û©^AÊ¤º~ØS±ğÜ«,<ë¹÷"ùP¤<öZÛÖaÿö°]ı`¶¿¦~à3ï š-x¸àwìañö‰HÎ?·´.Ì½!¿Å·&uóÂªÄ¢N#Å­/$	jvŸÕâl~"$Ì±ƒ¦¬NİÔ+*ò…j~e4­tÆÅJY'±àêºm™ÍI CŸñ¿~G ëÄÅävóµxNÈé™VÖWI½@½ªÜóÇµç±é-…PĞÚ=P‘Ö’ú2	†T¢o¶j”èÁXrá`ïF¡"k%kûU’·’jæwTqÉÑ3 _­•¼íÓÎf^–CdŞö*)oÕeş]âµeşM©r¨Ò#&ÒŒ+ÍÉÚyú”q•ˆÓ>#]ÚzÉ!²ãİ¼ƒšÏ¾í@&Ñì ”ª°ÿ  ÿÿ p¡zß
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (bill.isAutoPay) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                                ) {
+                                                    Text(
+                                                        text = "âš¡ AutoPay",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = formatCurrency(bill.minAmount),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        IconButton(
+                                            onClick = { onDeletePlannedExpense(bill) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Delete planned expense",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("planned_expenses_close_button")
+            ) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+data class AccountColorStyle(
+    val containerColor: Color,
+    val borderColor: Color,
+    val contentColor: Color
+)
+
+@Composable
+fun getAccountColorStyle(accountName: String, isDark: Boolean): AccountColorStyle {
+    val norm = accountName.trim().lowercase()
+    return when {
+        norm.contains("savings") || norm.contains("reserve") -> {
+            if (isDark) {
+                AccountColorStyle(
+                    containerColor = Color(0xFF064E3B).copy(alpha = 0.35f),
+                    borderColor = Color(0xFF10B981),
+                    contentColor = Color(0xFF6EE7B7)
+                )
+            } else {
+                AccountColorStyle(
+                    containerColor = Color(0xFFD1FAE5),
+                    borderColor = Color(0xFF059669),
+                    contentColor = Color(0xFF065F46)
+                )
+            }
+        }
+        norm.contains("credit") || norm.contains("card") || norm.contains("visa") || norm.contains("mastercard") -> {
+            if (isDark) {
+                AccountColorStyle(
+                    containerColor = Color(0xFF4C1D95).copy(alpha = 0.35f),
+                    borderColor = Color(0xFF8B5CF6),
+                    contentColor = Color(0xFFC4B5FD)
+                )
+            } else {
+                AccountColorStyle(
+                    containerColor = Color(0xFFEDE9FE),
+                    borderColor = Color(0xFF7C3AED),
+                    contentColor = Color(0xFF5B21B6)
+                )
+            }
+        }
+        norm.contains("emergency") || norm.contains("rainy") -> {
+            if (isDark) {
+                AccountColorStyle(
+                    containerColor = Color(0xFF78350F).copy(alpha = 0.35f),
+                    borderColor = Color(0xFFF59E0B),
+                    contentColor = Color(0xFFFCD34D)
+                )
+            } else {
+                AccountColorStyle(
+                    containerColor = Color(0xFFFEF3C7),
+                    borderColor = Color(0xFFD97706),
+                    contentColor = Color(0xFF92400E)
+                )
+            }
+        }
+        norm.contains("investment") || norm.contains("crypto") || norm.contains("stock") -> {
+            if (isDark) {
+                AccountColorStyle(
+                    containerColor = Color(0xFF1E3A8A).copy(alpha = 0.35f),
+                    borderColor = Color(0xFF3B82F6),
+                    contentColor = Color(0xFF93C5FD)
+                )
+            } else {
+                AccountColorStyle(
+                    containerColor = Color(0xFFDBEAFE),
+                    borderColor = Color(0xFF2563EB),
+                    contentColor = Color(0xFF1E40AF)
+                )
+            }
+        }
+        else -> {
+            if (isDark) {
+                AccountColorStyle(
+                    containerColor = Color(0xFF1E293B).copy(alpha = 0.6f),
+                    borderColor = Color(0xFF38BDF8),
+                    contentColor = Color(0xFFBAE6FD)
+                )
+            } else {
+                AccountColorStyle(
+                    containerColor = Color(0xFFE0F2FE),
+                    borderColor = Color(0xFF0284C7),
+                    contentColor = Color(0xFF0369A1)
+                )
+            }
+        }
+    }
+}
+
+data class AccountInCycleSummary(
+    val accountName: String,
+    val totalIncome: Double,
+    val totalExpenses: Double,
+    val completedExpenses: Double,
+    val pendingExpenses: Double,
+    val net: Double,
+    val transactionCount: Int
+)
+
+@Composable
+fun EditableAutoPayTag(
+    accountName: String,
+    isAutoPay: Boolean,
+    allAccounts: List<String>,
+    onUpdateAutoPaySource: (String, Boolean) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = if (isAutoPay) Color(0xFF0284C7).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(
+            1.dp,
+            if (isAutoPay) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = Modifier
+            .clickable { expanded = true }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        ) {
+            Text(
+                text = "âš¡ AutoPay",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isAutoPay) Color(0xFF38BDF8) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "â–¾",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("âš¡ Keep AutoPay Enabled") },
+                onClick = {
+                    onUpdateAutoPaySource(accountName, true)
+                    expanded = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("âŒ Disable AutoPay") },
+                onClick = {
+                    onUpdateAutoPaySource(accountName, false)
+                    expanded = false
+                }
+            )
+            if (allAccounts.size > 1) {
+                HorizontalDivider()
+                allAccounts.filter { it != accountName }.forEach { acc ->
+                    DropdownMenuItem(
+                        text = { Text("Switch to ") },
+                        onClick = {
+                            onUpdateAutoPaySource(acc, true)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+fun formatCurrency(amount: Double): String {
+    return String.format(Locale.US, "$%,.2f", amount)
+}
