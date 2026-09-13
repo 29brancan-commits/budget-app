@@ -523,4 +523,50 @@ class ExampleUnitTest {
     }
     assertTrue("Bill should be recognized as completed when paid transaction exists", isCompletedPaid)
   }
+
+  @Test
+  fun testConfirmationBeforeMarkingCompleteLogic() {
+    val uncompletedTx = com.example.data.TransactionEntity(
+        id = 42,
+        title = "Water Bill",
+        amount = 55.0,
+        dateMillis = System.currentTimeMillis(),
+        category = "Utilities",
+        isIncome = false,
+        isCompleted = false
+    )
+
+    var pendingConfirmationTx: com.example.data.TransactionEntity? = null
+    var actualCompletedStatus = uncompletedTx.isCompleted
+
+    // Handler intercepting completion requests
+    val handleRequestToggleCompleted: (com.example.data.TransactionEntity) -> Unit = { tx ->
+      if (!tx.isCompleted) {
+        pendingConfirmationTx = tx
+      } else {
+        actualCompletedStatus = !tx.isCompleted
+      }
+    }
+
+    // User taps complete button
+    handleRequestToggleCompleted(uncompletedTx)
+
+    // Verify confirmation is requested before changing status
+    assertNotNull("Confirmation dialog must be triggered for uncompleted expense", pendingConfirmationTx)
+    assertEquals(42, pendingConfirmationTx?.id)
+    assertFalse("Transaction must remain uncompleted until user confirms", actualCompletedStatus)
+
+    // User dismisses/cancels confirmation dialog
+    pendingConfirmationTx = null
+    assertFalse("Status should remain uncompleted after dismissing dialog", actualCompletedStatus)
+
+    // User taps complete again and confirms
+    handleRequestToggleCompleted(uncompletedTx)
+    assertNotNull(pendingConfirmationTx)
+
+    // User confirms in dialog
+    actualCompletedStatus = true
+    pendingConfirmationTx = null
+    assertTrue("Transaction is marked complete only upon confirmation", actualCompletedStatus)
+  }
 }

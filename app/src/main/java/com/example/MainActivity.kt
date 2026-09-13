@@ -1,7 +1,10 @@
 package com.example
 
 import android.Manifest
+import android.content.Intent
 import android.widget.Toast
+import android.content.Context
+import android.app.NotificationManager
 import com.example.sync.*
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -219,6 +222,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
 }
 
 // Global Category Emojis & Colors
@@ -279,6 +287,75 @@ fun BudgetAppMain(
     var showPaycheckEditDialog by remember { mutableStateOf<LocalDate?>(null) }
     var editingPaycheckAmount by remember { mutableStateOf("") }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
+    var transactionToConfirmComplete by remember { mutableStateOf<TransactionEntity?>(null) }
+    var notificationBillIdToCancel by remember { mutableIntStateOf(0) }
+
+    val handleRequestToggleCompleted: (TransactionEntity) -> Unit = { tx ->
+        if (!tx.isCompleted) {
+            transactionToConfirmComplete = tx
+        } else {
+            viewModel.toggleTransactionCompleted(tx)
+        }
+    }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(Unit) {
+        val activity = context as? ComponentActivity
+        val intent = activity?.intent
+        val confirmTxId = intent?.getIntExtra("confirm_complete_tx_id", -1) ?: -1
+        if (confirmTxId != -1) {
+            val billNotifId = intent?.getIntExtra("confirm_complete_bill_id", 0) ?: 0
+            notificationBillIdToCancel = billNotifId
+            intent?.removeExtra("confirm_complete_tx_id")
+            val isTx = intent?.getBooleanExtra("confirm_complete_is_tx", true) ?: true
+            val title = intent?.getStringExtra("confirm_complete_title") ?: ""
+            val amount = intent?.getDoubleExtra("confirm_complete_amount", 0.0) ?: 0.0
+            val dueDateStr = intent?.getStringExtra("confirm_complete_due_date") ?: ""
+            if (isTx) {
+                val match = uiState.allTransactions.firstOrNull { it.id == confirmTxId }
+                if (match != null) {
+                    transactionToConfirmComplete = match
+                } else if (title.isNotEmpty()) {
+                    transactionToConfirmComplete = TransactionEntity(
+                        id = confirmTxId,
+                        title = title,
+                        amount = amount,
+                        dateMillis = System.currentTimeMillis(),
+                        category = "Expense",
+                        isIncome = false,
+                        isCompleted = false
+                    )
+                }
+            } else {
+                val planned = uiState.plannedExpenses.firstOrNull { it.id == confirmTxId }
+                if (planned != null) {
+                    val dateParsed = try { LocalDate.parse(planned.dueDate) } catch (e: Exception) { LocalDate.now() }
+                    transactionToConfirmComplete = TransactionEntity(
+                        id = 0,
+                        title = planned.title,
+                        amount = planned.minAmount,
+                        dateMillis = DateUtils.localDateToMillis(dateParsed),
+                        category = "Planned Bill",
+                        accountName = planned.targetAccount,
+                        isIncome = false,
+                        isCompleted = false,
+                        isAutoPay = planned.isAutoPay
+                    )
+                } else if (title.isNotEmpty()) {
+                    transactionToConfirmComplete = TransactionEntity(
+                        id = 0,
+                        title = title,
+                        amount = amount,
+                        dateMillis = System.currentTimeMillis(),
+                        category = "Planned Bill",
+                        isIncome = false,
+                        isCompleted = false
+                    )
+                }
+            }
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -422,9 +499,10 @@ fun BudgetAppMain(
                     )
                 }
             },
+            floatingActionButtonPosition = FabPosition.Start,
             floatingActionButton = {
                 Column(
-                    horizontalAlignment = Alignment.End,
+                    horizontalAlignment = Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     AnimatedVisibility(
@@ -432,18 +510,22 @@ fun BudgetAppMain(
                         enter = fadeIn() + slideInVertically { it / 2 },
                         exit = fadeOut() + slideOutVertically { it / 2 }
                     ) {
-                        ExtendedFloatingActionButton(
+                        SmallFloatingActionButton(
                             onClick = { viewModel.undo() },
-                            icon = { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null) },
-                            text = { Text("Undo", fontWeight = FontWeight.Bold) },
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.testTag("floating_undo_button")
-                        )
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Undo,
+                                contentDescription = "Undo",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
 
                     if (selectedTab != 3 && selectedTab != 5 && selectedTab != 6) {
-                        FloatingActionButton(
+                        SmallFloatingActionButton(
                             onClick = {
                                 preselectedDateForAdd = null
                                 showAddDialog = true
@@ -452,7 +534,11 @@ fun BudgetAppMain(
                             contentColor = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier.testTag("add_transaction_fab")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "Add Transaction")
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Add Transaction",
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
@@ -631,7 +717,7 @@ fun BudgetAppMain(
                                         "upcoming" -> {
                                             UpcomingExpensesWidget(
                                                 uiState = uiState,
-                                                onToggleCompleted = { tx -> viewModel.toggleTransactionCompleted(tx) },
+                                                onToggleCompleted = handleRequestToggleCompleted,
                                                 onOpenAddBill = { showPlannedBillsDialog = true },
                                                 onDeleteExpense = { item -> viewModel.deleteUpcomingExpense(item) }
                                             )
@@ -662,7 +748,7 @@ fun BudgetAppMain(
                                                 },
                                                 onDeleteTransaction = { tx -> viewModel.deleteTransaction(tx) },
                                                 onEditTransaction = { tx -> editingTransaction = tx },
-                                                onToggleCompleted = { tx -> viewModel.toggleTransactionCompleted(tx) },
+                                                onToggleCompleted = handleRequestToggleCompleted,
                                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                                 isWideScreen = isWideScreen
                                             )
@@ -697,11 +783,24 @@ fun BudgetAppMain(
                             EnterIncomeView(
                                 uiState = uiState,
                                 onAddIncome = { title, amount, dateDeposited, category, isRecurring, accountName, isAutoPay ->
-                                    viewModel.addTransaction(title, amount, dateDeposited, category, true, isRecurring, accountName, isAutoPay)
+                                    viewModel.addTransaction(
+                                        title = title,
+                                        amount = amount,
+                                        date = dateDeposited,
+                                        category = category,
+                                        isIncome = true,
+                                        isRecurring = isRecurring,
+                                        accountName = accountName,
+                                        isCompleted = false,
+                                        isAutoPay = isAutoPay
+                                    )
                                 },
                                 onDeleteIncome = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditIncome = { tx -> editingTransaction = tx },
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
+                                onAddIncomeSource = { name, amount, freq -> viewModel.addIncomeSource(name, amount, freq) },
+                                onDeleteIncomeSource = { src -> viewModel.deleteIncomeSource(src) },
+                                onUpdateDefaultPaycheck = { amt -> viewModel.updateDefaultPaycheckAmount(amt) },
                                 isWideScreen = isWideScreen
                             )
                         }
@@ -735,7 +834,7 @@ fun BudgetAppMain(
                                 },
                                 onDeleteExpense = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditExpense = { tx -> editingTransaction = tx },
-                                onToggleExpense = { tx -> viewModel.toggleTransactionCompleted(tx) },
+                                onToggleExpense = handleRequestToggleCompleted,
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
@@ -802,7 +901,7 @@ fun BudgetAppMain(
                                 },
                                 onDeleteTransaction = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditTransaction = { tx -> editingTransaction = tx },
-                                onToggleCompleted = { tx -> viewModel.toggleTransactionCompleted(tx) },
+                                onToggleCompleted = handleRequestToggleCompleted,
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
@@ -1007,7 +1106,170 @@ fun BudgetAppMain(
             }
         )
     }
+
+    // Dialog: Confirmation before marking complete
+    transactionToConfirmComplete?.let { tx ->
+        MarkCompleteConfirmationDialog(
+            transaction = tx,
+            onConfirm = {
+                viewModel.toggleTransactionCompleted(tx)
+                if (notificationBillIdToCancel != 0) {
+                    val notifManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    notifManager?.cancel(notificationBillIdToCancel)
+                    notificationBillIdToCancel = 0
+                }
+                transactionToConfirmComplete = null
+            },
+            onDismiss = {
+                transactionToConfirmComplete = null
+            }
+        )
+    }
 }
+}
+
+@Composable
+fun MarkCompleteConfirmationDialog(
+    transaction: TransactionEntity,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val amountFormatted = String.format(Locale.US, "$%,.2f", transaction.amount)
+    val dueDate = remember(transaction.dateMillis) {
+        DateUtils.millisToLocalDate(transaction.dateMillis)
+    }
+    val dateFormatted = remember(dueDate) {
+        dueDate.format(DateTimeFormatter.ofPattern("EEE, MMM d, yyyy", Locale.US))
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("mark_complete_confirmation_dialog"),
+        icon = {
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFF10B981).copy(alpha = 0.14f),
+                modifier = Modifier.size(52.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF10B981),
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+            }
+        },
+        title = {
+            Text(
+                text = "Mark as Paid?",
+                fontWeight = FontWeight.Bold,
+                fontSize = 19.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Are you sure you want to mark this expense as complete?",
+                    fontSize = 13.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = transaction.title,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = amountFormatted,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = Color(0xFF10B981)
+                            )
+                            Text(
+                                text = "Due: $dateFormatted",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (transaction.accountName.isNotEmpty() && transaction.accountName != "All Accounts") {
+                            Text(
+                                text = "Account: ${transaction.accountName}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.NotificationsActive,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                    )
+                    Text(
+                        text = "Any scheduled reminder alerts for this bill will be cancelled.",
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF10B981),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("confirm_mark_complete_button")
+            ) {
+                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Mark Complete", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("cancel_mark_complete_button")
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -1097,6 +1359,9 @@ fun EnterIncomeView(
     onDeleteIncome: (TransactionEntity) -> Unit,
     onEditIncome: (TransactionEntity) -> Unit = {},
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
+    onAddIncomeSource: ((String, Double, String) -> Unit)? = null,
+    onDeleteIncomeSource: ((IncomeSourceEntity) -> Unit)? = null,
+    onUpdateDefaultPaycheck: ((Double) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     val isDark = uiState.isDarkMode
@@ -1106,16 +1371,19 @@ fun EnterIncomeView(
     var selectedCategory by remember { mutableStateOf("Paycheck") }
     var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName) }
     var isRecurring by remember { mutableStateOf(false) }
+    var recurFrequency by remember { mutableStateOf("Bi-Weekly") }
     var isAutoPay by remember { mutableStateOf(false) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var isQuickInsertExpanded by remember { mutableStateOf(false) }
+    var showAddSourceDialog by remember { mutableStateOf(false) }
+    var showEditDefaultPaycheckDialog by remember { mutableStateOf(false) }
 
     var statusMessage by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
     var isSyncingSheets by remember { mutableStateOf(false) }
 
-    var filterScope by remember { mutableIntStateOf(2) } // 0 = All Rows, 1 = Full Month, 2 = Pay Cycle, 3 = Pay Week
+    var filterScope by remember { mutableIntStateOf(0) } // 0 = All Rows, 1 = Full Month, 2 = Pay Cycle, 3 = Pay Week
     var sortIncomeAscending by remember { mutableStateOf(false) } // false = Newest First, true = Oldest First
     var statusFilter by remember { mutableIntStateOf(0) } // 0 = All, 1 = Pending, 2 = Cleared
 
@@ -1360,6 +1628,8 @@ fun EnterIncomeView(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            var freqDropdownExpanded by remember { mutableStateOf(false) }
+
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -1376,7 +1646,41 @@ fun EnterIncomeView(
                                         .testTag("enter_income_recurring_checkbox")
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("Bi-Weekly", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF166534))
+                                Text("Recur", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF166534))
+                            }
+
+                            if (isRecurring) {
+                                Box {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (isDark) Color(0xFF047857) else Color(0xFFDCFCE7),
+                                        border = BorderStroke(1.dp, if (isDark) Color(0xFF10B981) else Color(0xFF86EFAC)),
+                                        modifier = Modifier.clickable { freqDropdownExpanded = true }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(recurFrequency, fontSize = 9.5.sp, fontWeight = FontWeight.ExtraBold, color = if (isDark) Color.White else Color(0xFF14532D))
+                                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (isDark) Color.White else Color(0xFF14532D))
+                                        }
+                                    }
+                                    DropdownMenu(
+                                        expanded = freqDropdownExpanded,
+                                        onDismissRequest = { freqDropdownExpanded = false }
+                                    ) {
+                                        listOf("Bi-Weekly", "Weekly", "Monthly", "Semi-Monthly").forEach { freq ->
+                                            DropdownMenuItem(
+                                                text = { Text(freq, fontSize = 12.sp, fontWeight = if (recurFrequency == freq) FontWeight.Bold else FontWeight.Normal) },
+                                                onClick = {
+                                                    recurFrequency = freq
+                                                    freqDropdownExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             Row(
@@ -1472,7 +1776,14 @@ fun EnterIncomeView(
                                         errorMessage = "Please enter a valid date (YYYY-MM-DD)."
                                         statusMessage = ""
                                     } else {
-                                        onAddIncome(t, amt, parsedDate, selectedCategory, isRecurring, selectedAccount, isAutoPay)
+                                        val freqSuffix = when (recurFrequency) {
+                                            "Weekly" -> " (Weekly)"
+                                            "Monthly" -> " (Monthly)"
+                                            "Semi-Monthly" -> " (Semi-Monthly)"
+                                            else -> ""
+                                        }
+                                        val finalCategory = if (isRecurring && freqSuffix.isNotEmpty() && !selectedCategory.contains("(")) "$selectedCategory$freqSuffix" else selectedCategory
+                                        onAddIncome(t, amt, parsedDate, finalCategory, isRecurring, selectedAccount, isAutoPay)
                                         filterScope = 0
                                         statusMessage = "✅ Added +${String.format(Locale.US, "%.2f", amt)} row to spreadsheet!"
                                         errorMessage = ""
@@ -1499,6 +1810,236 @@ fun EnterIncomeView(
                         }
                     }
                 }
+            }
+
+            // Recurring Paychecks & Income Streams summary banner
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = if (isDark) Color(0xFF132F23) else Color(0xFFECFDF5)),
+                border = BorderStroke(1.dp, if (isDark) Color(0xFF059669) else Color(0xFFA7F3D0))
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("💵", fontSize = 14.sp)
+                            Text(
+                                text = "Recurring Income Streams",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF065F46)
+                            )
+                        }
+
+                        if (onAddIncomeSource != null) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (isDark) Color(0xFF047857) else Color(0xFF10B981),
+                                modifier = Modifier.clickable { showAddSourceDialog = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text("+ Add Recurring Stream", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+
+                    // Display primary paycheck or income sources
+                    if (uiState.incomeSources.isEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Primary Paycheck (Every 14 Days)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Next payday: ${uiState.currentPayday}",
+                                    fontSize = 9.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "$%,.2f", uiState.defaultPaycheckAmount),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (isDark) Color(0xFF34D399) else Color(0xFF059669)
+                                )
+                                if (onUpdateDefaultPaycheck != null) {
+                                    IconButton(
+                                        onClick = { showEditDefaultPaycheckDialog = true },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit Paycheck", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        uiState.incomeSources.forEach { src ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = src.name,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = src.frequency,
+                                        fontSize = 9.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = String.format(Locale.US, "+$%,.2f", src.amount),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (isDark) Color(0xFF34D399) else Color(0xFF059669)
+                                    )
+                                    if (onDeleteIncomeSource != null) {
+                                        IconButton(
+                                            onClick = { onDeleteIncomeSource(src) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showAddSourceDialog && onAddIncomeSource != null) {
+                var newName by remember { mutableStateOf("") }
+                var newAmount by remember { mutableStateOf("") }
+                var newFreq by remember { mutableStateOf("Bi-Weekly") }
+                AlertDialog(
+                    onDismissRequest = { showAddSourceDialog = false },
+                    title = { Text("Add Recurring Income Stream", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedTextField(
+                                value = newName,
+                                onValueChange = { newName = it },
+                                label = { Text("Income Name / Employer") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = newAmount,
+                                onValueChange = { newAmount = it },
+                                label = { Text("Amount ($)") },
+                                prefix = { Text("$") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Column {
+                                Text("Frequency:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    listOf("Bi-Weekly", "Weekly", "Monthly").forEach { f ->
+                                        FilterChip(
+                                            selected = newFreq == f,
+                                            onClick = { newFreq = f },
+                                            label = { Text(f, fontSize = 11.sp) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val amt = newAmount.toDoubleOrNull()
+                                if (newName.isNotBlank() && amt != null && amt > 0.0) {
+                                    onAddIncomeSource(newName.trim(), amt, newFreq)
+                                    showAddSourceDialog = false
+                                }
+                            }
+                        ) {
+                            Text("Add Stream")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showAddSourceDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
+            if (showEditDefaultPaycheckDialog && onUpdateDefaultPaycheck != null) {
+                var editAmount by remember { mutableStateOf(String.format(Locale.US, "%.2f", uiState.defaultPaycheckAmount)) }
+                AlertDialog(
+                    onDismissRequest = { showEditDefaultPaycheckDialog = false },
+                    title = { Text("Edit Default Paycheck", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+                    text = {
+                        OutlinedTextField(
+                            value = editAmount,
+                            onValueChange = { editAmount = it },
+                            label = { Text("Default Paycheck Amount ($)") },
+                            prefix = { Text("$") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val amt = editAmount.toDoubleOrNull()
+                                if (amt != null && amt >= 0.0) {
+                                    onUpdateDefaultPaycheck(amt)
+                                    showEditDefaultPaycheckDialog = false
+                                }
+                            }
+                        ) {
+                            Text("Save")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEditDefaultPaycheckDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
             }
         }
     }
@@ -3206,53 +3747,9 @@ fun PayCyclesListView(
 ) {
     var isSyncingSheets by remember { mutableStateOf(false) }
     var statusFilter by remember { mutableIntStateOf(0) } // 0 = All, 1 = Pending, 2 = Cleared
-    var isCycleHealthExpanded by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-    var subSectionOrder by rememberSaveable { mutableStateOf(listOf("health", "cycles_list")) }
-    var isSubSectionReorderActive by rememberSaveable { mutableStateOf(false) }
-
-    val currentPeriod = remember(uiState.payPeriods, uiState.currentPayPeriodStart) {
-        uiState.payPeriods.find { it.startDate == uiState.currentPayPeriodStart }
-            ?: uiState.payPeriods.firstOrNull()
-    }
-
-    val activeAccSummary = uiState.accountBalances[uiState.activeAccountName]
-
-    val currentCycleStats = remember(currentPeriod, activeAccSummary, uiState.activeAccountName) {
-        if (currentPeriod == null && activeAccSummary == null) null
-        else {
-            val validTxs = currentPeriod?.transactions?.filter {
-                it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted")
-            } ?: emptyList()
-            val incomeTxsSum = validTxs.filter { it.isIncome }.sumOf { it.amount }
-
-            val startingCarryover = activeAccSummary?.carryoverFromPrevious ?: currentPeriod?.carryoverFromPrevious ?: 0.0
-            val paycheck = if (activeAccSummary != null) activeAccSummary.payPeriodIncome else maxOf(currentPeriod?.totalIncome ?: 0.0, incomeTxsSum, currentPeriod?.paycheckAmount ?: 0.0)
-            val clearedExpenses = activeAccSummary?.completedExpenses ?: validTxs.filter { it.isCompleted && !it.isIncome }.sumOf { it.amount }
-            val pendingExpenses = activeAccSummary?.pendingExpenses ?: validTxs.filter { !it.isCompleted && !it.isIncome }.sumOf { it.amount }
-            val totalExpenses = clearedExpenses + pendingExpenses
-            val totalAvailable = startingCarryover + paycheck
-            val safeToSpend = totalAvailable - totalExpenses
-            val clearedBalance = startingCarryover + paycheck - clearedExpenses
-            val progress = if (totalAvailable > 0) (totalExpenses / totalAvailable).coerceIn(0.0, 1.0).toFloat() else if (totalExpenses > 0) 1.0f else 0f
-
-            object {
-                val accountName = uiState.activeAccountName
-                val startingCarryover = startingCarryover
-                val paycheckAmount = paycheck
-                val totalAvailable = totalAvailable
-                val cleared = clearedExpenses
-                val pending = pendingExpenses
-                val total = totalExpenses
-                val remaining = safeToSpend
-                val clearedBalance = clearedBalance
-                val progressRatio = progress
-            }
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -3261,371 +3758,7 @@ fun PayCyclesListView(
             .testTag("pay_cycles_list"),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        if (isSubSectionReorderActive || subSectionOrder != listOf("health", "cycles_list")) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = if (isSubSectionReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(
-                            imageVector = if (isSubSectionReorderActive) Icons.Default.LockOpen else Icons.Default.Lock,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (isSubSectionReorderActive) "Sub-sections Unlocked • Move then Lock" else "Custom Sub-sections • Locked",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (isSubSectionReorderActive) {
-                            Button(
-                                onClick = { isSubSectionReorderActive = false },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                modifier = Modifier.height(26.dp)
-                            ) {
-                                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("Lock", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        } else {
-                            FilledTonalButton(
-                                onClick = { isSubSectionReorderActive = true },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                modifier = Modifier.height(26.dp)
-                            ) {
-                                Text("Unlock", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        TextButton(
-                            onClick = {
-                                subSectionOrder = listOf("health", "cycles_list")
-                                isSubSectionReorderActive = false
-                            },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                        ) {
-                            Text("Reset", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        subSectionOrder.forEachIndexed { index, subKey ->
-            when (subKey) {
-                "health" -> {
-                    if (currentCycleStats != null) {
-                        val isDark = uiState.isDarkMode
-                        val isOverBudget = currentCycleStats.remaining < 0
-                        val isNearLimit = !isOverBudget && currentCycleStats.progressRatio > 0.8f
-
-                        val badgeColor = when {
-                            isOverBudget -> Color(0xFFEF4444)
-                            isNearLimit -> Color(0xFFF59E0B)
-                            else -> Color(0xFF10B981)
-                        }
-                        val badgeText = when {
-                            isOverBudget -> "🔴 Over Budget"
-                            isNearLimit -> "🟡 Budget Nearing Limit"
-                            else -> "🟢 Healthy Budget"
-                        }
-
-                        MovableSectionWrapper(
-                            sectionKey = "cycle_health",
-                            sectionTitle = "Current Cycle Health & Safe-to-Spend",
-                            index = index,
-                            totalSections = subSectionOrder.size,
-                            isReordering = isSubSectionReorderActive,
-                            onToggleReorder = { isSubSectionReorderActive = !isSubSectionReorderActive },
-                            onMoveUp = {
-                                if (index > 0) {
-                                    val mutable = subSectionOrder.toMutableList()
-                                    val temp = mutable[index]
-                                    mutable[index] = mutable[index - 1]
-                                    mutable[index - 1] = temp
-                                    subSectionOrder = mutable
-                                }
-                            },
-                            onMoveDown = {
-                                if (index < subSectionOrder.size - 1) {
-                                    val mutable = subSectionOrder.toMutableList()
-                                    val temp = mutable[index]
-                                    mutable[index] = mutable[index + 1]
-                                    mutable[index + 1] = temp
-                                    subSectionOrder = mutable
-                                }
-                            },
-                            isSubSection = true
-                        ) {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("budget_health_card"),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isDark) Color(0xFF1E293B) else Color(0xFFF8FAFC)
-                                ),
-                                border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.5f)),
-                                shape = RoundedCornerShape(16.dp)
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(if (isCycleHealthExpanded) 12.dp else 0.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { isCycleHealthExpanded = !isCycleHealthExpanded },
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            modifier = Modifier.weight(1f, fill = false)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.DateRange,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                            Text(
-                                                text = "Current Cycle Health",
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Surface(
-                                                shape = RoundedCornerShape(8.dp),
-                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                            ) {
-                                                Text(
-                                                    text = uiState.activeAccountName,
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                                    maxLines = 1
-                                                )
-                                            }
-                                        }
-
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            if (!isCycleHealthExpanded) {
-                                                Text(
-                                                    text = String.format(Locale.US, "$%.2f safe", currentCycleStats.remaining),
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isOverBudget) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurface
-                                                )
-                                            }
-                                            Surface(
-                                                shape = RoundedCornerShape(20.dp),
-                                                color = badgeColor.copy(alpha = 0.15f)
-                                            ) {
-                                                Text(
-                                                    text = badgeText,
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = badgeColor,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                                )
-                                            }
-                                            IconButton(
-                                                onClick = { isCycleHealthExpanded = !isCycleHealthExpanded },
-                                                modifier = Modifier.size(24.dp).testTag("toggle_cycle_health_button")
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (isCycleHealthExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                                    contentDescription = if (isCycleHealthExpanded) "Collapse" else "Expand",
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    if (isCycleHealthExpanded) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.Bottom
-                                        ) {
-                                            Column {
-                                                Text(
-                                                    text = "Safe-to-Spend Balance",
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                Text(
-                                                    text = String.format(Locale.US, "$%.2f", currentCycleStats.remaining),
-                                                    fontSize = 24.sp,
-                                                    fontWeight = FontWeight.Black,
-                                                    color = if (isOverBudget) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurface
-                                                )
-                                                if (currentCycleStats.startingCarryover != 0.0) {
-                                                    Text(
-                                                        text = String.format(Locale.US, "Starting: $%.2f • Total Avail: $%.2f", currentCycleStats.startingCarryover, currentCycleStats.totalAvailable),
-                                                        fontSize = 10.sp,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                            Column(horizontalAlignment = Alignment.End) {
-                                                Text(
-                                                    text = "Commitment Ratio",
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                Text(
-                                                    text = String.format(Locale.US, "%.0f%% spent/committed", currentCycleStats.progressRatio * 100),
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = badgeColor
-                                                )
-                                            }
-                                        }
-
-                                        LinearProgressIndicator(
-                                            progress = { currentCycleStats.progressRatio },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(8.dp)
-                                                .clip(CircleShape),
-                                            color = badgeColor,
-                                            trackColor = if (uiState.isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
-                                        )
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            if (currentCycleStats.startingCarryover != 0.0) {
-                                                Surface(
-                                                    modifier = Modifier.weight(1f),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    color = if (uiState.isDarkMode) Color(0xFF0F172A) else Color.White,
-                                                    border = BorderStroke(1.dp, if (uiState.isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0))
-                                                ) {
-                                                    Column(
-                                                        modifier = Modifier.padding(8.dp),
-                                                        horizontalAlignment = Alignment.CenterHorizontally
-                                                    ) {
-                                                        Text("Starting", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                        Text(
-                                                            String.format(Locale.US, "$%.2f", currentCycleStats.startingCarryover),
-                                                            fontSize = 11.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = MaterialTheme.colorScheme.onSurface
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                            Surface(
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                color = if (uiState.isDarkMode) Color(0xFF0F172A) else Color.White,
-                                                border = BorderStroke(1.dp, if (uiState.isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0))
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.padding(8.dp),
-                                                    horizontalAlignment = Alignment.CenterHorizontally
-                                                ) {
-                                                    Text("Total Income", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                    Text(
-                                                        String.format(Locale.US, "$%.2f", currentCycleStats.paycheckAmount),
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFF10B981)
-                                                    )
-                                                }
-                                            }
-
-                                            Surface(
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                color = if (uiState.isDarkMode) Color(0xFF0F172A) else Color.White,
-                                                border = BorderStroke(1.dp, if (uiState.isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0))
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.padding(8.dp),
-                                                    horizontalAlignment = Alignment.CenterHorizontally
-                                                ) {
-                                                    Text("Cleared Paid", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                    Text(
-                                                        String.format(Locale.US, "$%.2f", currentCycleStats.cleared),
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.primary
-                                                    )
-                                                }
-                                            }
-
-                                            Surface(
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                color = if (uiState.isDarkMode) Color(0xFF0F172A) else Color.White,
-                                                border = BorderStroke(1.dp, if (uiState.isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0))
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.padding(8.dp),
-                                                    horizontalAlignment = Alignment.CenterHorizontally
-                                                ) {
-                                                    Text("Pending Bills", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                    Text(
-                                                        String.format(Locale.US, "$%.2f", currentCycleStats.pending),
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFFF59E0B)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                "cycles_list" -> {
-                    MovableSectionWrapper(
-                        sectionKey = "cycles_timeline_list",
-                        sectionTitle = "Pay Cycles List",
-                        index = index,
-                        totalSections = subSectionOrder.size,
-                        isReordering = isSubSectionReorderActive,
-                        onToggleReorder = { isSubSectionReorderActive = !isSubSectionReorderActive },
-                        onMoveUp = {
-                            if (index > 0) {
-                                val mutable = subSectionOrder.toMutableList()
-                                val temp = mutable[index]
-                                mutable[index] = mutable[index - 1]
-                                mutable[index - 1] = temp
-                                subSectionOrder = mutable
-                            }
-                        },
-                        onMoveDown = {
-                            if (index < subSectionOrder.size - 1) {
-                                val mutable = subSectionOrder.toMutableList()
-                                val temp = mutable[index]
-                                mutable[index] = mutable[index + 1]
-                                mutable[index + 1] = temp
-                                subSectionOrder = mutable
-                            }
-                        },
-                        isSubSection = true
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             if (uiState.payPeriods.isEmpty()) {
                                 Box(
                                     modifier = Modifier
@@ -3786,10 +3919,6 @@ fun PayCyclesListView(
                                 }
                             }
                         }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -5250,6 +5379,10 @@ fun SettingsView(
     var loginEmailInput by remember { mutableStateOf(uiState.driveAccountEmail ?: "86brancan@gmail.com") }
     var showAdvancedOAuth by remember { mutableStateOf(false) }
     var themeCardExpanded by remember { mutableStateOf(false) }
+    var payScheduleExpanded by remember { mutableStateOf(true) }
+    var showAddIncomeSourceDialog by remember { mutableStateOf(false) }
+    var showEditAnchorDialog by remember { mutableStateOf(false) }
+    var showEditDefaultPaycheckDialog by remember { mutableStateOf(false) }
     var driveSyncExpanded by remember { mutableStateOf(false) }
     var sheetsSyncExpanded by remember { mutableStateOf(false) }
     var backupExpanded by remember { mutableStateOf(false) }
@@ -5520,6 +5653,395 @@ fun SettingsView(
                     TextButton(onClick = { showAuthorizeDriveDialog = false }) {
                         Text("Cancel")
                     }
+                }
+            }
+        )
+    }
+
+    val cardPaySchedule: @Composable () -> Unit = {
+        // --- Card: Pay Schedule & Recurring Income ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { payScheduleExpanded = !payScheduleExpanded },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF10B981).copy(alpha = 0.15f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("💵", fontSize = 18.sp)
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "Pay Schedule & Recurring Income",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Next Payday: ${uiState.currentPayday}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    IconButton(onClick = { payScheduleExpanded = !payScheduleExpanded }) {
+                        Icon(
+                            imageVector = if (payScheduleExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (payScheduleExpanded) "Collapse" else "Expand"
+                        )
+                    }
+                }
+
+                if (payScheduleExpanded) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // Anchor Payday row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Anchor Payday Date",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Reference date for 14-day pay cycle: ${uiState.anchorPayday}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { showEditAnchorDialog = true },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("Change Date", fontSize = 12.sp)
+                        }
+                    }
+
+                    // Default Paycheck row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Default Paycheck Amount",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Base bi-weekly deposit for cycles",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = String.format(Locale.US, "$%,.2f", uiState.defaultPaycheckAmount),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF10B981)
+                            )
+                            IconButton(
+                                onClick = { showEditDefaultPaycheckDialog = true },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "Edit default paycheck", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    // Recurring Income Streams section
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Recurring Income Streams",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (uiState.incomeSources.isEmpty())
+                                    "Using primary paycheck only. Add side gigs, salary, or secondary jobs."
+                                else
+                                    "${uiState.incomeSources.size} recurring stream(s) configured",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(
+                            onClick = { showAddIncomeSourceDialog = true },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("+ Add Stream", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (uiState.incomeSources.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            uiState.incomeSources.forEach { source ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                text = source.name,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                            ) {
+                                                Text(
+                                                    text = source.frequency,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color(0xFF047857),
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = String.format(Locale.US, "+$%,.2f", source.amount),
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 14.sp,
+                                                color = Color(0xFF10B981)
+                                            )
+                                            IconButton(
+                                                onClick = { onDeleteIncomeSource(source) },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete income source",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showEditAnchorDialog) {
+        var anchorInput by remember { mutableStateOf(uiState.anchorPayday.toString()) }
+        var anchorError by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showEditAnchorDialog = false },
+            title = { Text("Change Anchor Payday", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Set the reference date from which all 14-day bi-weekly pay cycles and pay weeks are calculated.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    DatePickerTextField(
+                        value = anchorInput,
+                        onValueChange = { anchorInput = it; anchorError = "" },
+                        label = { Text("Anchor Date (YYYY-MM-DD)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (anchorError.isNotEmpty()) {
+                        Text(anchorError, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = try { LocalDate.parse(anchorInput.trim()) } catch (e: Exception) { null }
+                        if (parsed != null) {
+                            onUpdateAnchorDay(parsed)
+                            showEditAnchorDialog = false
+                        } else {
+                            anchorError = "Please enter a valid date (YYYY-MM-DD)"
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditAnchorDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showEditDefaultPaycheckDialog) {
+        var defaultPaycheckInput by remember { mutableStateOf(String.format(Locale.US, "%.2f", uiState.defaultPaycheckAmount)) }
+        var defaultPaycheckError by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showEditDefaultPaycheckDialog = false },
+            title = { Text("Edit Default Paycheck", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Enter your standard bi-weekly paycheck deposit amount.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = defaultPaycheckInput,
+                        onValueChange = { defaultPaycheckInput = it; defaultPaycheckError = "" },
+                        label = { Text("Amount ($)") },
+                        prefix = { Text("$") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (defaultPaycheckError.isNotEmpty()) {
+                        Text(defaultPaycheckError, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = defaultPaycheckInput.toDoubleOrNull()
+                        if (parsed != null && parsed >= 0.0) {
+                            onUpdateDefaultPaycheck(parsed)
+                            showEditDefaultPaycheckDialog = false
+                        } else {
+                            defaultPaycheckError = "Please enter a valid amount"
+                        }
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditDefaultPaycheckDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showAddIncomeSourceDialog) {
+        var sourceName by remember { mutableStateOf("") }
+        var sourceAmount by remember { mutableStateOf("") }
+        var sourceFreq by remember { mutableStateOf("Bi-Weekly") }
+        var sourceError by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddIncomeSourceDialog = false },
+            title = { Text("Add Recurring Income Stream", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = sourceName,
+                        onValueChange = { sourceName = it; sourceError = "" },
+                        label = { Text("Stream Name (e.g. Salary, Side Gig)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sourceAmount,
+                        onValueChange = { sourceAmount = it; sourceError = "" },
+                        label = { Text("Amount ($)") },
+                        prefix = { Text("$") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Column {
+                        Text("Frequency:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("Bi-Weekly", "Weekly", "Monthly").forEach { f ->
+                                FilterChip(
+                                    selected = sourceFreq == f,
+                                    onClick = { sourceFreq = f },
+                                    label = { Text(f, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+                    if (sourceError.isNotEmpty()) {
+                        Text(sourceError, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = sourceAmount.toDoubleOrNull()
+                        if (sourceName.isBlank()) {
+                            sourceError = "Please enter a stream name"
+                        } else if (parsed == null || parsed <= 0.0) {
+                            sourceError = "Please enter a valid amount"
+                        } else {
+                            onAddIncomeSource(sourceName.trim(), parsed, sourceFreq)
+                            showAddIncomeSourceDialog = false
+                        }
+                    }
+                ) {
+                    Text("Add Stream")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddIncomeSourceDialog = false }) {
+                    Text("Cancel")
                 }
             }
         )
@@ -7206,6 +7728,7 @@ fun SettingsView(
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    cardPaySchedule()
                     cardRemindersAndThemes()
                     cardWebCompanion()
                     cardDangerZone()
@@ -7217,6 +7740,7 @@ fun SettingsView(
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                cardPaySchedule()
                 cardRemindersAndThemes()
                 cardWebCompanion()
                 cardDriveSync()
@@ -7242,6 +7766,7 @@ fun AddTransactionDialog(
     var selectedCategory by remember { mutableStateOf("Groceries") }
     var isIncome by remember { mutableStateOf(false) }
     var isRecurring by remember { mutableStateOf(false) }
+    var recurFrequency by remember { mutableStateOf("Bi-Weekly") }
     var isAutoPay by remember { mutableStateOf(false) }
     var selectedAccount by remember { mutableStateOf(if (initialAccountName == "All Accounts") (allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account") else initialAccountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
@@ -7435,11 +7960,36 @@ fun AddTransactionDialog(
                         )
                     }
                     Text(
-                        text = if (isIncome) "Recur bi-weekly (every 14 days)" else "Recur monthly on this day",
+                        text = if (isIncome) "Recur automatically" else "Recur monthly on this day",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                }
+
+                if (isRecurring && isIncome) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "Recurrence Frequency:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("Bi-Weekly", "Weekly", "Monthly", "Semi-Monthly").forEach { f ->
+                                FilterChip(
+                                    selected = recurFrequency == f,
+                                    onClick = { recurFrequency = f },
+                                    label = { Text(f, fontSize = 10.5.sp) }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Auto Pay Checkbox Toggle Row
@@ -7504,7 +8054,12 @@ fun AddTransactionDialog(
                     } else if (dateParsed == null) {
                         errorMsg = "Please enter a valid date (YYYY-MM-DD)."
                     } else {
-                        onConfirm(title, amt, dateParsed, if (isIncome) "Income" else "Expense", isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore)
+                        val finalCategory = if (isIncome) {
+                            if (isRecurring && recurFrequency != "Bi-Weekly") "Income ($recurFrequency)" else "Income"
+                        } else {
+                            selectedCategory
+                        }
+                        onConfirm(title, amt, dateParsed, finalCategory, isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore)
                     }
                 },
                 modifier = Modifier.testTag("save_transaction_button")
@@ -7535,6 +8090,16 @@ fun EditTransactionDialog(
     var selectedCategory by remember { mutableStateOf(transaction.category.ifEmpty { "Groceries" }) }
     var isIncome by remember { mutableStateOf(transaction.isIncome) }
     var isRecurring by remember { mutableStateOf(transaction.isRecurring) }
+    var recurFrequency by remember {
+        mutableStateOf(
+            when {
+                transaction.category.contains("Weekly", ignoreCase = true) && !transaction.category.contains("Bi-Weekly", ignoreCase = true) -> "Weekly"
+                transaction.category.contains("Monthly", ignoreCase = true) && !transaction.category.contains("Semi-Monthly", ignoreCase = true) -> "Monthly"
+                transaction.category.contains("Semi-Monthly", ignoreCase = true) -> "Semi-Monthly"
+                else -> "Bi-Weekly"
+            }
+        )
+    }
     var isAutoPay by remember { mutableStateOf(transaction.isAutoPay) }
     var selectedAccount by remember { mutableStateOf(if (transaction.accountName.isEmpty() || transaction.accountName == "All Accounts") (allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account") else transaction.accountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
@@ -7746,11 +8311,36 @@ fun EditTransactionDialog(
                         )
                     }
                     Text(
-                        text = if (isIncome) "Recur bi-weekly (every 14 days)" else "Recur monthly on this day",
+                        text = if (isIncome) "Recur automatically" else "Recur monthly on this day",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                }
+
+                if (isRecurring && isIncome) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "Recurrence Frequency:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("Bi-Weekly", "Weekly", "Monthly", "Semi-Monthly").forEach { f ->
+                                FilterChip(
+                                    selected = recurFrequency == f,
+                                    onClick = { recurFrequency = f },
+                                    label = { Text(f, fontSize = 10.5.sp) }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Auto Pay Checkbox Toggle Row
@@ -7815,11 +8405,16 @@ fun EditTransactionDialog(
                     } else if (dateParsed == null) {
                         errorMsg = "Please enter a valid date (YYYY-MM-DD)."
                     } else {
+                        val finalCat = if (isIncome) {
+                            if (isRecurring && recurFrequency != "Bi-Weekly") "Income ($recurFrequency)" else "Income"
+                        } else {
+                            selectedCategory
+                        }
                         val updatedTx = transaction.copy(
                             title = title,
                             amount = amt,
                             dateMillis = DateUtils.localDateToMillis(dateParsed),
-                            category = if (isIncome) "Income" else "Expense",
+                            category = finalCat,
                             isIncome = isIncome,
                             isRecurring = isRecurring,
                             isAutoPay = isAutoPay,

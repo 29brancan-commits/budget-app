@@ -183,15 +183,17 @@ class BillReminderReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Action: Mark complete directly from notification
-        val markCompleteIntent = Intent(context, BillReminderReceiver::class.java).apply {
-            action = ACTION_MARK_COMPLETE
-            putExtra(BillReminderScheduler.EXTRA_BILL_ID, billId)
-            putExtra(BillReminderScheduler.EXTRA_ORIGINAL_ID, originalId)
-            putExtra(BillReminderScheduler.EXTRA_IS_TX, isTx)
-            putExtra(BillReminderScheduler.EXTRA_TITLE, title)
+        // Action: Mark complete with confirmation dialog in app
+        val markCompleteIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("confirm_complete_bill_id", billId)
+            putExtra("confirm_complete_tx_id", originalId)
+            putExtra("confirm_complete_is_tx", isTx)
+            putExtra("confirm_complete_title", title)
+            putExtra("confirm_complete_amount", amount)
+            putExtra("confirm_complete_due_date", dueDate)
         }
-        val markCompletePendingIntent = PendingIntent.getBroadcast(
+        val markCompletePendingIntent = PendingIntent.getActivity(
             context,
             billId + 500000,
             markCompleteIntent,

@@ -62,7 +62,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     private val _lastDriveSyncTime = MutableStateFlow<String?>(null)
     val lastDriveSyncTime: StateFlow<String?> = _lastDriveSyncTime.asStateFlow()
 
-    private val _isDriveAutoSyncEnabled = MutableStateFlow<Boolean>(true)
+    private val _isDriveAutoSyncEnabled = MutableStateFlow<Boolean>(false)
     val isDriveAutoSyncEnabled: StateFlow<Boolean> = _isDriveAutoSyncEnabled.asStateFlow()
 
     // Undo Stack & Event
@@ -193,14 +193,59 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         // Dynamically project recurring transactions to every month after the initial input date (income = bi-weekly +14d, expense = monthly)
         val futureHorizonMonth = if (month.plusMonths(24) > YearMonth.now().plusMonths(36)) month.plusMonths(24) else YearMonth.now().plusMonths(36)
         val futureHorizonDate = futureHorizonMonth.atEndOfMonth()
+        val horizonStartDate = minOf(anchor.minusMonths(12), month.minusMonths(12).atDay(1))
 
-        val expandedTransactions = transactions.flatMap { tx ->
+        val expandedTransactions = mutableListOf<TransactionEntity>()
+
+        // 1. Process explicit database transactions and expand recurring items
+        transactions.forEach { tx ->
+            expandedTransactions.add(tx)
+
             if (tx.isRecurring) {
                 val origDate = DateUtils.millisToLocalDate(tx.dateMillis)
-                val list = mutableListOf(tx)
+                val catAndTitle = (tx.category + " " + tx.title).lowercase(java.util.Locale.US)
+                val isWeekly = catAndTitle.contains("weekly") && !catAndTitle.contains("bi-weekly") && !catAndTitle.contains("biweekly")
+                val isMonthly = !isWeekly && (!tx.isIncome || catAndTitle.contains("monthly")) && !catAndTitle.contains("semi-monthly") && !catAndTitle.contains("semimonthly")
+                val isSemiMonthly = catAndTitle.contains("semi-monthly") || catAndTitle.contains("semimonthly")
+
                 if (tx.isIncome) {
-                    var nextDate = origDate.plusDays(14)
-                    while (!nextDate.isAfter(futureHorizonDate)) {
+                    val projectedDates = mutableListOf<LocalDate>()
+                    when {
+                        isWeekly -> {
+                            var d = origDate.plusDays(7)
+                            while (!d.isAfter(futureHorizonDate)) {
+                                projectedDates.add(d)
+                                d = d.plusDays(7)
+                            }
+                        }
+                        isSemiMonthly -> {
+                            var m = YearMonth.from(origDate)
+                            while (!m.isAfter(futureHorizonMonth)) {
+                                val d1 = m.atDay(1)
+                                val d15 = m.atDay(15)
+                                if (d1.isAfter(origDate)) projectedDates.add(d1)
+                                if (d15.isAfter(origDate)) projectedDates.add(d15)
+                                m = m.plusMonths(1)
+                            }
+                        }
+                        isMonthly -> {
+                            var m = YearMonth.from(origDate).plusMonths(1)
+                            while (!m.isAfter(futureHorizonMonth)) {
+                                val day = minOf(origDate.dayOfMonth, m.lengthOfMonth())
+                                projectedDates.add(m.atDay(day))
+                                m = m.plusMonths(1)
+                            }
+                        }
+                        else -> { // Bi-Weekly default (+14 days)
+                            var d = origDate.plusDays(14)
+                            while (!d.isAfter(futureHorizonDate)) {
+                                projectedDates.add(d)
+                                d = d.plusDays(14)
+                            }
+                        }
+                    }
+
+                    for (nextDate in projectedDates) {
                         val nextMillis = DateUtils.localDateToMillis(nextDate)
                         val alreadyExists = transactions.any { existing ->
                             (existing.title.equals(tx.title, ignoreCase = true) ||
@@ -209,9 +254,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                              (existing.id > 0 && existing.id == tx.id)) &&
                                     DateUtils.millisToLocalDate(existing.dateMillis) == nextDate
                         }
-                        if (!alreadyExists) {
+                        val alreadyInList = expandedTransactions.any { existing ->
+                            existing.title.equals(tx.title, ignoreCase = true) &&
+                                    DateUtils.millisToLocalDate(existing.dateMillis) == nextDate
+                        }
+                        if (!alreadyExists && !alreadyInList) {
                             val synthId = -(Math.abs((tx.id.toString() + "_inc_" + nextDate.toString()).hashCode()) + 10000)
-                            list.add(
+                            expandedTransactions.add(
                                 tx.copy(
                                     id = synthId,
                                     dateMillis = nextMillis,
@@ -219,10 +268,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                 )
                             )
                         }
-                        nextDate = nextDate.plusDays(14)
                     }
-                    list
                 } else {
+                    // Recurring Expense: monthly projection
                     val origMonth = YearMonth.from(origDate)
                     var targetMonth = origMonth.plusMonths(1)
                     while (!targetMonth.isAfter(futureHorizonMonth)) {
@@ -237,9 +285,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                              (existing.id > 0 && existing.id == tx.id)) &&
                                     DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate
                         }
-                        if (!alreadyExists) {
+                        val alreadyInList = expandedTransactions.any { existing ->
+                            existing.title.equals(tx.title, ignoreCase = true) &&
+                                    DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate
+                        }
+                        if (!alreadyExists && !alreadyInList) {
                             val synthId = -(Math.abs((tx.id.toString() + "_exp_" + projectedDate.toString()).hashCode()) + 10000)
-                            list.add(
+                            expandedTransactions.add(
                                 tx.copy(
                                     id = synthId,
                                     dateMillis = projectedMillis,
@@ -249,10 +301,116 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         targetMonth = targetMonth.plusMonths(1)
                     }
-                    list
                 }
-            } else {
-                listOf(tx)
+            }
+        }
+
+        // 2. Project defined Recurring Income Sources (incomeSources) into transactions
+        if (incomeSources.isNotEmpty()) {
+            incomeSources.forEach { src ->
+                val freq = src.frequency.lowercase(java.util.Locale.US).trim()
+                val dates = mutableListOf<LocalDate>()
+                when {
+                    freq == "weekly" -> {
+                        var d = anchor
+                        while (d.isAfter(horizonStartDate)) d = d.minusDays(7)
+                        while (!d.isAfter(futureHorizonDate)) {
+                            if (!d.isBefore(horizonStartDate)) dates.add(d)
+                            d = d.plusDays(7)
+                        }
+                    }
+                    freq == "monthly" -> {
+                        var m = YearMonth.from(horizonStartDate)
+                        val endM = YearMonth.from(futureHorizonDate)
+                        val day = minOf(anchor.dayOfMonth, 28)
+                        while (!m.isAfter(endM)) {
+                            dates.add(m.atDay(minOf(day, m.lengthOfMonth())))
+                            m = m.plusMonths(1)
+                        }
+                    }
+                    freq in listOf("semi-monthly", "semimonthly") -> {
+                        var m = YearMonth.from(horizonStartDate)
+                        val endM = YearMonth.from(futureHorizonDate)
+                        while (!m.isAfter(endM)) {
+                            dates.add(m.atDay(1))
+                            dates.add(m.atDay(15))
+                            m = m.plusMonths(1)
+                        }
+                    }
+                    else -> { // bi-weekly (default)
+                        var d = anchor
+                        while (d.isAfter(horizonStartDate)) d = d.minusDays(14)
+                        while (!d.isAfter(futureHorizonDate)) {
+                            if (!d.isBefore(horizonStartDate)) dates.add(d)
+                            d = d.plusDays(14)
+                        }
+                    }
+                }
+
+                for (d in dates) {
+                    val alreadyInDb = transactions.any { existing ->
+                        (existing.title.equals(src.name, ignoreCase = true) ||
+                         existing.title.equals("Cancelled " + src.name, ignoreCase = true) ||
+                         existing.title.contains("Cancelled " + src.name, ignoreCase = true) ||
+                         (existing.isIncome && existing.category == "Paycheck" && (src.name.contains("Paycheck", ignoreCase = true) || src.name.contains("Salary", ignoreCase = true)))) &&
+                                DateUtils.millisToLocalDate(existing.dateMillis) == d
+                    }
+                    val alreadyInList = expandedTransactions.any { existing ->
+                        existing.title.equals(src.name, ignoreCase = true) &&
+                                DateUtils.millisToLocalDate(existing.dateMillis) == d
+                    }
+                    if (!alreadyInDb && !alreadyInList) {
+                        val synthId = -(Math.abs(("inc_src_" + src.id + "_" + src.name + "_" + d.toString()).hashCode()) + 20000)
+                        expandedTransactions.add(
+                            TransactionEntity(
+                                id = synthId,
+                                title = src.name,
+                                amount = src.amount,
+                                dateMillis = DateUtils.localDateToMillis(d),
+                                category = "Paycheck",
+                                isIncome = true,
+                                isRecurring = true,
+                                accountName = "Primary Account",
+                                isCompleted = false,
+                                isAutoPay = true
+                            )
+                        )
+                    }
+                }
+            }
+        } else {
+            // 3. Fallback: Default recurring paycheck projected every 14 days on paydays
+            var cPayday = anchor
+            while (cPayday.isAfter(horizonStartDate)) cPayday = cPayday.minusDays(14)
+            while (!cPayday.isAfter(futureHorizonDate)) {
+                if (!cPayday.isBefore(horizonStartDate)) {
+                    val alreadyInDb = transactions.any { existing ->
+                        (existing.isIncome && (existing.category == "Paycheck" || existing.title.contains("Paycheck", ignoreCase = true) || existing.title.contains("Salary", ignoreCase = true)) ||
+                         existing.title.equals("Cancelled Paycheck", ignoreCase = true)) &&
+                                DateUtils.millisToLocalDate(existing.dateMillis) == cPayday
+                    }
+                    val alreadyInList = expandedTransactions.any { existing ->
+                        existing.isIncome && DateUtils.millisToLocalDate(existing.dateMillis) == cPayday
+                    }
+                    if (!alreadyInDb && !alreadyInList) {
+                        val synthId = -(Math.abs(("def_paycheck_" + cPayday.toString()).hashCode()) + 30000)
+                        expandedTransactions.add(
+                            TransactionEntity(
+                                id = synthId,
+                                title = "Paycheck",
+                                amount = defaultAmount,
+                                dateMillis = DateUtils.localDateToMillis(cPayday),
+                                category = "Paycheck",
+                                isIncome = true,
+                                isRecurring = true,
+                                accountName = "Primary Account",
+                                isCompleted = false,
+                                isAutoPay = true
+                            )
+                        )
+                    }
+                }
+                cPayday = cPayday.plusDays(14)
             }
         }
 
@@ -663,10 +821,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             // Seed default income and expense transactions if database is fresh/empty
             seedDefaultTransactionsIfEmpty()
 
-            // Auto-sync with Google Drive/Cloud on app open (automatically syncs data across web and mobile)
-            performDriveSync()
-
-            // Observe transaction, planned expense, and account changes to automatically update Home Screen Widget, Bill Reminders, and Cloud Sync
+            // Observe transaction, planned expense, and account changes to automatically update Home Screen Widget and Bill Reminders
             viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 combine(repository.allTransactions, repository.allPlannedExpenses, _activeAccountName) { transactions, plannedExpenses, _ ->
                     Pair(transactions, plannedExpenses)
@@ -675,22 +830,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     .collect { (transactions, plannedExpenses) ->
                         com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
                         com.example.notification.BillReminderScheduler.rescheduleAll(getApplication(), plannedExpenses, transactions)
-                        markLocalDataChanged()
-                        if (_isDriveAutoSyncEnabled.value && _driveAccountEmail.value != null) {
-                            kotlinx.coroutines.delay(1000L)
-                            performDriveSync()
-                        }
                     }
-            }
-
-            // Periodic background sync loop every 10 minutes to conserve battery on Samsung & Android devices
-            viewModelScope.launch {
-                while (isActive) {
-                    kotlinx.coroutines.delay(600000L)
-                    if (_isDriveAutoSyncEnabled.value && _driveAccountEmail.value != null && _syncState.value !is com.example.sync.SyncState.Syncing) {
-                        performDriveSync()
-                    }
-                }
             }
         }
     }
@@ -1115,7 +1255,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             val newStatus = !prevStatus
             if (!existsInDb) {
                 // Synthetic / projected transaction: create real transaction record in DB with toggled completion
-                val newEntity = transaction.copy(id = 0, isCompleted = newStatus)
+                val newEntity = transaction.copy(id = 0, isCompleted = newStatus, isRecurring = false)
                 repository.insertTransaction(newEntity)
                 if (newStatus) {
                     com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
@@ -1224,39 +1364,27 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
             if (transaction.id < 0) {
                 // Synthetic / Scheduled transaction
-                if (transaction.category == "Paycheck" || transaction.isIncome) {
-                    val payday = DateUtils.millisToLocalDate(transaction.dateMillis)
-                    val prevPaycheck = repository.allTransactions.first().firstOrNull {
-                        it.category == "Paycheck" && DateUtils.millisToLocalDate(it.dateMillis) == payday
-                    }?.amount ?: _defaultPaycheckAmount.value
-                    saveOrUpdatePaycheck(payday, 0.0)
-                    pushUndoAction(
-                        title = "Delete Paycheck",
-                        description = "Deleted paycheck on $payday"
-                    ) {
-                        saveOrUpdatePaycheck(payday, prevPaycheck)
+                val cleanTitle = transaction.title.replace(" (Planned)", "")
+                val cancelledTitle = if (cleanTitle.startsWith("Cancelled ")) cleanTitle else "Cancelled " + cleanTitle
+                val cancelled = TransactionEntity(
+                    title = cancelledTitle,
+                    amount = 0.0,
+                    dateMillis = transaction.dateMillis,
+                    category = transaction.category,
+                    isIncome = transaction.isIncome,
+                    accountName = if (transaction.accountName.isBlank()) "Primary Account" else transaction.accountName
+                )
+                repository.insertTransaction(cancelled)
+                pushUndoAction(
+                    title = "Delete ${transaction.title}",
+                    description = "Deleted ${transaction.title}"
+                ) {
+                    val all = repository.allTransactions.first()
+                    val match = all.firstOrNull {
+                        it.title == cancelled.title && it.dateMillis == cancelled.dateMillis
                     }
-                } else {
-                    val cancelled = TransactionEntity(
-                        title = "Cancelled " + transaction.title.replace(" (Planned)", ""),
-                        amount = 0.0,
-                        dateMillis = transaction.dateMillis,
-                        category = transaction.category,
-                        isIncome = false,
-                        accountName = if (transaction.accountName.isBlank()) "Primary Account" else transaction.accountName
-                    )
-                    repository.insertTransaction(cancelled)
-                    pushUndoAction(
-                        title = "Delete ${transaction.title}",
-                        description = "Deleted ${transaction.title}"
-                    ) {
-                        val all = repository.allTransactions.first()
-                        val match = all.firstOrNull {
-                            it.title == cancelled.title && it.dateMillis == cancelled.dateMillis
-                        }
-                        if (match != null) {
-                            repository.deleteTransaction(match)
-                        }
+                    if (match != null) {
+                        repository.deleteTransaction(match)
                     }
                 }
             } else {
@@ -1909,14 +2037,10 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val json = org.json.JSONObject(jsonStr)
 
-                if (isRemoteNewer) {
-                    repository.clearAllData()
-                }
-
-                val existingTxList = if (isRemoteNewer) emptyList() else repository.allTransactions.first()
-                val existingIncList = if (isRemoteNewer) emptyList() else repository.allIncomeSources.first()
-                val existingExpList = if (isRemoteNewer) emptyList() else repository.allPlannedExpenses.first()
-                val existingDebtList = if (isRemoteNewer) emptyList() else repository.allDebts.first()
+                val existingTxList = repository.allTransactions.first()
+                val existingIncList = repository.allIncomeSources.first()
+                val existingExpList = repository.allPlannedExpenses.first()
+                val existingDebtList = repository.allDebts.first()
 
                 // Insert/merge transactions
                 if (json.has("transactions")) {
@@ -1959,7 +2083,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         val obj = array.getJSONObject(i)
                         val key = obj.getString("key")
                         val value = obj.getString("value")
-                        repository.saveSetting(key, value)
+                        if (key != "last_local_update_time") {
+                            repository.saveSetting(key, value)
+                        }
 
                         when (key) {
                             "active_account_name" -> activeAccChanged = value
@@ -2794,6 +2920,7 @@ data class BudgetUiState(
     val lastUndoDescription: String? = null
 ) {
     val debts: List<DebtEntity> get() = allDebts
+    val currentPayday: LocalDate get() = currentPayPeriodStart
     val currentPayPeriod: PayPeriod?
         get() = payPeriods.firstOrNull { it.startDate == currentPayPeriodStart } ?: payPeriods.firstOrNull()
 }
