@@ -51,7 +51,8 @@ class CurrentPayCycleRemoteViewsFactory(
                 val allTransactions: List<TransactionEntity> = dao.getAllTransactions().first()
                 val plannedExpenses: List<PlannedExpenseEntity> = dao.getAllPlannedExpenses().first()
                 
-                val globalDefault = dao.getSetting("active_account_name")?.value ?: "Primary Account"
+                val rawGlobal = dao.getSetting("active_account_name")?.value
+                val globalDefault = if (rawGlobal.isNullOrBlank() || rawGlobal.equals("Primary Account", ignoreCase = true) || rawGlobal.equals("Primary", ignoreCase = true)) "All Accounts" else rawGlobal
                 val chosenAccount = if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
                     PayCycleWidgetPrefs.getSelectedAccount(context, appWidgetId, globalDefault)
                 } else {
@@ -107,7 +108,7 @@ class CurrentPayCycleRemoteViewsFactory(
         )
 
         // Account label
-        val accText = if (expense.accountName.isNotBlank() && expense.accountName != "Primary Account") {
+        val accText = if (expense.accountName.isNotBlank() && !expense.accountName.equals("Primary Account", ignoreCase = true) && !expense.accountName.equals("Primary", ignoreCase = true)) {
             "• ${expense.accountName}"
         } else {
             ""

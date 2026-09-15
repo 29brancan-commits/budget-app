@@ -315,11 +315,13 @@ fun AiNaturalLanguageQuickEntryDialog(
                             ) {
                                 Column {
                                     Text("Date:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(editDate.format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                    Text(editDate.format(DateTimeFormatter.ofPattern("MMM d", Locale.US)), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text("Category:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(editCategory, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                    val (catParent, _) = com.example.CategoryTheme.parseCategory(editCategory)
+                                    val catEmoji = com.example.CategoryTheme.getEmoji(editCategory)
+                                    Text("$catEmoji $catParent", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
 

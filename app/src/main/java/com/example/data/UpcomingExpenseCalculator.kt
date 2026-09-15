@@ -37,7 +37,7 @@ object UpcomingExpenseCalculator {
     fun getExpensesForCurrentAndUpcomingCycles(
         allTransactions: List<TransactionEntity>,
         plannedExpenses: List<PlannedExpenseEntity>,
-        activeAccountName: String = "Primary Account",
+        activeAccountName: String = "All Accounts",
         anchor: LocalDate = LocalDate.of(2026, 7, 30),
         today: LocalDate = LocalDate.now()
     ): CycleExpensesBundle {
@@ -77,7 +77,7 @@ object UpcomingExpenseCalculator {
     fun getUpcomingExpenses(
         allTransactions: List<TransactionEntity>,
         plannedExpenses: List<PlannedExpenseEntity>,
-        activeAccountName: String = "Primary Account",
+        activeAccountName: String = "All Accounts",
         today: LocalDate = LocalDate.now(),
         payPeriodStart: LocalDate? = null,
         payPeriodEnd: LocalDate? = null
@@ -85,7 +85,6 @@ object UpcomingExpenseCalculator {
         fun isAccountMatching(acc: String): Boolean {
             if (activeAccountName == "All Accounts" || acc.isBlank()) return true
             if (acc.equals(activeAccountName, ignoreCase = true)) return true
-            if (activeAccountName == "Primary Account" && (acc.contains("Primary", ignoreCase = true) || acc.isBlank())) return true
             return false
         }
 
@@ -114,7 +113,7 @@ object UpcomingExpenseCalculator {
                             amount = tx.amount,
                             dueDate = date,
                             category = tx.category.ifEmpty { "Expense" },
-                            accountName = tx.accountName.ifEmpty { "Primary Account" },
+                            accountName = tx.accountName,
                             isTransaction = true,
                             isAutoPay = tx.isAutoPay,
                             transactionRef = tx
@@ -155,7 +154,7 @@ object UpcomingExpenseCalculator {
                                     amount = tx.amount,
                                     dueDate = projDate,
                                     category = tx.category.ifEmpty { "Expense" },
-                                    accountName = tx.accountName.ifEmpty { "Primary Account" },
+                                    accountName = tx.accountName,
                                     isTransaction = false,
                                     isAutoPay = tx.isAutoPay,
                                     transactionRef = tx
@@ -205,7 +204,7 @@ object UpcomingExpenseCalculator {
                                         amount = bill.minAmount,
                                         dueDate = dueDateInMonth,
                                         category = "Planned Bill",
-                                        accountName = bill.targetAccount.ifEmpty { "Primary Account" },
+                                        accountName = bill.targetAccount,
                                         isTransaction = false,
                                         isAutoPay = bill.isAutoPay,
                                         plannedExpenseRef = bill
@@ -222,7 +221,7 @@ object UpcomingExpenseCalculator {
                                             amount = matchingTx.amount,
                                             dueDate = DateUtils.millisToLocalDate(matchingTx.dateMillis),
                                             category = matchingTx.category.ifEmpty { "Planned Bill" },
-                                            accountName = matchingTx.accountName.ifEmpty { "Primary Account" },
+                                            accountName = matchingTx.accountName,
                                             isTransaction = true,
                                             isAutoPay = matchingTx.isAutoPay,
                                             transactionRef = matchingTx,
@@ -320,7 +319,7 @@ object UpcomingExpenseCalculator {
                     amount = tx.amount,
                     dueDate = date,
                     category = tx.category.ifEmpty { "Expense" },
-                    accountName = tx.accountName.ifEmpty { "Primary Account" },
+                    accountName = tx.accountName,
                     isTransaction = true,
                     isAutoPay = tx.isAutoPay,
                     transactionRef = tx
@@ -383,7 +382,7 @@ object UpcomingExpenseCalculator {
                                 amount = bill.minAmount,
                                 dueDate = thisMonthDueDate,
                                 category = "Planned Bill",
-                                accountName = bill.targetAccount.ifEmpty { "Primary Account" },
+                                accountName = bill.targetAccount,
                                 isTransaction = false,
                                 isAutoPay = bill.isAutoPay,
                                 plannedExpenseRef = bill
@@ -399,7 +398,7 @@ object UpcomingExpenseCalculator {
                                     amount = bill.minAmount,
                                     dueDate = thisMonthDueDate,
                                     category = "Planned Bill",
-                                    accountName = bill.targetAccount.ifEmpty { "Primary Account" },
+                                    accountName = bill.targetAccount,
                                     isTransaction = false,
                                     isAutoPay = bill.isAutoPay,
                                     plannedExpenseRef = bill

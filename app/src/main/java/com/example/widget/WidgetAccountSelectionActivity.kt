@@ -86,13 +86,14 @@ fun AccountSelectionDialog(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var accounts by remember { mutableStateOf<List<String>>(listOf("Primary Account", "All Accounts")) }
-    var currentSelection by remember { mutableStateOf("Primary Account") }
+    var accounts by remember { mutableStateOf<List<String>>(listOf("All Accounts")) }
+    var currentSelection by remember { mutableStateOf("All Accounts") }
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(appWidgetId) {
         val available = PayCycleWidgetPrefs.getAvailableAccounts(context)
-        val selected = PayCycleWidgetPrefs.getSelectedAccount(context, appWidgetId, "Primary Account")
+        val defaultChoice = available.firstOrNull { it != "All Accounts" } ?: "All Accounts"
+        val selected = PayCycleWidgetPrefs.getSelectedAccount(context, appWidgetId, defaultChoice)
         accounts = available
         currentSelection = selected
         isLoading = false
@@ -203,9 +204,9 @@ fun AccountSelectionDialog(
                                             fontSize = 12.sp,
                                             color = Color(0xFF9CA3AF)
                                         )
-                                    } else if (account == "Primary Account") {
+                                    } else if (account == accounts.firstOrNull { it != "All Accounts" }) {
                                         Text(
-                                            text = "Default primary checking / income account",
+                                            text = "Primary account",
                                             fontSize = 12.sp,
                                             color = Color(0xFF9CA3AF)
                                         )

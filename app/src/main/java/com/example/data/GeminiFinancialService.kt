@@ -135,8 +135,10 @@ object GeminiFinancialService {
             append("- Today's date: ${today.format(DateTimeFormatter.ISO_LOCAL_DATE)} (${today.dayOfWeek})\n")
             append("- Active account: $activeAccount\n")
             append("- Available accounts: ${availableAccounts.joinToString(", ")}\n\n")
-            append("Standard categories for expenses: Groceries, Dining Out, Utilities, Rent/Mortgage, Transportation, Subscriptions, Health, Shopping, Entertainment, Debt, Other.\n")
-            append("Standard categories for income: Salary, Freelance, Gift, Investment, Refund, Other.\n\n")
+            append("Standard categories for expenses MUST be either 'Core Bills' or 'Credit Cards' (no subcategories):\n")
+            append("- Core Bills: Rent, mortgage, utilities, electric, water, internet, phone, car payment, insurance, subscriptions, etc.\n")
+            append("- Credit Cards: Credit card payments, credit card balances, store card bills, Chase, Amex, Citi, Capital One, etc.\n")
+            append("Standard categories for income: Salary, Freelance, Gift, Investment, Refund, Income.\n\n")
             append("Output MUST be a strict JSON object with these exact keys:\n")
             append("{\n")
             append("  \"title\": \"Clear short title (e.g. Trader Joe's, Electric Bill, Paycheck)\",\n")
@@ -887,17 +889,13 @@ object GeminiFinancialService {
         val isRecurring = lower.contains("monthly") || lower.contains("bill") || lower.contains("subscription") || lower.contains("every month") || lower.contains("recurring")
 
         val category = when {
-            isIncome -> "Salary"
-            lower.contains("grocer") || lower.contains("food") || lower.contains("trader") || lower.contains("safeway") || lower.contains("kroger") || lower.contains("walmart") || lower.contains("costco") -> "Groceries"
-            lower.contains("coffee") || lower.contains("dinner") || lower.contains("lunch") || lower.contains("starbucks") || lower.contains("mcdonald") || lower.contains("restaurant") || lower.contains("chipotle") -> "Dining Out"
-            lower.contains("electric") || lower.contains("water") || lower.contains("gas") || lower.contains("power") || lower.contains("utility") || lower.contains("internet") || lower.contains("wifi") -> "Utilities"
-            lower.contains("uber") || lower.contains("lyft") || lower.contains("gasoline") || lower.contains("fuel") || lower.contains("transit") || lower.contains("metro") || lower.contains("parking") -> "Transportation"
-            lower.contains("rent") || lower.contains("mortgage") || lower.contains("lease") -> "Rent/Mortgage"
-            lower.contains("netflix") || lower.contains("spotify") || lower.contains("gym") || lower.contains("hulu") || lower.contains("sub") -> "Subscriptions"
-            lower.contains("doctor") || lower.contains("pharmacy") || lower.contains("med") || lower.contains("dentist") || lower.contains("cvs") -> "Health"
-            lower.contains("target") || lower.contains("amazon") || lower.contains("clothes") || lower.contains("shoes") -> "Shopping"
-            lower.contains("card") || lower.contains("debt") || lower.contains("loan") -> "Debt"
-            else -> "Other"
+            isIncome -> "Income"
+            lower.contains("chase") || lower.contains("capital one") || lower.contains("amex") ||
+                    lower.contains("american express") || lower.contains("discover") || lower.contains("citi") ||
+                    lower.contains("citibank") || lower.contains("apple card") || lower.contains("bank of america") ||
+                    lower.contains("bofa") || lower.contains("wells fargo") || lower.contains("credit card") ||
+                    lower.contains("card payment") || lower.contains("card") -> "Credit Cards"
+            else -> "Core Bills"
         }
 
         // Clean title

@@ -232,31 +232,140 @@ class MainActivity : ComponentActivity() {
 // Global Category Emojis & Colors
 object CategoryTheme {
     val expenseCategories = listOf(
-        CategoryItem("Housing", "🏠", Color(0xFFF87171)),
-        CategoryItem("Utilities", "⚡", Color(0xFFFBBF24)),
-        CategoryItem("Groceries", "🛒", Color(0xFF34D399)),
-        CategoryItem("Dining Out", "🍔", Color(0xFF2DD4BF)),
-        CategoryItem("Transportation", "🚗", Color(0xFF60A5FA)),
-        CategoryItem("Insurance", "🛡️", Color(0xFF818CF8)),
-        CategoryItem("Entertainment", "🎬", Color(0xFFC084FC)),
-        CategoryItem("Shopping", "🛍️", Color(0xFFFB923C)),
-        CategoryItem("Other", "📦", Color(0xFF94A3B8))
+        CategoryItem("Core Bills", "📋", Color(0xFF3B82F6)),
+        CategoryItem("Credit Cards", "💳", Color(0xFF8B5CF6))
     )
+
+    fun formatCategory(parentGroup: String, subCategory: String = ""): String {
+        return if (parentGroup.contains("Credit", ignoreCase = true) || parentGroup.contains("Card", ignoreCase = true)) {
+            "Credit Cards"
+        } else {
+            "Core Bills"
+        }
+    }
+
+    fun parseCategory(categoryStr: String): Pair<String, String> {
+        val cat = categoryStr.trim()
+        val lower = cat.lowercase(Locale.US)
+        val normalized = when {
+            lower.contains("credit card") || lower.contains("card") || lower.contains("chase") ||
+                    lower.contains("amex") || lower.contains("discover") || lower.contains("capital one") ||
+                    lower.contains("citi") || lower.contains("apple card") -> "Credit Cards"
+            else -> "Core Bills"
+        }
+        return Pair(normalized, normalized)
+    }
 
     fun getEmoji(categoryName: String): String {
         if (categoryName == "Paycheck") return "💰"
         if (categoryName == "Income") return "💵"
-        return expenseCategories.firstOrNull { it.name == categoryName }?.emoji ?: "💸"
+        val (parent, _) = parseCategory(categoryName)
+        return if (parent.equals("Credit Cards", ignoreCase = true)) "💳" else "📋"
     }
 
     fun getColor(categoryName: String): Color {
         if (categoryName == "Paycheck") return Color(0xFF10B981)
         if (categoryName == "Income") return Color(0xFF34D399)
-        return expenseCategories.firstOrNull { it.name == categoryName }?.color ?: Color(0xFF64748B)
+        val (parent, _) = parseCategory(categoryName)
+        return if (parent.equals("Credit Cards", ignoreCase = true)) Color(0xFF8B5CF6) else Color(0xFF3B82F6)
     }
 }
 
 data class CategoryItem(val name: String, val emoji: String, val color: Color)
+
+@Composable
+fun ExpenseCategorySubCategoryPicker(
+    selectedCategory: String,
+    onCategorySelected: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    isDark: Boolean = isSystemInDarkTheme()
+) {
+    val (parsedCategory, _) = remember(selectedCategory) {
+        CategoryTheme.parseCategory(selectedCategory)
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Row 1: Header + Active Category display
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "EXPENSE CATEGORY",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            val currentEmoji = CategoryTheme.getEmoji(parsedCategory)
+            val currentColor = CategoryTheme.getColor(parsedCategory)
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = currentColor.copy(alpha = if (isDark) 0.25f else 0.12f),
+                border = BorderStroke(1.dp, currentColor.copy(alpha = 0.4f))
+            ) {
+                Text(
+                    text = "$currentEmoji $parsedCategory",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = currentColor,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+
+        // Row 2: Only two categories: "Core Bills" and "Credit Cards"
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val categories = listOf(
+                Triple("Core Bills", "📋", Color(0xFF3B82F6)),
+                Triple("Credit Cards", "💳", Color(0xFF8B5CF6))
+            )
+            categories.forEach { (name, emoji, color) ->
+                val isSelected = parsedCategory.equals(name, ignoreCase = true)
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSelected) {
+                        if (isDark) color.copy(alpha = 0.35f) else color.copy(alpha = 0.18f)
+                    } else (if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9)),
+                    border = BorderStroke(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) color else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            onCategorySelected(name)
+                        }
+                        .testTag("expense_cat_${name.lowercase().replace(" ", "_")}")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(emoji, fontSize = 14.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = name,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) (if (isDark) Color.White else color) else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun BudgetAppMain(
@@ -278,7 +387,7 @@ fun BudgetAppMain(
         }
     }
 
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Cycles, 1 = Income, 2 = Expenses, 3 = Debt, 4 = Calendar, 5 = AI Hub, 6 = Settings
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Cycles, 1 = Income, 2 = Expenses, 3 = Upcoming, 4 = Debt, 5 = Calendar, 6 = AI Hub, 7 = Settings
     var showAddDialog by remember { mutableStateOf(false) }
     var showPlannedBillsDialog by remember { mutableStateOf(false) }
     var showAiQuickEntryDialog by remember { mutableStateOf(false) }
@@ -402,90 +511,275 @@ fun BudgetAppMain(
                         .background(MaterialTheme.colorScheme.background)
                         .padding(top = 4.dp)
                 ) {
-                    // Selected pay cycle / month navigation
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    if (isWideScreen) {
+                        // Spacious single-line header for Fold 8 Inner Screen
                         Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            // Left: Month / Pay Cycle Controls
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { viewModel.prevMonth() },
+                                    modifier = Modifier.testTag("prev_month_button")
+                                ) {
+                                    Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle")
+                                }
+                                Button(
+                                    onClick = { viewModel.selectMonth(YearMonth.now()) },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    ),
+                                    modifier = Modifier.testTag("today_button")
+                                ) {
+                                    Text("Today", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                IconButton(
+                                    onClick = { viewModel.nextMonth() },
+                                    modifier = Modifier.testTag("next_month_button")
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = "Next Pay Cycle")
+                                }
+                            }
+
+                            // Center: Date Title
+                            val payCycleTitleFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
+                            val payCycleTitleYearFormatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
+                            val pStart = uiState.currentPayPeriodStart
+                            val pEnd = uiState.currentPayPeriodEnd
+                            val payCycleText = if (pStart.year == pEnd.year) {
+                                "${pStart.format(payCycleTitleFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
+                            } else {
+                                "${pStart.format(payCycleTitleYearFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
+                            }
+
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = payCycleText,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    textAlign = TextAlign.Center
+                                )
+                                Text(
+                                    text = "Pay Cycle • ${uiState.selectedMonth.format(monthTitleFormatter)}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+
+                            // Right: Utility Actions
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { viewModel.undo() },
+                                    enabled = uiState.canUndo,
+                                    modifier = Modifier.testTag("undo_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Undo,
+                                        contentDescription = if (uiState.canUndo) "Undo: ${uiState.lastUndoDescription ?: "last action"}" else "Undo",
+                                        tint = if (uiState.canUndo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { selectedTab = 4 },
+                                    modifier = Modifier.testTag("topbar_debt_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = "Debt Planner",
+                                        tint = if (selectedTab == 4) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { selectedTab = 6 },
+                                    modifier = Modifier.testTag("topbar_ai_hub_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = "AI Hub",
+                                        tint = if (selectedTab == 6) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { selectedTab = 7 },
+                                    modifier = Modifier.testTag("topbar_settings_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = "Settings",
+                                        tint = if (selectedTab == 7) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // Galaxy Z Fold 8 Cover Screen (Narrow portrait, ~380-420dp width)
+                        // Tier 1: Dedicated Cycle Date Navigator
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             IconButton(
                                 onClick = { viewModel.prevMonth() },
-                                modifier = Modifier.testTag("prev_month_button")
+                                modifier = Modifier.size(36.dp).testTag("prev_month_button")
                             ) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle")
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle", modifier = Modifier.size(18.dp))
                             }
 
-                            IconButton(
-                                onClick = { viewModel.undo() },
-                                enabled = uiState.canUndo,
-                                modifier = Modifier.testTag("undo_button")
+                            val payCycleTitleFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
+                            val payCycleTitleYearFormatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
+                            val pStart = uiState.currentPayPeriodStart
+                            val pEnd = uiState.currentPayPeriodEnd
+                            val payCycleText = if (pStart.year == pEnd.year) {
+                                "${pStart.format(payCycleTitleFormatter)} – ${pEnd.format(payCycleTitleFormatter)}"
+                            } else {
+                                "${pStart.format(payCycleTitleYearFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Undo,
-                                    contentDescription = if (uiState.canUndo) "Undo: ${uiState.lastUndoDescription ?: "last action"}" else "Undo",
-                                    tint = if (uiState.canUndo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                Text(
+                                    text = payCycleText,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center
                                 )
-                            }
-                        }
-
-                        val payCycleTitleFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
-                        val payCycleTitleYearFormatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
-                        val pStart = uiState.currentPayPeriodStart
-                        val pEnd = uiState.currentPayPeriodEnd
-                        val payCycleText = if (pStart.year == pEnd.year) {
-                            "${pStart.format(payCycleTitleFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
-                        } else {
-                            "${pStart.format(payCycleTitleYearFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
-                        }
-
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = payCycleText,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                textAlign = TextAlign.Center
-                            )
-                            Text(
-                                text = "Pay Cycle • ${uiState.selectedMonth.format(monthTitleFormatter)}",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Button(
-                                onClick = { viewModel.selectMonth(YearMonth.now()) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ),
-                                modifier = Modifier.testTag("today_button")
-                            ) {
-                                Text("Today", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "Cycle • ${uiState.selectedMonth.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.US))}",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    textAlign = TextAlign.Center
+                                )
                             }
 
                             IconButton(
                                 onClick = { viewModel.nextMonth() },
-                                modifier = Modifier.testTag("next_month_button")
+                                modifier = Modifier.size(36.dp).testTag("next_month_button")
                             ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = "Next Pay Cycle")
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Next Pay Cycle", modifier = Modifier.size(18.dp))
+                            }
+                        }
+
+                        // Tier 2: Compact utility strip with Today, Undo, and quick top actions
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    modifier = Modifier
+                                        .clickable { viewModel.selectMonth(YearMonth.now()) }
+                                        .testTag("today_button")
+                                ) {
+                                    Text(
+                                        text = "Today",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+
+                                if (uiState.canUndo) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier
+                                            .clickable { viewModel.undo() }
+                                            .testTag("undo_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.Undo,
+                                                contentDescription = "Undo",
+                                                modifier = Modifier.size(12.dp),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text(
+                                                text = "Undo",
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { selectedTab = 4 },
+                                    modifier = Modifier.size(30.dp).testTag("topbar_debt_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = "Debt Planner",
+                                        modifier = Modifier.size(17.dp),
+                                        tint = if (selectedTab == 4) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { selectedTab = 6 },
+                                    modifier = Modifier.size(30.dp).testTag("topbar_ai_hub_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = "AI Hub",
+                                        modifier = Modifier.size(17.dp),
+                                        tint = if (selectedTab == 6) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { selectedTab = 7 },
+                                    modifier = Modifier.size(30.dp).testTag("topbar_settings_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = "Settings",
+                                        modifier = Modifier.size(17.dp),
+                                        tint = if (selectedTab == 7) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
@@ -524,7 +818,7 @@ fun BudgetAppMain(
                         }
                     }
 
-                    if (selectedTab != 3 && selectedTab != 5 && selectedTab != 6) {
+                    if (selectedTab != 4 && selectedTab != 6 && selectedTab != 7) {
                         SmallFloatingActionButton(
                             onClick = {
                                 preselectedDateForAdd = null
@@ -573,10 +867,16 @@ fun BudgetAppMain(
                         // Pay Cycles Dashboard with Adaptive Side-by-Side Dual-Pane for Galaxy Z Fold / Wide Screens
                         val pageScrollState = rememberScrollState()
                         var dashboardSectionOrder by rememberSaveable {
-                            mutableStateOf(listOf("accounts", "upcoming", "cycles"))
+                            mutableStateOf(listOf("accounts", "cycles"))
                         }
                         var isDashboardReorderActive by rememberSaveable { mutableStateOf(false) }
                         val haptic = LocalHapticFeedback.current
+
+                        LaunchedEffect(Unit) {
+                            if (dashboardSectionOrder.contains("upcoming")) {
+                                dashboardSectionOrder = dashboardSectionOrder.filter { it != "upcoming" }
+                            }
+                        }
 
                         Column(
                             modifier = Modifier
@@ -585,18 +885,23 @@ fun BudgetAppMain(
                                 .align(Alignment.TopCenter)
                                 .verticalScroll(pageScrollState)
                         ) {
-                            if (isDashboardReorderActive || dashboardSectionOrder != listOf("accounts", "upcoming", "cycles")) {
+                            SafeToSpendHeroCard(
+                                uiState = uiState,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                            )
+
+                            if (isDashboardReorderActive || dashboardSectionOrder != listOf("accounts", "cycles")) {
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
+                                    shape = RoundedCornerShape(10.dp),
                                     color = if (isDashboardReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .padding(horizontal = 10.dp, vertical = 2.dp)
                                 ) {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            .padding(horizontal = 10.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
@@ -652,7 +957,7 @@ fun BudgetAppMain(
                                             }
                                             TextButton(
                                                 onClick = {
-                                                    dashboardSectionOrder = listOf("accounts", "upcoming", "cycles")
+                                                    dashboardSectionOrder = listOf("accounts", "cycles")
                                                     isDashboardReorderActive = false
                                                 },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
@@ -668,7 +973,6 @@ fun BudgetAppMain(
                             dashboardSectionOrder.forEachIndexed { index, sectionKey ->
                                 val title = when (sectionKey) {
                                     "accounts" -> "Accounts Overview"
-                                    "upcoming" -> "Upcoming Bills & Expenses"
                                     "cycles" -> if (isWideScreen) "Pay Cycles & Transactions (Side-by-Side)" else "Pay Cycles & Transactions"
                                     else -> "Section"
                                 }
@@ -698,7 +1002,7 @@ fun BudgetAppMain(
                                             dashboardSectionOrder = list
                                         }
                                     },
-                                    modifier = Modifier.padding(horizontal = 16.dp)
+                                    modifier = Modifier.padding(horizontal = 10.dp)
                                 ) {
                                     when (sectionKey) {
                                         "accounts" -> {
@@ -712,14 +1016,6 @@ fun BudgetAppMain(
                                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
                                                 isWideScreen = isWideScreen
-                                            )
-                                        }
-                                        "upcoming" -> {
-                                            UpcomingExpensesWidget(
-                                                uiState = uiState,
-                                                onToggleCompleted = handleRequestToggleCompleted,
-                                                onOpenAddBill = { showPlannedBillsDialog = true },
-                                                onDeleteExpense = { item -> viewModel.deleteUpcomingExpense(item) }
                                             )
                                         }
                                         "cycles" -> {
@@ -737,7 +1033,7 @@ fun BudgetAppMain(
                                                         category = "Other",
                                                         isIncome = false,
                                                         isRecurring = false,
-                                                        accountName = if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName,
+                                                        accountName = if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName,
                                                         isCompleted = false,
                                                         isAutoPay = false
                                                     )
@@ -750,6 +1046,7 @@ fun BudgetAppMain(
                                                 onEditTransaction = { tx -> editingTransaction = tx },
                                                 onToggleCompleted = handleRequestToggleCompleted,
                                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
+                                                onNavigateToUpcoming = { selectedTab = 3 },
                                                 isWideScreen = isWideScreen
                                             )
                                         }
@@ -782,7 +1079,7 @@ fun BudgetAppMain(
                             Spacer(modifier = Modifier.height(4.dp))
                             EnterIncomeView(
                                 uiState = uiState,
-                                onAddIncome = { title, amount, dateDeposited, category, isRecurring, accountName, isAutoPay ->
+                                onAddIncome = { title, amount, dateDeposited, category, isRecurring, accountName, isAutoPay, isCompleted ->
                                     viewModel.addTransaction(
                                         title = title,
                                         amount = amount,
@@ -791,12 +1088,13 @@ fun BudgetAppMain(
                                         isIncome = true,
                                         isRecurring = isRecurring,
                                         accountName = accountName,
-                                        isCompleted = false,
+                                        isCompleted = isCompleted,
                                         isAutoPay = isAutoPay
                                     )
                                 },
                                 onDeleteIncome = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditIncome = { tx -> editingTransaction = tx },
+                                onToggleIncome = handleRequestToggleCompleted,
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 onAddIncomeSource = { name, amount, freq -> viewModel.addIncomeSource(name, amount, freq) },
                                 onDeleteIncomeSource = { src -> viewModel.deleteIncomeSource(src) },
@@ -829,8 +1127,18 @@ fun BudgetAppMain(
                             Spacer(modifier = Modifier.height(4.dp))
                             EnterExpensesView(
                                 uiState = uiState,
-                                onAddExpense = { title, amount, dueDate, category, isRecurring, accountName, isAutoPay ->
-                                    viewModel.addTransaction(title, amount, dueDate, category, false, isRecurring, accountName, isAutoPay)
+                                onAddExpense = { title, amount, dueDate, category, isRecurring, accountName, isAutoPay, isCompleted ->
+                                    viewModel.addTransaction(
+                                        title = title,
+                                        amount = amount,
+                                        date = dueDate,
+                                        category = category,
+                                        isIncome = false,
+                                        isRecurring = isRecurring,
+                                        accountName = accountName,
+                                        isCompleted = isCompleted,
+                                        isAutoPay = isAutoPay
+                                    )
                                 },
                                 onDeleteExpense = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditExpense = { tx -> editingTransaction = tx },
@@ -841,6 +1149,43 @@ fun BudgetAppMain(
                         }
                     }
                     3 -> {
+                        // Upcoming Bills & Expenses Page
+                        val pageScrollState = rememberScrollState()
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .widthIn(max = 1400.dp)
+                                .align(Alignment.TopCenter)
+                                .verticalScroll(pageScrollState)
+                        ) {
+                            AccountSwitcherCarousel(
+                                uiState = uiState,
+                                onSelectAccount = { viewModel.selectAccount(it) },
+                                onAddAccount = { viewModel.addAccount(it) },
+                                onRenameAccount = { old, new -> viewModel.renameAccount(old, new) },
+                                onDeleteAccount = { viewModel.deleteAccount(it) },
+                                onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
+                                onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
+                                onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                isWideScreen = isWideScreen
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            com.example.ui.UpcomingExpensesView(
+                                uiState = uiState,
+                                onToggleCompleted = handleRequestToggleCompleted,
+                                onOpenAddBill = { showPlannedBillsDialog = true },
+                                onOpenAddExpense = {
+                                    preselectedDateForAdd = null
+                                    showAddDialog = true
+                                },
+                                onDeleteExpense = { item -> viewModel.deleteUpcomingExpense(item) },
+                                onEditTransaction = { tx -> editingTransaction = tx },
+                                onUndo = { viewModel.undo() },
+                                isWideScreen = isWideScreen
+                            )
+                        }
+                    }
+                    4 -> {
                         // Debt Planner Page
                         val pageScrollState = rememberScrollState()
                         Column(
@@ -871,7 +1216,7 @@ fun BudgetAppMain(
                             )
                         }
                     }
-                    4 -> {
+                    5 -> {
                         // Calendar Page
                         val pageScrollState = rememberScrollState()
                         Column(
@@ -907,7 +1252,7 @@ fun BudgetAppMain(
                             )
                         }
                     }
-                    5 -> {
+                    6 -> {
                         // AI Insights Hub Page
                         val pageScrollState = rememberScrollState()
                         Column(
@@ -924,7 +1269,7 @@ fun BudgetAppMain(
                             )
                         }
                     }
-                    6 -> {
+                    7 -> {
                         // Settings Page
                         val pageScrollState = rememberScrollState()
                         Column(
@@ -982,8 +1327,19 @@ fun BudgetAppMain(
             allAccounts = uiState.allAccounts,
             initialAccountName = uiState.activeAccountName,
             onDismiss = { showAddDialog = false },
-            onConfirm = { title, amount, date, category, isIncome, isRecurring, accountName, isAutoPay, reminderDaysBefore ->
-                viewModel.addTransaction(title, amount, date, category, isIncome, isRecurring, accountName, false, isAutoPay, reminderDaysBefore)
+            onConfirm = { title, amount, date, category, isIncome, isRecurring, accountName, isAutoPay, reminderDaysBefore, isCompleted ->
+                viewModel.addTransaction(
+                    title = title,
+                    amount = amount,
+                    date = date,
+                    category = category,
+                    isIncome = isIncome,
+                    isRecurring = isRecurring,
+                    accountName = accountName,
+                    isCompleted = isCompleted,
+                    isAutoPay = isAutoPay,
+                    reminderDaysBefore = reminderDaysBefore
+                )
                 showAddDialog = false
             }
         )
@@ -996,28 +1352,11 @@ fun BudgetAppMain(
             allAccounts = uiState.allAccounts,
             onDismiss = { editingTransaction = null },
             onSave = { updated: TransactionEntity ->
-                if (tx.id < 0) {
-                    viewModel.addTransaction(
-                        title = updated.title,
-                        amount = updated.amount,
-                        date = DateUtils.millisToLocalDate(updated.dateMillis),
-                        category = updated.category,
-                        isIncome = updated.isIncome,
-                        isRecurring = updated.isRecurring,
-                        accountName = updated.accountName,
-                        isCompleted = updated.isCompleted,
-                        isAutoPay = updated.isAutoPay,
-                        reminderDaysBefore = updated.reminderDaysBefore
-                    )
-                } else {
-                    viewModel.updateTransaction(updated)
-                }
+                viewModel.overrideTransaction(original = tx, updated = updated)
                 editingTransaction = null
             },
             onDelete = { deleted: TransactionEntity ->
-                if (deleted.id > 0) {
-                    viewModel.deleteTransaction(deleted)
-                }
+                viewModel.deleteTransaction(deleted)
                 editingTransaction = null
             }
         )
@@ -1163,7 +1502,7 @@ fun MarkCompleteConfirmationDialog(
         },
         title = {
             Text(
-                text = "Mark as Paid?",
+                text = if (transaction.isIncome) "Mark as Received?" else "Mark as Paid?",
                 fontWeight = FontWeight.Bold,
                 fontSize = 19.sp,
                 textAlign = TextAlign.Center,
@@ -1176,7 +1515,11 @@ fun MarkCompleteConfirmationDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Are you sure you want to mark this expense as complete?",
+                    text = if (transaction.isIncome) {
+                        "Are you sure you want to mark this income as received / complete?"
+                    } else {
+                        "Are you sure you want to mark this expense as complete?"
+                    },
                     fontSize = 13.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -1211,7 +1554,7 @@ fun MarkCompleteConfirmationDialog(
                                 color = Color(0xFF10B981)
                             )
                             Text(
-                                text = "Due: $dateFormatted",
+                                text = if (transaction.isIncome) "Received: $dateFormatted" else "Due: $dateFormatted",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1226,22 +1569,24 @@ fun MarkCompleteConfirmationDialog(
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(top = 2.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.NotificationsActive,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                    )
-                    Text(
-                        text = "Any scheduled reminder alerts for this bill will be cancelled.",
-                        fontSize = 11.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
+                if (!transaction.isIncome) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NotificationsActive,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                        )
+                        Text(
+                            text = "Any scheduled reminder alerts for this bill will be cancelled.",
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
                 }
             }
         },
@@ -1257,7 +1602,7 @@ fun MarkCompleteConfirmationDialog(
             ) {
                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Mark Complete", fontWeight = FontWeight.Bold)
+                Text(if (transaction.isIncome) "Mark Received" else "Mark Complete", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
@@ -1355,9 +1700,10 @@ fun ExcelDropdownCell(
 @Composable
 fun EnterIncomeView(
     uiState: BudgetUiState,
-    onAddIncome: (title: String, amount: Double, dateDeposited: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean) -> Unit,
+    onAddIncome: (title: String, amount: Double, dateDeposited: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, isCompleted: Boolean) -> Unit,
     onDeleteIncome: (TransactionEntity) -> Unit,
     onEditIncome: (TransactionEntity) -> Unit = {},
+    onToggleIncome: ((TransactionEntity) -> Unit)? = null,
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     onAddIncomeSource: ((String, Double, String) -> Unit)? = null,
     onDeleteIncomeSource: ((IncomeSourceEntity) -> Unit)? = null,
@@ -1369,10 +1715,11 @@ fun EnterIncomeView(
     var amount by remember { mutableStateOf("") }
     var dateInput by remember { mutableStateOf(LocalDate.now().toString()) }
     var selectedCategory by remember { mutableStateOf("Paycheck") }
-    var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName) }
+    var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName) }
     var isRecurring by remember { mutableStateOf(false) }
     var recurFrequency by remember { mutableStateOf("Bi-Weekly") }
     var isAutoPay by remember { mutableStateOf(false) }
+    var isIncomeCompleted by remember { mutableStateOf(false) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var isQuickInsertExpanded by remember { mutableStateOf(false) }
@@ -1397,10 +1744,10 @@ fun EnterIncomeView(
     }
 
     LaunchedEffect(uiState.activeAccountName) {
-        selectedAccount = if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName
+        selectedAccount = if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName
     }
 
-    val formatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
+    val formatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     val dateRangeFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     val weekRangeText = remember(uiState.currentPayWeekStart, uiState.currentPayWeekEnd) {
         "${uiState.currentPayWeekStart.format(dateRangeFormatter)} – ${uiState.currentPayWeekEnd.format(dateRangeFormatter)}"
@@ -1413,10 +1760,11 @@ fun EnterIncomeView(
 
     // Filter income transactions
     val incomeList = remember(uiState.allTransactions, uiState.activeAccountName, sortIncomeAscending) {
+        val primaryAcc = uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: ""
         val dbIncome = uiState.allTransactions.filter { tx ->
             val matchesAccount = uiState.activeAccountName == "All Accounts" ||
                     tx.accountName.equals(uiState.activeAccountName, ignoreCase = true) ||
-                    (uiState.activeAccountName == "Primary Account" && (tx.accountName.isBlank() || tx.accountName.equals("Primary", ignoreCase = true)))
+                    (primaryAcc.isNotEmpty() && uiState.activeAccountName.equals(primaryAcc, ignoreCase = true) && (tx.accountName.isBlank() || tx.accountName.equals("Primary Account", ignoreCase = true) || tx.accountName.equals("Primary", ignoreCase = true)))
             val catLower = tx.category.lowercase(java.util.Locale.US)
             val isIncomeCat = catLower == "paycheck" || catLower == "income" || catLower == "salary" || catLower == "bonus" || catLower == "deposit" || catLower == "freelance" || catLower == "investment" || catLower == "investments"
             matchesAccount && (tx.isIncome || isIncomeCat) && tx.amount > 0.0 && !tx.title.contains("Cancelled") && !tx.title.contains("Deleted")
@@ -1435,6 +1783,11 @@ fun EnterIncomeView(
         uiState.currentPayPeriodStart, uiState.currentPayPeriodEnd,
         uiState.selectedMonth
     ) {
+        val currentCycleMonths = setOf(
+            YearMonth.from(uiState.currentPayPeriodStart),
+            YearMonth.from(uiState.currentPayPeriodEnd),
+            uiState.selectedMonth
+        )
         val scopeFiltered = when (filterScope) {
             1 -> incomeList.filter { tx ->
                 val d = DateUtils.millisToLocalDate(tx.dateMillis)
@@ -1448,7 +1801,10 @@ fun EnterIncomeView(
                 val d = DateUtils.millisToLocalDate(tx.dateMillis)
                 !d.isBefore(uiState.currentPayWeekStart) && !d.isAfter(uiState.currentPayWeekEnd)
             }
-            else -> incomeList // 0 = All Rows
+            else -> incomeList.filter { tx ->
+                val d = DateUtils.millisToLocalDate(tx.dateMillis)
+                YearMonth.from(d) in currentCycleMonths
+            } // 0 = All Rows (scoped to months for the current cycle)
         }
 
         scopeFiltered.filter { tx ->
@@ -1525,6 +1881,11 @@ fun EnterIncomeView(
                     }
                 }
             }
+
+            TransactionSearchAndFilterBar(
+                statusFilter = statusFilter,
+                onStatusFilterChange = { statusFilter = it }
+            )
 
             // Excel Sheet Formula Bar / Status Header
             Surface(
@@ -1701,6 +2062,30 @@ fun EnterIncomeView(
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text("⚡ Auto-Pay", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFFD8B4FE) else Color(0xFF7E22CE))
                             }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { isIncomeCompleted = !isIncomeCompleted }
+                                    .padding(horizontal = 2.dp, vertical = 1.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isIncomeCompleted,
+                                    onCheckedChange = { isIncomeCompleted = it },
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .testTag("enter_income_completed_checkbox")
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = if (isIncomeCompleted) "✓ Received" else "⏳ Pending",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isIncomeCompleted) Color(0xFF10B981) else (if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
+                                )
+                            }
                         }
                     }
 
@@ -1783,7 +2168,7 @@ fun EnterIncomeView(
                                             else -> ""
                                         }
                                         val finalCategory = if (isRecurring && freqSuffix.isNotEmpty() && !selectedCategory.contains("(")) "$selectedCategory$freqSuffix" else selectedCategory
-                                        onAddIncome(t, amt, parsedDate, finalCategory, isRecurring, selectedAccount, isAutoPay)
+                                        onAddIncome(t, amt, parsedDate, finalCategory, isRecurring, selectedAccount, isAutoPay, isIncomeCompleted)
                                         filterScope = 0
                                         statusMessage = "✅ Added +${String.format(Locale.US, "%.2f", amt)} row to spreadsheet!"
                                         errorMessage = ""
@@ -1953,7 +2338,10 @@ fun EnterIncomeView(
                     onDismissRequest = { showAddSourceDialog = false },
                     title = { Text("Add Recurring Income Stream", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            modifier = Modifier.verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
                             OutlinedTextField(
                                 value = newName,
                                 onValueChange = { newName = it },
@@ -2149,13 +2537,20 @@ fun EnterIncomeView(
                                         }
                                     }
 
-                                    // Date
-                                    Text(
-                                        text = txDate.format(formatter),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
-                                    )
+                                    // Date Chip
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (isDark) Color(0xFF334155).copy(alpha = 0.5f) else Color(0xFFF1F5F9),
+                                        border = BorderStroke(1.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
+                                    ) {
+                                        Text(
+                                            text = txDate.format(formatter),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
 
                                     if (tx.isRecurring) {
                                         Surface(
@@ -2181,12 +2576,64 @@ fun EnterIncomeView(
                                             }
                                         )
                                     }
+
+                                    if (tx.isCompleted) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable(enabled = onToggleIncome != null) { onToggleIncome?.invoke(tx) }
+                                                .testTag("income_status_chip_${tx.id}")
+                                        ) {
+                                            Text(
+                                                text = "✓ Received",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable(enabled = onToggleIncome != null) { onToggleIncome?.invoke(tx) }
+                                                .testTag("income_status_chip_${tx.id}")
+                                        ) {
+                                            Text(
+                                                text = "⏳ Pending",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
                                 }
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
+                                    if (onToggleIncome != null) {
+                                        IconButton(
+                                            onClick = { onToggleIncome(tx) },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .testTag("toggle_income_${tx.id}")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (tx.isCompleted) Icons.Default.CheckCircle else Icons.Outlined.CheckCircle,
+                                                contentDescription = if (tx.isCompleted) "Mark Pending" else "Mark Received",
+                                                tint = if (tx.isCompleted) Color(0xFF10B981) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+
                                     IconButton(
                                         onClick = { onEditIncome(tx) },
                                         modifier = Modifier
@@ -2259,8 +2706,8 @@ fun EnterIncomeView(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 96.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top
         ) {
             Box(modifier = Modifier.weight(0.45f)) {
@@ -2277,8 +2724,8 @@ fun EnterIncomeView(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (isIncomeReorderActive || incomeSectionOrder != listOf("income_form", "income_list")) {
                 Surface(
@@ -2380,7 +2827,7 @@ fun EnterIncomeView(
 @Composable
 fun EnterExpensesView(
     uiState: BudgetUiState,
-    onAddExpense: (title: String, amount: Double, dueDate: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean) -> Unit,
+    onAddExpense: (title: String, amount: Double, dueDate: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, isCompleted: Boolean) -> Unit,
     onDeleteExpense: (TransactionEntity) -> Unit,
     onEditExpense: (TransactionEntity) -> Unit = {},
     onToggleExpense: ((TransactionEntity) -> Unit)? = null,
@@ -2391,10 +2838,11 @@ fun EnterExpensesView(
     var title by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
     var dueDateInput by remember { mutableStateOf(LocalDate.now().toString()) }
-    var selectedCategory by remember { mutableStateOf("Utilities") }
-    var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName) }
+    var selectedCategory by remember { mutableStateOf("Core Bills") }
+    var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName) }
     var isRecurring by remember { mutableStateOf(false) }
     var isAutoPay by remember { mutableStateOf(false) }
+    var isExpenseCompleted by remember { mutableStateOf(false) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var isQuickInsertExpanded by remember { mutableStateOf(false) }
@@ -2406,6 +2854,7 @@ fun EnterExpensesView(
     var filterScope by remember { mutableIntStateOf(2) } // 0 = All Rows, 1 = Full Month, 2 = Pay Cycle, 3 = Pay Week
     var sortExpensesAscending by remember { mutableStateOf(false) } // false = Newest First, true = Oldest First
     var statusFilter by remember { mutableIntStateOf(0) } // 0 = All, 1 = Pending, 2 = Cleared
+    var categoryFilter by remember { mutableStateOf<String?>(null) } // null = All, "Credit Cards", "Core Bills"
 
     LaunchedEffect(uiState.selectedMonth) {
         val today = LocalDate.now()
@@ -2417,10 +2866,10 @@ fun EnterExpensesView(
     }
 
     LaunchedEffect(uiState.activeAccountName) {
-        selectedAccount = if (uiState.activeAccountName == "All Accounts") "Primary Account" else uiState.activeAccountName
+        selectedAccount = if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName
     }
 
-    val formatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
+    val formatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     val dateRangeFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     val weekRangeText = remember(uiState.currentPayWeekStart, uiState.currentPayWeekEnd) {
         "${uiState.currentPayWeekStart.format(dateRangeFormatter)} – ${uiState.currentPayWeekEnd.format(dateRangeFormatter)}"
@@ -2433,10 +2882,11 @@ fun EnterExpensesView(
 
     // Filter expenses (including planned bills for active month)
     val expensesList = remember(uiState.allTransactions, uiState.plannedExpenses, uiState.selectedMonth, uiState.activeAccountName, sortExpensesAscending) {
+        val primaryAcc = uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: ""
         val dbExpenses = uiState.allTransactions.filter { tx ->
             val matchesAccount = uiState.activeAccountName == "All Accounts" ||
                     tx.accountName.equals(uiState.activeAccountName, ignoreCase = true) ||
-                    (uiState.activeAccountName == "Primary Account" && (tx.accountName.isBlank() || tx.accountName.equals("Primary", ignoreCase = true)))
+                    (primaryAcc.isNotEmpty() && uiState.activeAccountName.equals(primaryAcc, ignoreCase = true) && (tx.accountName.isBlank() || tx.accountName.equals("Primary Account", ignoreCase = true) || tx.accountName.equals("Primary", ignoreCase = true)))
             val catLower = tx.category.lowercase(java.util.Locale.US)
             val isIncomeCat = catLower == "paycheck" || catLower == "income" || catLower == "salary" || catLower == "bonus" || catLower == "deposit" || catLower == "freelance" || catLower == "investment" || catLower == "investments"
             matchesAccount && !tx.isIncome && !isIncomeCat && tx.amount > 0.0 && !tx.title.contains("Cancelled") && !tx.title.contains("Deleted")
@@ -2446,7 +2896,7 @@ fun EnterExpensesView(
         val syntheticPlanned = uiState.plannedExpenses.mapIndexedNotNull { idx, planned ->
             val matchesAccount = uiState.activeAccountName == "All Accounts" ||
                     planned.targetAccount.equals(uiState.activeAccountName, ignoreCase = true) ||
-                    (uiState.activeAccountName == "Primary Account" && (planned.targetAccount.isBlank() || planned.targetAccount.equals("Primary", ignoreCase = true)))
+                    (primaryAcc.isNotEmpty() && uiState.activeAccountName.equals(primaryAcc, ignoreCase = true) && (planned.targetAccount.isBlank() || planned.targetAccount.equals("Primary Account", ignoreCase = true) || planned.targetAccount.equals("Primary", ignoreCase = true)))
             if (!matchesAccount) return@mapIndexedNotNull null
 
             val dueDate = try {
@@ -2463,6 +2913,7 @@ fun EnterExpensesView(
             }
             if (!existsInDb) {
                 val synthId = -kotlin.math.abs((planned.id.toLong() * 10000L + dueDate.dayOfYear.toLong()).toInt()) - 5000
+                val targetAcc = if (planned.targetAccount.isBlank() || planned.targetAccount.equals("Primary Account", ignoreCase = true) || planned.targetAccount.equals("Primary", ignoreCase = true)) primaryAcc else planned.targetAccount
                 TransactionEntity(
                     id = synthId,
                     title = planned.title + " (Planned)",
@@ -2471,7 +2922,7 @@ fun EnterExpensesView(
                     category = "Utilities",
                     isIncome = false,
                     isRecurring = true,
-                    accountName = if (planned.targetAccount.isBlank()) "Primary Account" else planned.targetAccount
+                    accountName = targetAcc
                 )
             } else null
         }
@@ -2485,11 +2936,16 @@ fun EnterExpensesView(
     }
 
     val displayedExpensesList = remember(
-        expensesList, filterScope, statusFilter,
+        expensesList, filterScope, statusFilter, categoryFilter,
         uiState.currentPayWeekStart, uiState.currentPayWeekEnd,
         uiState.currentPayPeriodStart, uiState.currentPayPeriodEnd,
         uiState.selectedMonth
     ) {
+        val currentCycleMonths = setOf(
+            YearMonth.from(uiState.currentPayPeriodStart),
+            YearMonth.from(uiState.currentPayPeriodEnd),
+            uiState.selectedMonth
+        )
         val scopeFiltered = when (filterScope) {
             1 -> expensesList.filter { tx ->
                 val d = DateUtils.millisToLocalDate(tx.dateMillis)
@@ -2503,14 +2959,26 @@ fun EnterExpensesView(
                 val d = DateUtils.millisToLocalDate(tx.dateMillis)
                 !d.isBefore(uiState.currentPayWeekStart) && !d.isAfter(uiState.currentPayWeekEnd)
             }
-            else -> expensesList // 0 = All Rows
+            else -> expensesList.filter { tx ->
+                val d = DateUtils.millisToLocalDate(tx.dateMillis)
+                YearMonth.from(d) in currentCycleMonths
+            } // 0 = All Rows (scoped to months for the current cycle)
         }
 
-        scopeFiltered.filter { tx ->
+        val statusFiltered = scopeFiltered.filter { tx ->
             when (statusFilter) {
                 1 -> !tx.isCompleted
                 2 -> tx.isCompleted
                 else -> true
+            }
+        }
+
+        if (categoryFilter == null) {
+            statusFiltered
+        } else {
+            statusFiltered.filter { tx ->
+                val (parent, _) = CategoryTheme.parseCategory(tx.category)
+                parent.equals(categoryFilter, ignoreCase = true)
             }
         }
     }
@@ -2579,6 +3047,62 @@ fun EnterExpensesView(
                         )
                     }
                 }
+            }
+
+            // Unified Filter Row: All Statuses, Pending, Cleared, Credit Cards, and Core Bills on the same line
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val statusLabels = listOf("All Statuses", "⏳ Pending", "✅ Cleared")
+                statusLabels.forEachIndexed { index, label ->
+                    val selected = statusFilter == index
+                    FilterChip(
+                        selected = selected,
+                        onClick = { statusFilter = index },
+                        label = {
+                            Text(
+                                text = label,
+                                fontSize = 11.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        },
+                        modifier = Modifier.testTag("filter_chip_$index")
+                    )
+                }
+
+                FilterChip(
+                    selected = categoryFilter == "Credit Cards",
+                    onClick = {
+                        categoryFilter = if (categoryFilter == "Credit Cards") null else "Credit Cards"
+                    },
+                    label = {
+                        Text(
+                            text = "💳 Credit Cards",
+                            fontSize = 11.sp,
+                            fontWeight = if (categoryFilter == "Credit Cards") FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    modifier = Modifier.testTag("filter_chip_credit_cards")
+                )
+
+                FilterChip(
+                    selected = categoryFilter == "Core Bills",
+                    onClick = {
+                        categoryFilter = if (categoryFilter == "Core Bills") null else "Core Bills"
+                    },
+                    label = {
+                        Text(
+                            text = "📋 Core Bills",
+                            fontSize = 11.sp,
+                            fontWeight = if (categoryFilter == "Core Bills") FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    modifier = Modifier.testTag("filter_chip_core_bills")
+                )
             }
 
             // Excel Sheet Formula Bar / Status Header
@@ -2720,6 +3244,30 @@ fun EnterExpensesView(
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text("⚡ Auto-Pay", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFFD8B4FE) else Color(0xFF7E22CE))
                             }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { isExpenseCompleted = !isExpenseCompleted }
+                                    .padding(horizontal = 2.dp, vertical = 1.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isExpenseCompleted,
+                                    onCheckedChange = { isExpenseCompleted = it },
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .testTag("enter_expense_completed_checkbox")
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = if (isExpenseCompleted) "✓ Paid" else "⏳ Pending",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isExpenseCompleted) Color(0xFF10B981) else (if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
+                                )
+                            }
                             if (isAutoPay) {
                                 EditableAutoPayTag(
                                     accountName = selectedAccount,
@@ -2793,6 +3341,13 @@ fun EnterExpensesView(
                             }
                         }
 
+                        // Subcategory Picker
+                        ExpenseCategorySubCategoryPicker(
+                            selectedCategory = selectedCategory,
+                            onCategorySelected = { selectedCategory = it },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2827,7 +3382,7 @@ fun EnterExpensesView(
                                         errorMessage = "Please enter a valid due date (YYYY-MM-DD)."
                                         statusMessage = ""
                                     } else {
-                                        onAddExpense(t, amt, parsedDate, selectedCategory, isRecurring, selectedAccount, isAutoPay)
+                                        onAddExpense(t, amt, parsedDate, selectedCategory, isRecurring, selectedAccount, isAutoPay, isExpenseCompleted)
                                         filterScope = 0
                                         statusMessage = "✅ Added '$t' (${String.format(Locale.US, "%.2f", amt)}) to expense spreadsheet!"
                                         errorMessage = ""
@@ -2939,6 +3494,24 @@ fun EnterExpensesView(
                                         .weight(1f)
                                         .horizontalScroll(rememberScrollState())
                                 ) {
+                                    // Category & Subcategory Badge
+                                    val (catParent, catSub) = CategoryTheme.parseCategory(tx.category)
+                                    val catColor = CategoryTheme.getColor(tx.category)
+                                    val catEmoji = CategoryTheme.getEmoji(tx.category)
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = catColor.copy(alpha = if (isDark) 0.22f else 0.12f),
+                                        border = BorderStroke(1.dp, catColor.copy(alpha = 0.45f))
+                                    ) {
+                                        Text(
+                                            text = "$catEmoji $catParent",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = catColor,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+
                                     // Account Badge
                                     val accStyle = getAccountColorStyle(tx.accountName, isDark)
                                     Surface(
@@ -2963,13 +3536,20 @@ fun EnterExpensesView(
                                         }
                                     }
 
-                                    // Date
-                                    Text(
-                                        text = txDate.format(formatter),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
-                                    )
+                                    // Date Chip
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (isDark) Color(0xFF334155).copy(alpha = 0.5f) else Color(0xFFF1F5F9),
+                                        border = BorderStroke(1.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
+                                    ) {
+                                        Text(
+                                            text = txDate.format(formatter),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
 
                                     if (tx.isRecurring) {
                                         Surface(
@@ -3019,7 +3599,11 @@ fun EnterExpensesView(
                                     if (tx.isCompleted) {
                                         Surface(
                                             shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFF10B981).copy(alpha = 0.2f)
+                                            color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable(enabled = onToggleExpense != null) { onToggleExpense?.invoke(tx) }
+                                                .testTag("expense_status_chip_${tx.id}")
                                         ) {
                                             Text(
                                                 text = "✓ Paid",
@@ -3032,10 +3616,14 @@ fun EnterExpensesView(
                                     } else {
                                         Surface(
                                             shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFFEF4444).copy(alpha = 0.18f)
+                                            color = Color(0xFFEF4444).copy(alpha = 0.18f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable(enabled = onToggleExpense != null) { onToggleExpense?.invoke(tx) }
+                                                .testTag("expense_status_chip_${tx.id}")
                                         ) {
                                             Text(
-                                                text = "⏳ Unpaid",
+                                                text = "⏳ Pending",
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = if (isDark) Color(0xFFFCA5A5) else Color(0xFFB91C1C),
@@ -3154,8 +3742,8 @@ fun EnterExpensesView(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 96.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top
         ) {
             Box(modifier = Modifier.weight(0.45f)) {
@@ -3172,8 +3760,8 @@ fun EnterExpensesView(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (isExpenseReorderActive || expenseSectionOrder != listOf("expense_form", "expense_list")) {
                 Surface(
@@ -3291,9 +3879,9 @@ fun MovableSectionWrapper(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = if (isSubSection) 2.dp else 4.dp)
+            .padding(vertical = if (isSubSection) 1.dp else 2.dp)
             .animateContentSize(),
-        shape = RoundedCornerShape(if (isSubSection) 12.dp else 16.dp),
+        shape = RoundedCornerShape(if (isSubSection) 10.dp else 12.dp),
         color = if (isReordering) 
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isSubSection) 0.08f else 0.12f) 
         else 
@@ -3321,7 +3909,7 @@ fun MovableSectionWrapper(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = if (isSubSection) 8.dp else 12.dp, vertical = if (isSubSection) 4.dp else 6.dp),
+                        .padding(horizontal = if (isSubSection) 8.dp else 10.dp, vertical = if (isSubSection) 3.dp else 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -3486,11 +4074,13 @@ fun TabSelector(
 ) {
     data class TabItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
     val items = listOf(
-        TabItem("Pay Cycles", Icons.Default.Refresh),
-        TabItem("Income", Icons.Default.Add),
+        TabItem("Overview", Icons.Default.Home),
+        TabItem("Income", Icons.Default.TrendingUp),
         TabItem("Expenses", Icons.Default.ShoppingCart),
-        TabItem("Debt Planner", Icons.Default.Star),
+        TabItem("Upcoming", Icons.Default.Schedule),
+        TabItem("Debt", Icons.Default.Star),
         TabItem("Calendar", Icons.Default.DateRange),
+        TabItem("AI Hub", Icons.Default.AutoAwesome),
         TabItem("Settings", Icons.Default.Settings)
     )
 
@@ -3557,9 +4147,10 @@ fun FoldableNavigationRail(
 ) {
     data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
     val items = listOf(
-        NavItem("Cycles", Icons.Default.Refresh),
-        NavItem("Income", Icons.Default.Add),
+        NavItem("Overview", Icons.Default.Home),
+        NavItem("Income", Icons.Default.TrendingUp),
         NavItem("Expenses", Icons.Default.ShoppingCart),
+        NavItem("Upcoming", Icons.Default.Schedule),
         NavItem("Debt", Icons.Default.Star),
         NavItem("Calendar", Icons.Default.DateRange),
         NavItem("AI Hub", Icons.Default.AutoAwesome),
@@ -3610,7 +4201,9 @@ fun FoldableNavigationRail(
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
     ) {
         Column(
-            modifier = Modifier.fillMaxHeight(),
+            modifier = Modifier
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -3654,59 +4247,366 @@ fun FoldableBottomNavBar(
     onTabSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+    data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val tabIndex: Int)
     val items = listOf(
-        NavItem("Cycles", Icons.Default.Refresh),
-        NavItem("Income", Icons.Default.Add),
-        NavItem("Expenses", Icons.Default.ShoppingCart),
-        NavItem("Debt", Icons.Default.Star),
-        NavItem("Calendar", Icons.Default.DateRange),
-        NavItem("AI Hub", Icons.Default.AutoAwesome),
-        NavItem("Settings", Icons.Default.Settings)
+        NavItem("Cycles", Icons.Default.Refresh, 0),
+        NavItem("Income", Icons.Default.Add, 1),
+        NavItem("Expenses", Icons.Default.ShoppingCart, 2),
+        NavItem("Upcoming", Icons.Default.Schedule, 3),
+        NavItem("Calendar", Icons.Default.DateRange, 5)
     )
 
-    NavigationBar(
+    val haptic = LocalHapticFeedback.current
+
+    Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 0.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
-        tonalElevation = 8.dp
+            .navigationBarsPadding(),
+        color = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
+        tonalElevation = 8.dp,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
     ) {
-        items.forEachIndexed { index, item ->
-            val isSelected = selectedTab == index
-            NavigationBarItem(
-                selected = isSelected,
-                onClick = { onTabSelected(index) },
-                icon = {
-                    Icon(
-                        imageVector = item.icon,
-                        contentDescription = item.title,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                label = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEach { item ->
+                val isSelected = selectedTab == item.tabIndex
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("nav_bottom_${item.tabIndex}")
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onTabSelected(item.tabIndex)
+                        }
+                        .padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.title,
+                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = item.title,
                         fontSize = 10.sp,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
-                },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primary
-                ),
-                modifier = Modifier.testTag("nav_bottom_$index")
-            )
+                }
+            }
         }
     }
 }
 
+@Composable
+fun SafeToSpendHeroCard(
+    uiState: BudgetUiState,
+    modifier: Modifier = Modifier
+) {
+    val today = LocalDate.now()
+    val period = uiState.currentPayPeriod
+    val df = remember { java.time.format.DateTimeFormatter.ofPattern("MMM d", Locale.US) }
+    var isRecapDismissed by rememberSaveable { mutableStateOf(false) }
+    val isWideScreen = LocalConfiguration.current.screenWidthDp >= 600
 
+    val safeToSpend = period?.remainingBalance ?: uiState.monthlyRemainingBalance
+    val totalIncome = period?.totalIncome ?: uiState.monthlyTotalIncome
+    val totalExpenses = period?.totalExpenses ?: uiState.monthlyTotalExpenses
+    val totalAvailable = period?.totalAvailable ?: (totalIncome)
+    val spentPct = if (totalAvailable > 0) ((totalExpenses / totalAvailable).coerceIn(0.0, 1.0)).toFloat() else 0f
 
+    val nextPayday = period?.endDate?.plusDays(1) ?: today.plusDays(14)
+    val daysUntilPayday = java.time.temporal.ChronoUnit.DAYS.between(today, nextPayday).coerceAtLeast(0)
 
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        // Cycle Recap Banner (Dismissible)
+        AnimatedVisibility(
+            visible = !isRecapDismissed,
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut() + slideOutVertically()
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("cycle_recap_banner")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("✨", fontSize = 16.sp)
+                        Column {
+                            Text(
+                                text = if (period != null) {
+                                    if (isWideScreen) "Cycle Recap: ${period.startDate.format(df)} – ${period.endDate.format(df)}"
+                                    else "Cycle: ${period.startDate.format(df)} – ${period.endDate.format(df)}"
+                                } else "Cycle Summary",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = if (isWideScreen) {
+                                    "You have ${String.format(Locale.US, "$%,.2f", safeToSpend)} safe to spend with ${daysUntilPayday}d until payday."
+                                } else {
+                                    "${String.format(Locale.US, "$%,.0f", safeToSpend)} safe to spend • ${daysUntilPayday}d to payday"
+                                },
+                                fontSize = 10.5.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = { isRecapDismissed = true },
+                        modifier = Modifier
+                            .size(24.dp)
+                            .testTag("dismiss_cycle_recap_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Dismiss recap",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+            }
+        }
+
+        // Main Safe-To-Spend Card
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("safe_to_spend_hero_card")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = if (isWideScreen) 14.dp else 10.dp, vertical = if (isWideScreen) 10.dp else 7.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                // Top header: Status Badge + Cycle Range
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = if (safeToSpend >= 0) Color(0xFF10B981) else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(7.dp)
+                        ) {}
+                        Text(
+                            text = "SAFE-TO-SPEND",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.8.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                    ) {
+                        Text(
+                            text = if (period != null) "${period.startDate.format(df)} – ${period.endDate.format(df)}" else "Current Month",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                // Main Amount Display
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = String.format(Locale.US, "$%,.2f", safeToSpend),
+                            fontSize = if (isWideScreen) 28.sp else 23.sp,
+                            fontWeight = FontWeight.Black,
+                            color = if (safeToSpend >= 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = if (safeToSpend >= 0) {
+                                if (isWideScreen) "Free cash remaining for this pay cycle" else "Free cash this cycle"
+                            } else {
+                                "Over budget by ${String.format(Locale.US, "$%,.2f", -safeToSpend)}"
+                            },
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Status Pill
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = when {
+                            safeToSpend > totalAvailable * 0.3 -> Color(0xFF10B981).copy(alpha = 0.15f)
+                            safeToSpend >= 0 -> Color(0xFFF59E0B).copy(alpha = 0.15f)
+                            else -> MaterialTheme.colorScheme.errorContainer
+                        }
+                    ) {
+                        Text(
+                            text = when {
+                                safeToSpend > totalAvailable * 0.3 -> if (isWideScreen) "💚 On Track" else "💚 Good"
+                                safeToSpend >= 0 -> if (isWideScreen) "⚠️ Watchful" else "⚠️ Caution"
+                                else -> if (isWideScreen) "🚨 Attention" else "🚨 Over"
+                            },
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                safeToSpend > totalAvailable * 0.3 -> Color(0xFF059669)
+                                safeToSpend >= 0 -> Color(0xFFD97706)
+                                else -> MaterialTheme.colorScheme.onErrorContainer
+                            },
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                // Progress Bar
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    LinearProgressIndicator(
+                        progress = { spentPct },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = when {
+                            spentPct > 0.9f -> MaterialTheme.colorScheme.error
+                            spentPct > 0.7f -> Color(0xFFF59E0B)
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "${(spentPct * 100).toInt()}% committed",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${((1f - spentPct).coerceAtLeast(0f) * 100).toInt()}% available",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // 3 Quick Metrics Footer (Income/Available, Bills/Expenses, Days to Payday)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isWideScreen) "AVAILABLE CASH" else "AVAILABLE",
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalAvailable) else String.format(Locale.US, "$%,.0f", totalAvailable),
+                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isWideScreen) "PLANNED BILLS" else "BILLS DUE",
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalExpenses) else String.format(Locale.US, "$%,.0f", totalExpenses),
+                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isWideScreen) "NEXT PAYDAY" else "PAYDAY",
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (daysUntilPayday == 0L) (if (isWideScreen) "Today! 🎉" else "Today!") else (if (isWideScreen) "in ${daysUntilPayday}d" else "${daysUntilPayday}d"),
+                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun TransactionSearchAndFilterBar(
@@ -3743,6 +4643,7 @@ fun PayCyclesListView(
     onEditTransaction: (TransactionEntity) -> Unit = {},
     onToggleCompleted: (TransactionEntity) -> Unit = {},
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
+    onNavigateToUpcoming: (() -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     var isSyncingSheets by remember { mutableStateOf(false) }
@@ -3754,11 +4655,11 @@ fun PayCyclesListView(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp)
+            .padding(start = 0.dp, end = 0.dp, top = 2.dp, bottom = 24.dp)
             .testTag("pay_cycles_list"),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (uiState.payPeriods.isEmpty()) {
                                 Box(
                                     modifier = Modifier
@@ -3836,14 +4737,19 @@ fun PayCyclesListView(
                                     }
                                 }
 
+                                TransactionSearchAndFilterBar(
+                                    statusFilter = statusFilter,
+                                    onStatusFilterChange = { statusFilter = it }
+                                )
+
                                 BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                                     val canUseTwoColumns = (isWideScreen || maxWidth >= 540.dp) && uiState.payPeriods.size > 1
-                                    val colSpacing = 16.dp
+                                    val colSpacing = 8.dp
                                     if (canUseTwoColumns) {
                                         val today = LocalDate.now()
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
-                                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             for (pair in uiState.payPeriods.chunked(2)) {
                                                 Row(
@@ -3864,6 +4770,7 @@ fun PayCyclesListView(
                                                             onDeleteTransaction = onDeleteTransaction,
                                                             onEditTransaction = onEditTransaction,
                                                             onToggleCompleted = onToggleCompleted,
+                                                            onNavigateToUpcoming = onNavigateToUpcoming,
                                                             isWideScreen = isWideScreen
                                                         )
                                                     }
@@ -3882,6 +4789,7 @@ fun PayCyclesListView(
                                                                 onDeleteTransaction = onDeleteTransaction,
                                                                 onEditTransaction = onEditTransaction,
                                                                 onToggleCompleted = onToggleCompleted,
+                                                                onNavigateToUpcoming = onNavigateToUpcoming,
                                                                 isWideScreen = isWideScreen
                                                             )
                                                         }
@@ -3895,7 +4803,7 @@ fun PayCyclesListView(
                                         val today = LocalDate.now()
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
-                                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             for (period in uiState.payPeriods) {
                                                 val isCurrent = period.startDate == uiState.currentPayPeriodStart ||
@@ -3911,6 +4819,7 @@ fun PayCyclesListView(
                                                     onDeleteTransaction = onDeleteTransaction,
                                                     onEditTransaction = onEditTransaction,
                                                     onToggleCompleted = onToggleCompleted,
+                                                    onNavigateToUpcoming = onNavigateToUpcoming,
                                                     isWideScreen = false
                                                 )
                                             }
@@ -3935,6 +4844,7 @@ fun PayCycleCard(
     onDeleteTransaction: (TransactionEntity) -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit = {},
     onToggleCompleted: (TransactionEntity) -> Unit = {},
+    onNavigateToUpcoming: (() -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     val today = remember { LocalDate.now() }
@@ -3953,14 +4863,21 @@ fun PayCycleCard(
 
     val pct = period.spentPercentage
 
+    val unpaidBillsInCycle = remember(period.transactions) {
+        period.transactions.filter { !it.isIncome && !it.isCompleted && it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted") }
+    }
+
     val accountsInThisCycle = remember(period.transactions, period.paycheckAmount, period.otherIncome) {
         val validTx = period.transactions.filter {
             it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted")
         }
+        val defaultAcc = if (activeAccountName != "All Accounts" && !activeAccountName.equals("Primary Account", ignoreCase = true) && !activeAccountName.equals("Primary", ignoreCase = true)) activeAccountName else (period.transactions.map { it.accountName }.firstOrNull { it.isNotBlank() && !it.equals("Primary Account", ignoreCase = true) && !it.equals("Primary", ignoreCase = true) } ?: "")
         val accountsMap = linkedMapOf<String, MutableList<TransactionEntity>>()
         for (tx in validTx) {
-            val acc = if (tx.accountName.isBlank() || tx.accountName.equals("Primary", ignoreCase = true)) "Primary Account" else tx.accountName
-            accountsMap.getOrPut(acc) { mutableListOf() }.add(tx)
+            val acc = if (tx.accountName.isBlank() || tx.accountName.equals("Primary Account", ignoreCase = true) || tx.accountName.equals("Primary", ignoreCase = true)) defaultAcc else tx.accountName
+            if (acc.isNotBlank()) {
+                accountsMap.getOrPut(acc) { mutableListOf() }.add(tx)
+            }
         }
 
         accountsMap.map { (acc, txs) ->
@@ -4022,7 +4939,7 @@ fun PayCycleCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { expanded = !expanded }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -4046,7 +4963,7 @@ fun PayCycleCard(
                             ) {}
                             Text(
                                 text = "${period.startDate.format(df)} – ${period.endDate.format(df)}",
-                                fontSize = 15.sp,
+                                fontSize = if (isWideScreen) 15.sp else 13.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
@@ -4059,8 +4976,8 @@ fun PayCycleCard(
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Text(
-                                    text = "Current Cycle",
-                                    fontSize = 11.sp,
+                                    text = if (isWideScreen) "Current Cycle" else "Current",
+                                    fontSize = if (isWideScreen) 11.sp else 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -4074,14 +4991,50 @@ fun PayCycleCard(
                                 color = MaterialTheme.colorScheme.tertiaryContainer
                             ) {
                                 Text(
-                                    text = "Next Cycle",
-                                    fontSize = 11.sp,
+                                    text = if (isWideScreen) "Next Cycle" else "Next",
+                                    fontSize = if (isWideScreen) 11.sp else 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
+                            }
+                        }
+
+                        if (unpaidBillsInCycle.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f),
+                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .testTag("cycle_bills_due_chip_${period.payday}")
+                                    .clickable { onNavigateToUpcoming?.invoke() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Schedule,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Text(
+                                        text = if (isWideScreen) {
+                                            "${unpaidBillsInCycle.size} bills due (${String.format(Locale.US, "$%,.0f", unpaidBillsInCycle.sumOf { it.amount })}) →"
+                                        } else {
+                                            "${unpaidBillsInCycle.size} bills (${String.format(Locale.US, "$%,.0f", unpaidBillsInCycle.sumOf { it.amount })}) →"
+                                        },
+                                        fontSize = if (isWideScreen) 10.5.sp else 9.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
                             }
                         }
                     }
@@ -4131,8 +5084,8 @@ fun PayCycleCard(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(12.dp),
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                         )
@@ -4140,8 +5093,8 @@ fun PayCycleCard(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -4194,7 +5147,7 @@ fun PayCycleCard(
                                     border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.2f))
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp),
+                                        modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
@@ -4205,10 +5158,9 @@ fun PayCycleCard(
                                             maxLines = 1,
                                             softWrap = false
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = String.format(Locale.US, "$%,.2f", period.totalExpenses),
-                                            fontSize = 12.sp,
+                                            fontSize = 11.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFDC2626),
                                             maxLines = 1,
@@ -4224,7 +5176,7 @@ fun PayCycleCard(
                                     border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.2f))
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp),
+                                        modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
@@ -4235,10 +5187,9 @@ fun PayCycleCard(
                                             maxLines = 1,
                                             softWrap = false
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = String.format(Locale.US, "+$%,.2f", period.totalIncome),
-                                            fontSize = 12.sp,
+                                            fontSize = 11.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFF059669),
                                             maxLines = 1,
@@ -4254,7 +5205,7 @@ fun PayCycleCard(
                                     border = BorderStroke(1.dp, if (period.remainingBalance >= 0) Color(0xFF10B981).copy(alpha = 0.3f) else Color(0xFFEF4444).copy(alpha = 0.3f))
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 6.dp),
+                                        modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
@@ -4265,7 +5216,6 @@ fun PayCycleCard(
                                             maxLines = 1,
                                             softWrap = false
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = String.format(Locale.US, "$%,.2f", period.remainingBalance),
                                             fontSize = 12.sp,
@@ -4284,8 +5234,8 @@ fun PayCycleCard(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -4336,7 +5286,7 @@ fun PayCycleCard(
                             }
 
                             androidx.compose.foundation.lazy.LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 items(accountsInThisCycle, key = { it.accountName }) { accSummary ->
@@ -4344,11 +5294,11 @@ fun PayCycleCard(
                                     val accStyle = getAccountColorStyle(accSummary.accountName, isDark)
 
                                     Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isFiltered) accStyle.containerColor else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isFiltered) accStyle.containerColor else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                                         border = BorderStroke(
-                                            width = if (isFiltered) 2.dp else 1.dp,
-                                            color = if (isFiltered) accStyle.borderColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                                            width = if (isFiltered) 1.5.dp else 1.dp,
+                                            color = if (isFiltered) accStyle.borderColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                                         ),
                                         modifier = Modifier
                                             .clickable {
@@ -4356,100 +5306,125 @@ fun PayCycleCard(
                                             }
                                             .testTag("cycle_target_account_${accSummary.accountName}")
                                     ) {
-                                        Column(
+                                        Row(
                                             modifier = Modifier
-                                                .width(135.dp)
-                                                .padding(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                                                .widthIn(min = 160.dp, max = 240.dp)
+                                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
+                                            // Left: Indicator dot + Account Name & count badge + Paid/Left summary
                                             Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
+                                                modifier = Modifier.weight(1f, fill = false),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Text(
-                                                    text = accSummary.accountName,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isFiltered) accStyle.contentColor else MaterialTheme.colorScheme.onSurface,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(7.dp)
+                                                        .background(accStyle.borderColor, CircleShape)
                                                 )
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = accStyle.borderColor.copy(alpha = 0.2f)
+                                                Column(
+                                                    verticalArrangement = Arrangement.spacedBy(1.dp)
                                                 ) {
-                                                    Text(
-                                                        text = "${accSummary.transactionCount}",
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = accStyle.borderColor,
-                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                    )
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = accSummary.accountName,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isFiltered) accStyle.contentColor else MaterialTheme.colorScheme.onSurface,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = accStyle.borderColor.copy(alpha = 0.2f)
+                                                        ) {
+                                                            Text(
+                                                                text = "${accSummary.transactionCount}",
+                                                                fontSize = 8.5.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = accStyle.borderColor,
+                                                                modifier = Modifier.padding(horizontal = 3.5.dp, vertical = 0.5.dp)
+                                                            )
+                                                        }
+                                                    }
+
+                                                    // Compact horizontal status line
+                                                    if (accSummary.completedExpenses > 0.0 || accSummary.pendingExpenses > 0.0) {
+                                                        Row(
+                                                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            if (accSummary.completedExpenses > 0.0) {
+                                                                Text(
+                                                                    text = String.format(Locale.US, "✓$%,.0f", accSummary.completedExpenses),
+                                                                    fontSize = 8.5.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = Color(0xFF047857)
+                                                                )
+                                                            }
+                                                            if (accSummary.completedExpenses > 0.0 && accSummary.pendingExpenses > 0.0) {
+                                                                Text(
+                                                                    text = "•",
+                                                                    fontSize = 8.sp,
+                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                                                )
+                                                            }
+                                                            if (accSummary.pendingExpenses > 0.0) {
+                                                                Text(
+                                                                    text = String.format(Locale.US, "⏳$%,.0f", accSummary.pendingExpenses),
+                                                                    fontSize = 8.5.sp,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = Color(0xFFD97706)
+                                                                )
+                                                            }
+                                                        }
+                                                    } else if (accSummary.totalIncome > 0.0 && accSummary.totalExpenses == 0.0) {
+                                                        Text(
+                                                            text = "Income source",
+                                                            fontSize = 8.5.sp,
+                                                            color = Color(0xFF059669)
+                                                        )
+                                                    }
                                                 }
                                             }
 
-                                            if (accSummary.totalExpenses > 0.0) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = "Expenses:",
-                                                        fontSize = 9.5.sp,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
+                                            Spacer(modifier = Modifier.width(8.dp))
+
+                                            // Right: Financial amounts (expenses / income)
+                                            Column(
+                                                horizontalAlignment = Alignment.End,
+                                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                                            ) {
+                                                if (accSummary.totalExpenses > 0.0) {
                                                     Text(
                                                         text = String.format(Locale.US, "-$%,.2f", accSummary.totalExpenses),
-                                                        fontSize = 10.5.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFFDC2626)
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = Color(0xFFDC2626),
+                                                        maxLines = 1
                                                     )
                                                 }
-                                            }
-
-                                            if (accSummary.totalIncome > 0.0) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = "Income:",
-                                                        fontSize = 9.5.sp,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
+                                                if (accSummary.totalIncome > 0.0) {
                                                     Text(
                                                         text = String.format(Locale.US, "+$%,.2f", accSummary.totalIncome),
-                                                        fontSize = 10.5.sp,
+                                                        fontSize = 10.sp,
                                                         fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFF059669)
+                                                        color = Color(0xFF059669),
+                                                        maxLines = 1
                                                     )
                                                 }
-                                            }
-
-                                            // Cleared vs Pending
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                if (accSummary.completedExpenses > 0.0) {
+                                                if (accSummary.totalExpenses == 0.0 && accSummary.totalIncome == 0.0) {
                                                     Text(
-                                                        text = String.format(Locale.US, "✓ $%,.0f paid", accSummary.completedExpenses),
-                                                        fontSize = 8.5.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        color = Color(0xFF047857)
-                                                    )
-                                                }
-                                                if (accSummary.pendingExpenses > 0.0) {
-                                                    Text(
-                                                        text = String.format(Locale.US, "⏳ $%,.0f left", accSummary.pendingExpenses),
-                                                        fontSize = 8.5.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        color = Color(0xFFD97706)
+                                                        text = "$0.00",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1
                                                     )
                                                 }
                                             }
@@ -4479,7 +5454,8 @@ fun PayCycleCard(
                             }
                             if (!matchesStatus) return@filter false
 
-                            val txAcc = if (tx.accountName.isBlank() || tx.accountName.equals("Primary", ignoreCase = true)) "Primary Account" else tx.accountName
+                            val defaultAcc = if (activeAccountName != "All Accounts" && !activeAccountName.equals("Primary Account", ignoreCase = true) && !activeAccountName.equals("Primary", ignoreCase = true)) activeAccountName else (period.transactions.map { it.accountName }.firstOrNull { it.isNotBlank() && !it.equals("Primary Account", ignoreCase = true) && !it.equals("Primary", ignoreCase = true) } ?: "")
+                            val txAcc = if (tx.accountName.isBlank() || tx.accountName.equals("Primary Account", ignoreCase = true) || tx.accountName.equals("Primary", ignoreCase = true)) defaultAcc else tx.accountName
                             if (selectedAccountFilterInCycle != null && !txAcc.equals(selectedAccountFilterInCycle, ignoreCase = true)) {
                                 return@filter false
                             }
@@ -4490,7 +5466,7 @@ fun PayCycleCard(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp),
+                                .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 2.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -4519,8 +5495,8 @@ fun PayCycleCard(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(80.dp)
-                                    .padding(16.dp),
+                                    .height(48.dp)
+                                    .padding(8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -4534,8 +5510,8 @@ fun PayCycleCard(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 for (tx in cycleTransactions) {
                                     Surface(
@@ -4549,21 +5525,21 @@ fun PayCycleCard(
                                             onDelete = { onDeleteTransaction(tx) },
                                             onEdit = { onEditTransaction(tx) },
                                             onToggleCompleted = { onToggleCompleted(tx) },
-                                            modifier = Modifier.padding(vertical = 2.dp)
+                                            modifier = Modifier.padding(vertical = 0.dp)
                                         )
                                     }
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
 
                         // Actions footer inside card
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
-                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -4583,8 +5559,8 @@ fun PayCycleCard(
                                         ).show()
                                     },
                                     modifier = Modifier.testTag("create_remaining_expense_${period.payday}"),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                    shape = RoundedCornerShape(10.dp)
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.ShoppingCart,
@@ -4605,8 +5581,8 @@ fun PayCycleCard(
                             Button(
                                 onClick = { onAddTransactionClick(period.startDate) },
                                 modifier = Modifier.testTag("add_item_cycle_${period.payday}"),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(10.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -4652,9 +5628,9 @@ fun TransactionItemRow(
             modifier = modifier
                 .fillMaxWidth()
                 .clickable(enabled = onEdit != null) { onEdit?.invoke() }
-                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .padding(horizontal = 8.dp, vertical = 3.dp)
                 .testTag("transaction_row_${transaction.id}"),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             // Main Top Line: [Checkbox] [Icon] [Title Text] ... [Amount]
             Row(
@@ -4701,7 +5677,7 @@ fun TransactionItemRow(
                     modifier = Modifier.size(24.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(if (transaction.isIncome) "💰" else "💸", fontSize = 12.sp)
+                        Text(if (transaction.isIncome) "💰" else CategoryTheme.getEmoji(transaction.category), fontSize = 12.sp)
                     }
                 }
 
@@ -4772,21 +5748,31 @@ fun TransactionItemRow(
                             )
                         }
                     }
-                    if (transaction.isCompleted) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color(0xFF10B981).copy(alpha = 0.18f)
-                        ) {
-                            Text(
-                                text = "✓ Cleared",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF047857),
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (transaction.isCompleted) {
+                            Color(0xFF10B981).copy(alpha = 0.18f)
+                        } else {
+                            Color(0xFFF59E0B).copy(alpha = 0.15f)
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (transaction.isCompleted) Color(0xFF10B981).copy(alpha = 0.4f) else Color(0xFFF59E0B).copy(alpha = 0.4f)
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable(enabled = onToggleCompleted != null) { onToggleCompleted?.invoke() }
+                            .testTag("tx_status_chip_${transaction.id}")
+                    ) {
+                        Text(
+                            text = if (transaction.isCompleted) (if (transaction.isIncome) "✓ Received" else "✓ Paid") else "⏳ Pending",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (transaction.isCompleted) Color(0xFF047857) else (if (isSystemInDarkTheme()) Color(0xFFFCD34D) else Color(0xFFB45309)),
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                            maxLines = 1,
+                            softWrap = false
+                        )
                     }
                     if (transaction.isAutoPay) {
                         Surface(
@@ -4804,23 +5790,46 @@ fun TransactionItemRow(
                             )
                         }
                     }
-                    val accountTag = if (transaction.accountName.isBlank() || transaction.accountName.equals("Primary", ignoreCase = true)) "Primary Account" else transaction.accountName
-                    val accountStyle = getAccountColorStyle(accountTag, isSystemInDarkTheme())
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = accountStyle.containerColor,
-                        border = BorderStroke(1.dp, accountStyle.borderColor)
-                    ) {
-                        Text(
-                            text = accountTag,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = accountStyle.contentColor,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    val accountTag = if (transaction.accountName.isBlank() || transaction.accountName.equals("Primary Account", ignoreCase = true) || transaction.accountName.equals("Primary", ignoreCase = true)) "" else transaction.accountName
+                    if (accountTag.isNotBlank()) {
+                        val accountStyle = getAccountColorStyle(accountTag, isSystemInDarkTheme())
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = accountStyle.containerColor,
+                            border = BorderStroke(1.dp, accountStyle.borderColor)
+                        ) {
+                            Text(
+                                text = accountTag,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accountStyle.contentColor,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    if (!transaction.isIncome && transaction.category.isNotBlank()) {
+                        val (catParent, _) = CategoryTheme.parseCategory(transaction.category)
+                        val catEmoji = CategoryTheme.getEmoji(transaction.category)
+                        val catColor = CategoryTheme.getColor(transaction.category)
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = catColor.copy(alpha = if (isSystemInDarkTheme()) 0.22f else 0.12f),
+                            border = BorderStroke(1.dp, catColor.copy(alpha = 0.4f))
+                        ) {
+                            Text(
+                                text = "$catEmoji $catParent",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = catColor,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -5185,7 +6194,7 @@ fun CalendarGridView(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = if (isWideScreen) 0.dp else 80.dp),
+                .padding(bottom = if (isWideScreen) 0.dp else 24.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surface
             ),
@@ -5313,8 +6322,8 @@ fun CalendarGridView(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         topBannerContent()
 
@@ -5988,7 +6997,10 @@ fun SettingsView(
             onDismissRequest = { showAddIncomeSourceDialog = false },
             title = { Text("Add Recurring Income Stream", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedTextField(
                         value = sourceName,
                         onValueChange = { sourceName = it; sourceError = "" },
@@ -7289,7 +8301,7 @@ fun SettingsView(
                                     OutlinedTextField(
                                         value = csvImportInput,
                                         onValueChange = { csvImportInput = it },
-                                        placeholder = { Text("Date,Title,Amount,Category,Type,Account,Completed\n2026-07-29,\"Grocery Store\",45.50,\"Groceries\",\"Expense\",\"Primary Account\",\"Yes\"") },
+                                        placeholder = { Text("Date,Title,Amount,Category,Type,Account,Completed\n2026-07-29,\"Grocery Store\",45.50,\"Groceries\",\"Expense\",\"Checking\",\"Yes\"") },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(150.dp),
@@ -7758,20 +8770,22 @@ fun AddTransactionDialog(
     allAccounts: List<String>,
     initialAccountName: String,
     onDismiss: () -> Unit,
-    onConfirm: (title: String, amount: Double, date: LocalDate, category: String, isIncome: Boolean, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, reminderDaysBefore: Int) -> Unit
+    onConfirm: (title: String, amount: Double, date: LocalDate, category: String, isIncome: Boolean, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, reminderDaysBefore: Int, isCompleted: Boolean) -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
     var dateInput by remember { mutableStateOf(preselectedDate.toString()) }
-    var selectedCategory by remember { mutableStateOf("Groceries") }
+    var selectedCategory by remember { mutableStateOf("Core Bills") }
     var isIncome by remember { mutableStateOf(false) }
     var isRecurring by remember { mutableStateOf(false) }
     var recurFrequency by remember { mutableStateOf("Bi-Weekly") }
     var isAutoPay by remember { mutableStateOf(false) }
-    var selectedAccount by remember { mutableStateOf(if (initialAccountName == "All Accounts") (allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account") else initialAccountName) }
+    var isCompleted by remember { mutableStateOf(false) }
+    var selectedAccount by remember { mutableStateOf(if (initialAccountName == "All Accounts" || initialAccountName.isBlank() || initialAccountName.equals("Primary Account", ignoreCase = true) || initialAccountName.equals("Primary", ignoreCase = true)) (allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else initialAccountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var reminderDaysBefore by remember { mutableIntStateOf(0) }
     var reminderDropdownExpanded by remember { mutableStateOf(false) }
+    var isAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
 
     var errorMsg by remember { mutableStateOf("") }
 
@@ -7780,7 +8794,9 @@ fun AddTransactionDialog(
         title = { Text(if (isIncome) "Add Income Source" else "Schedule Bill / Expense") },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // Segmented Toggle for Income/Expense
@@ -7815,15 +8831,50 @@ fun AddTransactionDialog(
                     }
                 }
 
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    singleLine = true,
+                // Status Segmented Toggle: Pending vs Completed
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("tx_title_input")
-                )
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        .padding(2.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (!isCompleted) MaterialTheme.colorScheme.surface else Color.Transparent)
+                            .clickable { isCompleted = false }
+                            .padding(vertical = 6.dp)
+                            .testTag("add_dialog_status_pending"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("⏳", fontSize = 11.sp)
+                            Text("Pending", fontWeight = if (!isCompleted) FontWeight.Bold else FontWeight.Medium, fontSize = 11.5.sp)
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isCompleted) Color(0xFF10B981).copy(alpha = 0.2f) else Color.Transparent)
+                            .clickable { isCompleted = true }
+                            .padding(vertical = 6.dp)
+                            .testTag("add_dialog_status_completed"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+                            Text(
+                                text = if (isIncome) "Received" else "Paid / Cleared",
+                                fontWeight = if (isCompleted) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 11.5.sp,
+                                color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
 
                 OutlinedTextField(
                     value = amount,
@@ -7836,6 +8887,64 @@ fun AddTransactionDialog(
                         .testTag("tx_amount_input")
                 )
 
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("tx_title_input")
+                )
+
+                // Category Picker
+                if (isIncome) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Category",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = selectedCategory,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val catList = listOf("Paycheck", "Side Gig", "Bonus", "Refund", "Income")
+                            val icons = listOf("💼", "🚀", "🎁", "🔄", "💵")
+                            catList.forEachIndexed { idx, cat ->
+                                val isSelected = selectedCategory == cat
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { selectedCategory = cat },
+                                    label = { Text("${icons[idx]} $cat", fontSize = 11.sp) },
+                                    modifier = Modifier.testTag("tx_category_chip_${cat.lowercase()}")
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    ExpenseCategorySubCategoryPicker(
+                        selectedCategory = if (selectedCategory in listOf("Paycheck", "Income", "Side Gig", "Bonus", "Refund")) "Core Bills" else selectedCategory,
+                        onCategorySelected = { selectedCategory = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 DatePickerTextField(
                     value = dateInput,
                     onValueChange = { dateInput = it },
@@ -7844,192 +8953,242 @@ fun AddTransactionDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Target Account selector dropdown
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Target Account", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Box(
+                // More Details & Rules Collapsible Toggle
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { isAdvancedExpanded = !isAdvancedExpanded }
+                        .testTag("tx_advanced_toggle")
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 4.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-                            .clickable { accountDropdownExpanded = true }
-                            .padding(horizontal = 12.dp, vertical = 12.dp)
-                            .testTag("dialog_account_dropdown_trigger")
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(selectedAccount, fontSize = 14.sp)
                             Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = "Dropdown icon"
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = if (isAdvancedExpanded) "Hide Options (Account, Reminders, Rules)" else "More Options (Account, Reminders, Rules)",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
-                    }
-                    DropdownMenu(
-                        expanded = accountDropdownExpanded,
-                        onDismissRequest = { accountDropdownExpanded = false },
-                        modifier = Modifier.fillMaxWidth(0.7f)
-                    ) {
-                        allAccounts.filter { it != "All Accounts" }.forEach { acc ->
-                            DropdownMenuItem(
-                                text = { Text(acc, fontSize = 14.sp) },
-                                onClick = {
-                                    selectedAccount = acc
-                                    accountDropdownExpanded = false
-                                }
-                            )
-                        }
+                        Icon(
+                            imageVector = if (isAdvancedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
 
-                if (!isIncome) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("🔔 Notification Reminder", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Box(
+                AnimatedVisibility(visible = isAdvancedExpanded) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Target Account selector dropdown
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Target Account", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                                    .clickable { accountDropdownExpanded = true }
+                                    .padding(horizontal = 12.dp, vertical = 12.dp)
+                                    .testTag("dialog_account_dropdown_trigger")
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(selectedAccount, fontSize = 14.sp)
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "Dropdown icon"
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = accountDropdownExpanded,
+                                onDismissRequest = { accountDropdownExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.7f)
+                            ) {
+                                allAccounts.filter { it != "All Accounts" }.forEach { acc ->
+                                    DropdownMenuItem(
+                                        text = { Text(acc, fontSize = 14.sp) },
+                                        onClick = {
+                                            selectedAccount = acc
+                                            accountDropdownExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!isIncome) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text("🔔 Notification Reminder", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                                        .clickable { reminderDropdownExpanded = true }
+                                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                                        .testTag("tx_reminder_dropdown_trigger")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val label = when (reminderDaysBefore) {
+                                            0 -> "On Due Date (Day of at 9:00 AM)"
+                                            1 -> "1 Day Before Due Date"
+                                            3 -> "3 Days Before Due Date"
+                                            7 -> "1 Week Before Due Date"
+                                            else -> "No Notification Reminder"
+                                        }
+                                        Text(label, fontSize = 14.sp)
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown icon")
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = reminderDropdownExpanded,
+                                    onDismissRequest = { reminderDropdownExpanded = false },
+                                    modifier = Modifier.fillMaxWidth(0.7f)
+                                ) {
+                                    listOf(
+                                        0 to "On Due Date (Day of at 9:00 AM)",
+                                        1 to "1 Day Before Due Date",
+                                        3 to "3 Days Before Due Date",
+                                        7 to "1 Week Before Due Date",
+                                        -1 to "No Reminder"
+                                    ).forEach { (value, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label, fontSize = 14.sp) },
+                                            onClick = {
+                                                reminderDaysBefore = value
+                                                reminderDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Recurring Checkbox Toggle Row
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 4.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-                                .clickable { reminderDropdownExpanded = true }
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                                .testTag("tx_reminder_dropdown_trigger")
+                                .clickable { isRecurring = !isRecurring }
+                                .padding(vertical = 4.dp, horizontal = 2.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Box(
+                                modifier = Modifier.size(24.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                val label = when (reminderDaysBefore) {
-                                    0 -> "On Due Date (Day of at 9:00 AM)"
-                                    1 -> "1 Day Before Due Date"
-                                    3 -> "3 Days Before Due Date"
-                                    7 -> "1 Week Before Due Date"
-                                    else -> "No Notification Reminder"
-                                }
-                                Text(label, fontSize = 14.sp)
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Dropdown icon")
+                                Checkbox(
+                                    checked = isRecurring,
+                                    onCheckedChange = { isRecurring = it },
+                                    modifier = Modifier.testTag("tx_recurring_checkbox")
+                                )
                             }
+                            Text(
+                                text = if (isIncome) "Recur automatically" else "Recur monthly on this day",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
-                        DropdownMenu(
-                            expanded = reminderDropdownExpanded,
-                            onDismissRequest = { reminderDropdownExpanded = false },
-                            modifier = Modifier.fillMaxWidth(0.7f)
-                        ) {
-                            listOf(
-                                0 to "On Due Date (Day of at 9:00 AM)",
-                                1 to "1 Day Before Due Date",
-                                3 to "3 Days Before Due Date",
-                                7 to "1 Week Before Due Date",
-                                -1 to "No Reminder"
-                            ).forEach { (value, label) ->
-                                DropdownMenuItem(
-                                    text = { Text(label, fontSize = 14.sp) },
-                                    onClick = {
-                                        reminderDaysBefore = value
-                                        reminderDropdownExpanded = false
+
+                        if (isRecurring && isIncome) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 32.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "Recurrence Frequency:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    listOf("Bi-Weekly", "Weekly", "Monthly", "Semi-Monthly").forEach { f ->
+                                        FilterChip(
+                                            selected = recurFrequency == f,
+                                            onClick = { recurFrequency = f },
+                                            label = { Text(f, fontSize = 10.5.sp) }
+                                        )
                                     }
-                                )
+                                }
                             }
                         }
-                    }
-                }
 
-                // Recurring Checkbox Toggle Row
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { isRecurring = !isRecurring }
-                        .padding(vertical = 4.dp, horizontal = 2.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.size(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Checkbox(
-                            checked = isRecurring,
-                            onCheckedChange = { isRecurring = it },
-                            modifier = Modifier.testTag("tx_recurring_checkbox")
-                        )
-                    }
-                    Text(
-                        text = if (isIncome) "Recur automatically" else "Recur monthly on this day",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                if (isRecurring && isIncome) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 32.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            "Recurrence Frequency:",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            listOf("Bi-Weekly", "Weekly", "Monthly", "Semi-Monthly").forEach { f ->
-                                FilterChip(
-                                    selected = recurFrequency == f,
-                                    onClick = { recurFrequency = f },
-                                    label = { Text(f, fontSize = 10.5.sp) }
+                        // Auto Pay Checkbox Toggle Row
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { isAutoPay = !isAutoPay }
+                                .padding(vertical = 4.dp, horizontal = 2.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.size(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Checkbox(
+                                    checked = isAutoPay,
+                                    onCheckedChange = { isAutoPay = it },
+                                    modifier = Modifier.testTag("tx_autopay_checkbox")
                                 )
                             }
+                            Text(
+                                text = "⚡ Auto Pay enabled",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        if (isAutoPay) {
+                            EditableAutoPayTag(
+                                accountName = selectedAccount,
+                                isAutoPay = isAutoPay,
+                                allAccounts = allAccounts,
+                                onUpdateAutoPaySource = { newAccount, enabled ->
+                                    selectedAccount = newAccount
+                                    isAutoPay = enabled
+                                }
+                            )
                         }
                     }
-                }
-
-                // Auto Pay Checkbox Toggle Row
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { isAutoPay = !isAutoPay }
-                        .padding(vertical = 4.dp, horizontal = 2.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.size(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Checkbox(
-                            checked = isAutoPay,
-                            onCheckedChange = { isAutoPay = it },
-                            modifier = Modifier.testTag("tx_autopay_checkbox")
-                        )
-                    }
-                    Text(
-                        text = "⚡ Auto Pay enabled",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                if (isAutoPay) {
-                    EditableAutoPayTag(
-                        accountName = selectedAccount,
-                        isAutoPay = isAutoPay,
-                        allAccounts = allAccounts,
-                        onUpdateAutoPaySource = { newAccount, enabled ->
-                            selectedAccount = newAccount
-                            isAutoPay = enabled
-                        }
-                    )
                 }
 
                 if (errorMsg.isNotEmpty()) {
@@ -8059,7 +9218,7 @@ fun AddTransactionDialog(
                         } else {
                             selectedCategory
                         }
-                        onConfirm(title, amt, dateParsed, finalCategory, isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore)
+                        onConfirm(title, amt, dateParsed, finalCategory, isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore, isCompleted)
                     }
                 },
                 modifier = Modifier.testTag("save_transaction_button")
@@ -8087,7 +9246,15 @@ fun EditTransactionDialog(
     var amount by remember { mutableStateOf(if (transaction.amount > 0) String.format(Locale.US, "%.2f", transaction.amount) else "") }
     val initialDate = remember(transaction.dateMillis) { DateUtils.millisToLocalDate(transaction.dateMillis) }
     var dateInput by remember { mutableStateOf(initialDate.toString()) }
-    var selectedCategory by remember { mutableStateOf(transaction.category.ifEmpty { "Groceries" }) }
+    var selectedCategory by remember {
+        mutableStateOf(
+            if (transaction.isIncome) {
+                transaction.category.ifEmpty { "Income" }
+            } else {
+                CategoryTheme.parseCategory(transaction.category).first
+            }
+        )
+    }
     var isIncome by remember { mutableStateOf(transaction.isIncome) }
     var isRecurring by remember { mutableStateOf(transaction.isRecurring) }
     var recurFrequency by remember {
@@ -8101,7 +9268,8 @@ fun EditTransactionDialog(
         )
     }
     var isAutoPay by remember { mutableStateOf(transaction.isAutoPay) }
-    var selectedAccount by remember { mutableStateOf(if (transaction.accountName.isEmpty() || transaction.accountName == "All Accounts") (allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account") else transaction.accountName) }
+    var isCompleted by remember { mutableStateOf(transaction.isCompleted) }
+    var selectedAccount by remember { mutableStateOf(if (transaction.accountName.isEmpty() || transaction.accountName == "All Accounts" || transaction.accountName.equals("Primary Account", ignoreCase = true) || transaction.accountName.equals("Primary", ignoreCase = true)) (allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else transaction.accountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var reminderDaysBefore by remember { mutableIntStateOf(transaction.reminderDaysBefore) }
     var reminderDropdownExpanded by remember { mutableStateOf(false) }
@@ -8131,7 +9299,9 @@ fun EditTransactionDialog(
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // Segmented Toggle for Income/Expense
@@ -8166,6 +9336,51 @@ fun EditTransactionDialog(
                     }
                 }
 
+                // Status Segmented Toggle: Pending vs Completed
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        .padding(2.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (!isCompleted) MaterialTheme.colorScheme.surface else Color.Transparent)
+                            .clickable { isCompleted = false }
+                            .padding(vertical = 6.dp)
+                            .testTag("edit_dialog_status_pending"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("⏳", fontSize = 11.sp)
+                            Text("Pending", fontWeight = if (!isCompleted) FontWeight.Bold else FontWeight.Medium, fontSize = 11.5.sp)
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isCompleted) Color(0xFF10B981).copy(alpha = 0.2f) else Color.Transparent)
+                            .clickable { isCompleted = true }
+                            .padding(vertical = 6.dp)
+                            .testTag("edit_dialog_status_completed"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+                            Text(
+                                text = if (isIncome) "Received" else "Paid / Cleared",
+                                fontWeight = if (isCompleted) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 11.5.sp,
+                                color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
@@ -8186,6 +9401,54 @@ fun EditTransactionDialog(
                         .fillMaxWidth()
                         .testTag("edit_tx_amount_input")
                 )
+
+                // Category Picker
+                if (isIncome) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Category",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = selectedCategory,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val catList = listOf("Paycheck", "Side Gig", "Bonus", "Refund", "Income")
+                            val icons = listOf("💼", "🚀", "🎁", "🔄", "💵")
+                            catList.forEachIndexed { idx, cat ->
+                                val isSelected = selectedCategory == cat
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { selectedCategory = cat },
+                                    label = { Text("${icons[idx]} $cat", fontSize = 11.sp) },
+                                    modifier = Modifier.testTag("edit_tx_category_chip_${cat.lowercase()}")
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    ExpenseCategorySubCategoryPicker(
+                        selectedCategory = if (selectedCategory in listOf("Paycheck", "Income", "Side Gig", "Bonus", "Refund")) "Core Bills" else selectedCategory,
+                        onCategorySelected = { selectedCategory = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 DatePickerTextField(
                     value = dateInput,
@@ -8419,7 +9682,8 @@ fun EditTransactionDialog(
                             isRecurring = isRecurring,
                             isAutoPay = isAutoPay,
                             accountName = selectedAccount,
-                            reminderDaysBefore = if (isIncome) -1 else reminderDaysBefore
+                            reminderDaysBefore = if (isIncome) -1 else reminderDaysBefore,
+                            isCompleted = isCompleted
                         )
                         onSave(updatedTx)
                     }
@@ -8471,9 +9735,9 @@ fun UpcomingExpensesWidget(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(horizontal = 0.dp, vertical = 2.dp)
             .testTag("upcoming_expenses_widget"),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         ),
@@ -8482,8 +9746,8 @@ fun UpcomingExpensesWidget(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             // Widget Header Row
             Row(
@@ -8604,7 +9868,7 @@ fun UpcomingExpensesWidget(
                     }
                 } else {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         upcomingItems.take(10).forEach { item ->
                             val formattedDueDate = item.dueDate.format(dateFmt)
@@ -8622,7 +9886,7 @@ fun UpcomingExpensesWidget(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(MaterialTheme.colorScheme.surface)
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -8694,7 +9958,7 @@ fun UpcomingExpensesWidget(
                                         amount = item.amount,
                                         dateMillis = com.example.data.DateUtils.localDateToMillis(item.dueDate),
                                         category = item.category.ifEmpty { "Planned Bill" },
-                                        accountName = item.accountName.ifEmpty { "Primary Account" },
+                                        accountName = item.accountName.ifEmpty { uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "" },
                                         isIncome = false,
                                         isCompleted = false,
                                         isAutoPay = item.isAutoPay
@@ -8828,12 +10092,16 @@ fun AccountSwitcherCarousel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+            .padding(horizontal = 0.dp, vertical = 1.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         val dateFmt = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
-        val payCycleTag = remember(uiState.currentPayPeriodStart, uiState.currentPayPeriodEnd) {
-            "Pay Cycle: ${uiState.currentPayPeriodStart.format(dateFmt)} – ${uiState.currentPayPeriodEnd.format(dateFmt)}"
+        val payCycleTag = remember(uiState.currentPayPeriodStart, uiState.currentPayPeriodEnd, isWideScreen) {
+            if (isWideScreen) {
+                "Pay Cycle: ${uiState.currentPayPeriodStart.format(dateFmt)} – ${uiState.currentPayPeriodEnd.format(dateFmt)}"
+            } else {
+                "${uiState.currentPayPeriodStart.format(dateFmt)} – ${uiState.currentPayPeriodEnd.format(dateFmt)}"
+            }
         }
 
         Row(
@@ -8843,8 +10111,10 @@ fun AccountSwitcherCarousel(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.clickable { carouselExpanded = !carouselExpanded }
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .clickable { carouselExpanded = !carouselExpanded }
             ) {
                 Icon(
                     imageVector = if (carouselExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -8853,7 +10123,7 @@ fun AccountSwitcherCarousel(
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = if (isWideScreen) "ACCOUNTS & LEDGERS (GRID)" else "ACCOUNTS & LEDGERS",
+                    text = if (isWideScreen) "ACCOUNTS & LEDGERS (GRID)" else "ACCOUNTS",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
@@ -8865,7 +10135,7 @@ fun AccountSwitcherCarousel(
                 ) {
                     Text(
                         text = payCycleTag,
-                        fontSize = 9.sp,
+                        fontSize = 8.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
@@ -8874,7 +10144,7 @@ fun AccountSwitcherCarousel(
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 // Manage / Edit Accounts button
                 Surface(
@@ -9035,7 +10305,7 @@ fun AccountSwitcherCarousel(
                 }
             } else {
                 androidx.compose.foundation.lazy.LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     items(uiState.allAccounts, key = { it }) { acc ->
@@ -9685,7 +10955,7 @@ fun AccountCardItem(
             .testTag("account_card_$acc")
     } else {
         modifier
-            .width(if (isReorderMode) 120.dp else 108.dp)
+            .width(if (isReorderMode) 110.dp else 100.dp)
             .combinedClickable(
                 onClick = { onSelectAccount(acc) },
                 onLongClick = {
@@ -9721,9 +10991,9 @@ fun AccountCardItem(
             )
             Column(
                 modifier = Modifier
-                    .padding(horizontal = if (isWideScreen) 5.dp else 6.dp, vertical = if (isWideScreen) 2.5.dp else 4.dp)
+                    .padding(horizontal = if (isWideScreen) 4.dp else 5.dp, vertical = if (isWideScreen) 2.dp else 2.5.dp)
                     .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (isWideScreen) 1.dp else 2.dp)
+                verticalArrangement = Arrangement.spacedBy(if (isWideScreen) 1.dp else 1.5.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -9798,9 +11068,10 @@ fun AccountCardItem(
                     if (acc == "All Accounts") {
                         uiState.allTransactions.count { it.dateMillis >= pStart && it.dateMillis < pEnd && it.amount > 0.0 }
                     } else {
+                        val primaryAcc = uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: ""
                         uiState.allTransactions.count {
                             it.dateMillis >= pStart && it.dateMillis < pEnd && it.amount > 0.0 &&
-                            (it.accountName.equals(acc, ignoreCase = true) || (acc == "Primary Account" && (it.accountName.isBlank() || it.accountName.equals("Primary", ignoreCase = true))))
+                            (it.accountName.equals(acc, ignoreCase = true) || (primaryAcc.isNotEmpty() && acc.equals(primaryAcc, ignoreCase = true) && (it.accountName.isBlank() || it.accountName.equals("Primary Account", ignoreCase = true) || it.accountName.equals("Primary", ignoreCase = true))))
                         }
                     }
                 }
@@ -9864,7 +11135,7 @@ fun AccountCardItem(
                     )
 
                     Text(
-                        text = String.format(Locale.US, "+$%,.0f • -$%,.0f paid", totalIncome, completedExpenses),
+                        text = String.format(Locale.US, "+$%,.0f • -$%,.0f", totalIncome, completedExpenses),
                         fontSize = 8.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = if (isOverBudget) {
@@ -9880,7 +11151,7 @@ fun AccountCardItem(
                         modifier = Modifier.padding(top = 1.dp)
                     ) {
                         Text(
-                            text = if (inCycleTxCount > 0) "$inCycleTxCount in cycle" else "0 in cycle",
+                            text = if (inCycleTxCount > 0) "$inCycleTxCount in cycle" else "0 items",
                             fontSize = 7.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (inCycleTxCount > 0) accStyle.borderColor else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),

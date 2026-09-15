@@ -179,7 +179,8 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
 
                 val allTransactions: List<TransactionEntity> = dao.getAllTransactions().first()
                 val plannedExpenses: List<PlannedExpenseEntity> = dao.getAllPlannedExpenses().first()
-                val globalDefaultAccount = dao.getSetting("active_account_name")?.value ?: "Primary Account"
+                val rawGlobal = dao.getSetting("active_account_name")?.value
+                val globalDefaultAccount = if (rawGlobal.isNullOrBlank() || rawGlobal.equals("Primary Account", ignoreCase = true) || rawGlobal.equals("Primary", ignoreCase = true)) "All Accounts" else rawGlobal
 
                 // Get widget-specific chosen account
                 val chosenAccount = PayCycleWidgetPrefs.getSelectedAccount(context, appWidgetId, globalDefaultAccount)

@@ -1076,7 +1076,6 @@
         <label for="activeAccountSelect" style="font-size:0.8rem; font-weight:700; color:var(--text-muted);">ACTIVE LEDGER:</label>
         <select id="activeAccountSelect" class="form-control" style="width: auto; min-width: 160px;" onchange="changeActiveAccount(this.value)">
           <option value="All Accounts">All Accounts</option>
-          <option value="Primary Account">Primary Account</option>
         </select>
         <button class="btn btn-primary" onclick="openAddTransactionModal()">+ Add Expense</button>
         <button class="btn btn-accent" onclick="openAddIncomeModal()">+ Add Income</button>
@@ -1995,7 +1994,7 @@
       settings: {
         accountEmail: '86brancan@gmail.com',
         activeAccount: 'All Accounts',
-        allAccounts: ['Primary Account', 'Checking', 'Savings'],
+        allAccounts: ['Checking', 'Savings'],
         anchorPayday: '2026-08-15',
         defaultPaycheck: 2400.00,
         debtStrategy: 'snowball',
@@ -2285,8 +2284,8 @@
       const accounts = ['All Accounts', ...appState.settings.allAccounts.filter(a => a !== 'All Accounts')];
       select.innerHTML = accounts.map(a => `<option value="${a}" ${a === appState.settings.activeAccount ? 'selected' : ''}>${a}</option>`).join('');
 
-      const specificAccounts = appState.settings.allAccounts.filter(a => a !== 'All Accounts');
-      if (specificAccounts.length === 0) specificAccounts.push('Primary Account');
+      const specificAccounts = appState.settings.allAccounts.filter(a => a !== 'All Accounts' && a !== 'Primary Account');
+      if (specificAccounts.length === 0) specificAccounts.push('Checking');
 
       modalSelect.innerHTML = specificAccounts.map(a => `<option value="${a}">${a}</option>`).join('');
       billSelect.innerHTML = specificAccounts.map(a => `<option value="${a}">${a}</option>`).join('');
@@ -3499,7 +3498,7 @@
         amount,
         dateMillis: Date.now(),
         category,
-        accountName: appState.settings.activeAccount === 'All Accounts' ? 'Primary Account' : appState.settings.activeAccount,
+        accountName: appState.settings.activeAccount === 'All Accounts' ? (appState.settings.allAccounts.find(a => a !== 'All Accounts' && a !== 'Primary Account') || 'Checking') : appState.settings.activeAccount,
         isIncome,
         isAutoPay: false,
         isCompleted: true
@@ -4092,7 +4091,7 @@
             const amount = parseFloat(tokens[2]) || 0;
             const category = tokens[3] ? tokens[3].replace(/"/g, '').trim() : 'Expense';
             const isIncome = tokens[4] && tokens[4].includes('Income');
-            const accountName = tokens[5] ? tokens[5].replace(/"/g, '').trim() : 'Primary Account';
+            const accountName = tokens[5] ? tokens[5].replace(/"/g, '').trim() : (appState.settings.allAccounts.find(a => a !== 'All Accounts' && a !== 'Primary Account') || '');
             const isCompleted = tokens[6] && tokens[6].includes('Yes');
 
             if (title && amount > 0) {
