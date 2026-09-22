@@ -23,8 +23,32 @@ data class TransactionEntity(
     val accountName: String = "Primary Account",
     val isCompleted: Boolean = false,
     val isAutoPay: Boolean = false,
-    val reminderDaysBefore: Int = -1 // -1 = off, 0 = on due date, 1 = 1 day before, 3 = 3 days before, 7 = 1 week before
-)
+    val reminderDaysBefore: Int = -1, // -1 = off, 0 = on due date, 1 = 1 day before, 3 = 3 days before, 7 = 1 week before
+    val status: String = "due" // Options: "due", "pending", "paid", "cleared"
+) {
+    fun getEffectiveStatus(): String {
+        val s = status.lowercase().trim()
+        if (s in listOf("due", "pending", "paid", "cleared")) {
+            return s
+        }
+        return if (isCompleted) "cleared" else "due"
+    }
+
+    val isPaidOrCleared: Boolean
+        get() = getEffectiveStatus() in listOf("paid", "cleared")
+
+    val isDue: Boolean
+        get() = getEffectiveStatus() == "due"
+
+    val isPending: Boolean
+        get() = getEffectiveStatus() == "pending"
+
+    val isPaid: Boolean
+        get() = getEffectiveStatus() == "paid"
+
+    val isCleared: Boolean
+        get() = getEffectiveStatus() == "cleared"
+}
 
 @Entity(tableName = "settings")
 data class SettingEntity(
@@ -64,7 +88,41 @@ data class DebtEntity(
     val interestRate: Double,
     val minimumPayment: Double,
     val category: String = "Credit Card",
-    val notes: String = ""
+    val notes: String = "",
+    val promoApr: Double? = null,
+    val promoExpirationDate: String? = null, // "YYYY-MM-DD"
+    val customPriorityRank: Int = 0, // 0 = automatic (Snowball/Avalanche), 1, 2, 3... = pinned priority
+    val originalBalance: Double = balance,
+    val isLinkedToBills: Boolean = false,
+    val billDueDay: Int = 15,
+    val isPaidOff: Boolean = false,
+    val linkedAccountId: Int? = null,
+    val linkedAccountName: String? = null
+) {
+    val totalPaidSoFar: Double
+        get() = (originalBalance - balance).coerceAtLeast(0.0)
+
+    val progressPercentage: Int
+        get() = if (originalBalance > 0.0) {
+            ((totalPaidSoFar / originalBalance) * 100.0).toInt().coerceIn(0, 100)
+        } else if (balance <= 0.0) 100 else 0
+}
+
+@Entity(
+    tableName = "debt_payments",
+    indices = [
+        Index(value = ["debtId"]),
+        Index(value = ["paymentDateMillis"])
+    ]
+)
+data class DebtPaymentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val debtId: Int,
+    val paymentAmount: Double,
+    val principalAmount: Double,
+    val interestAmount: Double,
+    val paymentDateMillis: Long,
+    val note: String = ""
 )
 
 

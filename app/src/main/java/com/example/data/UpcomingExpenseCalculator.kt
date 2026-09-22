@@ -377,7 +377,7 @@ object UpcomingExpenseCalculator {
                         // Due today or later this month
                         items.add(
                             UpcomingExpenseItem(
-                                id = "plan_${bill.id}_curr",
+                                id = "plan_${bill.id}_${currentMonth}",
                                 title = bill.title,
                                 amount = bill.minAmount,
                                 dueDate = thisMonthDueDate,
@@ -393,7 +393,7 @@ object UpcomingExpenseCalculator {
                         if (daysPassed <= 14) {
                             items.add(
                                 UpcomingExpenseItem(
-                                    id = "plan_${bill.id}_overdue",
+                                    id = "plan_${bill.id}_${currentMonth}",
                                     title = bill.title,
                                     amount = bill.minAmount,
                                     dueDate = thisMonthDueDate,

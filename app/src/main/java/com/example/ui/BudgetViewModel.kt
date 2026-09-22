@@ -9,6 +9,7 @@ import com.example.sync.*
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
@@ -122,6 +123,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         repository.allIncomeSources,
         repository.allPlannedExpenses,
         repository.allDebts,
+        repository.allDebtPayments,
         _isDarkMode,
         _appTheme,
         _appIcon,
@@ -140,15 +142,17 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val plannedExpenses = args[3] as List<PlannedExpenseEntity>
         @Suppress("UNCHECKED_CAST")
         val debts = args[4] as List<DebtEntity>
-        val isDark = args[5] as Boolean
-        val themeSelected = args[6] as AppTheme
-        val iconSelected = args[7] as AppIcon
-        val syncSt = args[8] as com.example.sync.SyncState
-        val driveEmail = args[9] as String?
-        val lastSync = args[10] as String?
-        val autoSyncOn = args[11] as Boolean
         @Suppress("UNCHECKED_CAST")
-        val undoStack = args[12] as List<UndoActionItem>
+        val debtPayments = args[5] as List<DebtPaymentEntity>
+        val isDark = args[6] as Boolean
+        val themeSelected = args[7] as AppTheme
+        val iconSelected = args[8] as AppIcon
+        val syncSt = args[9] as com.example.sync.SyncState
+        val driveEmail = args[10] as String?
+        val lastSync = args[11] as String?
+        val autoSyncOn = args[12] as Boolean
+        @Suppress("UNCHECKED_CAST")
+        val undoStack = args[13] as List<UndoActionItem>
         val selectedDate = settings.selectedDate
         val anchor = settings.anchor
         val defaultAmount = settings.defaultAmount
@@ -195,9 +199,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // Dynamically project recurring transactions to every month after the initial input date (income = bi-weekly +14d, expense = monthly)
-        val futureHorizonMonth = if (month.plusMonths(24) > YearMonth.now().plusMonths(36)) month.plusMonths(24) else YearMonth.now().plusMonths(36)
+        val futureHorizonMonth = maxOf(month.plusMonths(6), YearMonth.now().plusMonths(6))
         val futureHorizonDate = futureHorizonMonth.atEndOfMonth()
-        val horizonStartDate = minOf(anchor.minusMonths(12), month.minusMonths(12).atDay(1))
+        val horizonStartDate = minOf(anchor.minusMonths(3), month.minusMonths(3).atDay(1))
 
         val expandedTransactions = mutableListOf<TransactionEntity>()
 
@@ -281,8 +285,10 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         val projectedDay = minOf(origDate.dayOfMonth, targetMonth.lengthOfMonth())
                         val projectedDate = LocalDate.of(targetMonth.year, targetMonth.month, projectedDay)
                         val projectedMillis = DateUtils.localDateToMillis(projectedDate)
+                        val normTxTitle = DateUtils.normalizeDebtOrBillName(tx.title)
                         val alreadyExists = transactions.any { existing ->
                             (existing.title.equals(tx.title, ignoreCase = true) ||
+                             DateUtils.normalizeDebtOrBillName(existing.title).equals(normTxTitle, ignoreCase = true) ||
                              existing.title.equals("Cancelled " + tx.title, ignoreCase = true) ||
                              existing.title.equals("Cancelled " + tx.title.replace(" (Planned)", ""), ignoreCase = true) ||
                              existing.title.contains("Cancelled " + tx.title, ignoreCase = true) ||
@@ -290,7 +296,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                     DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate
                         }
                         val alreadyInList = expandedTransactions.any { existing ->
-                            existing.title.equals(tx.title, ignoreCase = true) &&
+                            (existing.title.equals(tx.title, ignoreCase = true) ||
+                             DateUtils.normalizeDebtOrBillName(existing.title).equals(normTxTitle, ignoreCase = true)) &&
                                     DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate
                         }
                         if (!alreadyExists && !alreadyInList) {
@@ -643,7 +650,10 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         var runningCarryover = 0.0
         val allCalculatedPeriods = mutableListOf<PayPeriod>()
 
-        while (!pPayday.isAfter(month.atEndOfMonth())) {
+        // Project forward at least 3 full months beyond the selected month so financial intelligence has horizon data
+        val targetHorizonMonth = maxOf(month.plusMonths(3), YearMonth.now().plusMonths(3))
+
+        while (!pPayday.isAfter(targetHorizonMonth.atEndOfMonth())) {
             val pEnd = pPayday.plusDays(13)
             val pStartMillis = DateUtils.localDateToMillis(pPayday)
             val pEndMillis = DateUtils.localDateToMillis(pPayday.plusDays(14))
@@ -695,6 +705,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
         val populatedPeriods = allCalculatedPeriods.filter { YearMonth.from(it.payday) == month }
 
+        // Future pay periods spanning the next 3 months starting from the current pay cycle
+        val futurePeriods = allCalculatedPeriods.filter { !it.endDate.isBefore(currentPayPeriodStart) }
+
         // Get the active account's summary details
         val activeSummary = accountBalances[activeAccount] ?: combinedBalance
 
@@ -703,12 +716,15 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             anchorPayday = anchor,
             defaultPaycheckAmount = defaultAmount,
             payPeriods = populatedPeriods,
+            futurePayPeriods = futurePeriods,
+            allCalculatedPayPeriods = allCalculatedPeriods,
             monthlyTotalIncome = activeSummary.monthlyTotalIncome,
             monthlyTotalExpenses = activeSummary.monthlyTotalExpenses,
             monthlyRemainingBalance = activeSummary.monthlyRemainingBalance,
             incomeSources = incomeSources,
             plannedExpenses = plannedExpenses,
             allDebts = debts,
+            allDebtPayments = debtPayments,
             activeAccountName = activeAccount,
             allAccounts = displayAccounts,
             accountBalances = accountBalances,
@@ -727,7 +743,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             canUndo = undoStack.isNotEmpty(),
             lastUndoDescription = undoStack.lastOrNull()?.description
         )
-    }.stateIn(
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default).stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = BudgetUiState(
@@ -735,6 +751,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             anchorPayday = LocalDate.of(2026, 7, 30),
             defaultPaycheckAmount = 2000.0,
             payPeriods = emptyList(),
+            futurePayPeriods = emptyList(),
+            allCalculatedPayPeriods = emptyList(),
             monthlyTotalIncome = 0.0,
             monthlyTotalExpenses = 0.0,
             monthlyRemainingBalance = 0.0,
@@ -812,38 +830,41 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 _isDriveAutoSyncEnabled.value = it.toBoolean()
             }
 
-            // Self-healing: Ensure any imported transactions categorized as expenses are correctly flagged as isIncome = false
-            try {
-                val realPrimaryAcc = _allAccounts.value.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: ""
-                val allTx = repository.allTransactions.first()
-                val expenseCats = setOf("housing", "utilities", "groceries", "dining out", "dining", "food", "transportation", "insurance", "entertainment", "shopping", "other", "bills", "planned expense", "expense", "medical", "healthcare", "travel", "personal", "education", "subscription", "subscriptions", "taxes", "vehicle", "gas", "clothing")
-                for (tx in allTx) {
-                    var updatedTx = tx
-                    if (updatedTx.accountName.equals("Primary Account", ignoreCase = true) || updatedTx.accountName.equals("Primary", ignoreCase = true)) {
-                        updatedTx = updatedTx.copy(accountName = realPrimaryAcc)
-                    }
-                    if (updatedTx.isIncome) {
-                        val catLower = updatedTx.category.lowercase(Locale.US)
-                        val titleLower = updatedTx.title.lowercase(Locale.US)
-                        val isIncomeCategory = catLower == "income" || catLower == "paycheck" || catLower == "salary" || catLower == "bonus" || catLower == "deposit" || catLower == "interest" || catLower == "dividend" || catLower == "freelance" || catLower == "investment" || catLower == "investments"
-                        val isIncomeTitle = titleLower.contains("paycheck") || titleLower.contains("salary") || titleLower.contains("payroll") || titleLower.contains("direct deposit") || titleLower.contains("bonus") || titleLower.contains("dividend")
-                        
-                        if (expenseCats.contains(catLower) && !isIncomeCategory && !isIncomeTitle) {
-                            updatedTx = updatedTx.copy(isIncome = false)
+            // Self-healing: Ensure any imported transactions categorized as expenses are correctly flagged as isIncome = false (run once)
+            if (repository.getSetting("account_cleanup_v1") != "true") {
+                try {
+                    val realPrimaryAcc = _allAccounts.value.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: ""
+                    val allTx = repository.allTransactions.first()
+                    val expenseCats = setOf("housing", "utilities", "groceries", "dining out", "dining", "food", "transportation", "insurance", "entertainment", "shopping", "other", "bills", "planned expense", "expense", "medical", "healthcare", "travel", "personal", "education", "subscription", "subscriptions", "taxes", "vehicle", "gas", "clothing")
+                    for (tx in allTx) {
+                        var updatedTx = tx
+                        if (updatedTx.accountName.equals("Primary Account", ignoreCase = true) || updatedTx.accountName.equals("Primary", ignoreCase = true)) {
+                            updatedTx = updatedTx.copy(accountName = realPrimaryAcc)
+                        }
+                        if (updatedTx.isIncome) {
+                            val catLower = updatedTx.category.lowercase(Locale.US)
+                            val titleLower = updatedTx.title.lowercase(Locale.US)
+                            val isIncomeCategory = catLower == "income" || catLower == "paycheck" || catLower == "salary" || catLower == "bonus" || catLower == "deposit" || catLower == "interest" || catLower == "dividend" || catLower == "freelance" || catLower == "investment" || catLower == "investments"
+                            val isIncomeTitle = titleLower.contains("paycheck") || titleLower.contains("salary") || titleLower.contains("payroll") || titleLower.contains("direct deposit") || titleLower.contains("bonus") || titleLower.contains("dividend")
+                            
+                            if (expenseCats.contains(catLower) && !isIncomeCategory && !isIncomeTitle) {
+                                updatedTx = updatedTx.copy(isIncome = false)
+                            }
+                        }
+                        if (updatedTx != tx) {
+                            repository.updateTransaction(updatedTx)
                         }
                     }
-                    if (updatedTx != tx) {
-                        repository.updateTransaction(updatedTx)
-                    }
-                }
 
-                val allPlanned = repository.allPlannedExpenses.first()
-                for (p in allPlanned) {
-                    if (p.targetAccount.equals("Primary Account", ignoreCase = true) || p.targetAccount.equals("Primary", ignoreCase = true)) {
-                        repository.updatePlannedExpense(p.copy(targetAccount = realPrimaryAcc))
+                    val allPlanned = repository.allPlannedExpenses.first()
+                    for (p in allPlanned) {
+                        if (p.targetAccount.equals("Primary Account", ignoreCase = true) || p.targetAccount.equals("Primary", ignoreCase = true)) {
+                            repository.updatePlannedExpense(p.copy(targetAccount = realPrimaryAcc))
+                        }
                     }
-                }
-            } catch (_: Exception) {}
+                    repository.saveSetting("account_cleanup_v1", "true")
+                } catch (_: Exception) {}
+            }
             repository.getSetting("last_drive_sync_time")?.let {
                 _lastDriveSyncTime.value = it
             }
@@ -853,15 +874,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             // Seed default income and expense transactions if database is fresh/empty
             seedDefaultTransactionsIfEmpty()
 
-            // Automatically sync any existing expenses marked as Credit Cards to the Debt section
-            syncAllCreditCardExpensesToDebts()
-
             // Observe transaction, planned expense, and account changes to automatically update Home Screen Widget and Bill Reminders
             viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 combine(repository.allTransactions, repository.allPlannedExpenses, _activeAccountName) { transactions, plannedExpenses, _ ->
                     Pair(transactions, plannedExpenses)
                 }
                     .distinctUntilChanged()
+                    .debounce(1000L)
                     .collect { (transactions, plannedExpenses) ->
                         com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
                         com.example.notification.BillReminderScheduler.rescheduleAll(getApplication(), plannedExpenses, transactions)
@@ -1239,9 +1258,16 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         accountName: String = _activeAccountName.value,
         isCompleted: Boolean = false,
         isAutoPay: Boolean = false,
-        reminderDaysBefore: Int = if (isIncome) -1 else 0
+        reminderDaysBefore: Int = if (isIncome) -1 else 0,
+        status: String = ""
     ) {
         viewModelScope.launch {
+            val resolvedStatus = when {
+                status.isNotBlank() -> status.lowercase().trim()
+                isCompleted -> "cleared"
+                else -> "due"
+            }
+            val resolvedCompleted = resolvedStatus in listOf("paid", "cleared") || isCompleted
             val entity = TransactionEntity(
                 title = title,
                 amount = amount,
@@ -1250,15 +1276,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 isIncome = isIncome,
                 isRecurring = isRecurring,
                 accountName = accountName,
-                isCompleted = isCompleted,
+                isCompleted = resolvedCompleted,
                 isAutoPay = isAutoPay,
-                reminderDaysBefore = reminderDaysBefore
+                reminderDaysBefore = reminderDaysBefore,
+                status = resolvedStatus
             )
             repository.insertTransaction(entity)
-            if (!isIncome && (isCreditCardCategory(category) || isCreditCardExpense(title, category))) {
-                syncExpenseToDebtIfCreditCard(title, amount, category, isIncome)
-            }
-            if (!isIncome && !isCompleted && reminderDaysBefore >= 0) {
+            if (!isIncome && !resolvedCompleted && reminderDaysBefore >= 0) {
                 val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: entity
                 com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
             }
@@ -1279,54 +1303,57 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun toggleTransactionCompleted(transaction: TransactionEntity) {
+    fun updateTransactionStatus(transaction: TransactionEntity, newStatus: String) {
         viewModelScope.launch {
+            val cleanStatus = newStatus.lowercase().trim().ifBlank { "due" }
+            val isDone = cleanStatus in listOf("paid", "cleared")
             val allTx = repository.allTransactions.first()
             val existsInDb = transaction.id > 0 && allTx.any { it.id == transaction.id }
-            val prevStatus = transaction.isCompleted
-            val newStatus = !prevStatus
+            val prevStatus = transaction.getEffectiveStatus()
+
             if (!existsInDb) {
-                // Synthetic / projected transaction: create real transaction record in DB with toggled completion
-                val newEntity = transaction.copy(id = 0, isCompleted = newStatus, isRecurring = false)
+                val newEntity = transaction.copy(id = 0, status = cleanStatus, isCompleted = isDone, isRecurring = false)
                 repository.insertTransaction(newEntity)
-                if (newStatus) {
+                if (isDone) {
                     com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
                 } else if (!newEntity.isIncome && newEntity.reminderDaysBefore >= 0) {
                     val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: newEntity
                     com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
                 }
-                pushUndoAction(
-                    title = if (newStatus) "Mark Paid" else "Mark Unpaid",
-                    description = if (newStatus) "Marked '${transaction.title}' paid" else "Marked '${transaction.title}' unpaid"
-                ) {
-                    val all = repository.allTransactions.first()
-                    val match = all.firstOrNull {
-                        it.title == newEntity.title && it.dateMillis == newEntity.dateMillis && it.amount == newEntity.amount
-                    }
-                    if (match != null) {
-                        repository.updateTransaction(match.copy(isCompleted = prevStatus))
-                    }
-                }
             } else {
-                val updated = transaction.copy(isCompleted = newStatus)
+                val updated = transaction.copy(status = cleanStatus, isCompleted = isDone)
                 repository.updateTransaction(updated)
-                if (newStatus) {
+                if (isDone) {
                     com.example.notification.BillReminderScheduler.cancelTransactionReminder(getApplication(), transaction.id)
                 } else if (!updated.isIncome && updated.reminderDaysBefore >= 0) {
                     com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), updated)
                 }
-                pushUndoAction(
-                    title = if (newStatus) "Mark Paid" else "Mark Unpaid",
-                    description = if (newStatus) "Marked '${transaction.title}' paid" else "Marked '${transaction.title}' unpaid"
-                ) {
-                    val all = repository.allTransactions.first()
-                    val match = all.firstOrNull { it.id == transaction.id }
-                    if (match != null) {
-                        repository.updateTransaction(match.copy(isCompleted = prevStatus))
-                    }
+            }
+            pushUndoAction(
+                title = "Status: ${cleanStatus.replaceFirstChar { it.uppercase() }}",
+                description = "Changed '${transaction.title}' status to $cleanStatus"
+            ) {
+                val all = repository.allTransactions.first()
+                val match = all.firstOrNull { it.id == transaction.id || (transaction.id == 0 && it.title == transaction.title && it.dateMillis == transaction.dateMillis) }
+                if (match != null) {
+                    repository.updateTransaction(match.copy(status = prevStatus, isCompleted = prevStatus in listOf("paid", "cleared")))
                 }
             }
             autoSyncIfEnabled()
+        }
+    }
+
+    fun toggleTransactionCompleted(transaction: TransactionEntity) {
+        viewModelScope.launch {
+            val currentStatus = transaction.getEffectiveStatus()
+            val nextStatus = when (currentStatus) {
+                "due" -> "pending"
+                "pending" -> "paid"
+                "paid" -> "cleared"
+                "cleared" -> "due"
+                else -> if (transaction.isCompleted) "due" else "cleared"
+            }
+            updateTransactionStatus(transaction, nextStatus)
         }
     }
 
@@ -1389,6 +1416,35 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
     fun testNotificationReminder(title: String = "Test Expense Reminder", amount: Double = 49.99) {
         com.example.notification.BillReminderScheduler.sendTestNotification(getApplication(), title, amount)
+    }
+
+    fun duplicateTransaction(transaction: TransactionEntity, targetDateMillis: Long = transaction.dateMillis) {
+        viewModelScope.launch {
+            val dupTitle = if (transaction.title.endsWith(" (Copy)")) transaction.title else "${transaction.title} (Copy)"
+            val dup = transaction.copy(
+                id = 0,
+                title = dupTitle,
+                dateMillis = targetDateMillis,
+                isCompleted = false,
+                status = "due"
+            )
+            repository.insertTransaction(dup)
+            if (!dup.isIncome && dup.reminderDaysBefore >= 0) {
+                val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: dup
+                com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
+            }
+            pushUndoAction(
+                title = "Duplicate",
+                description = "Duplicated '${transaction.title}'"
+            ) {
+                val allTx = repository.allTransactions.first()
+                val match = allTx.filter { it.title == dupTitle && it.amount == dup.amount && it.dateMillis == targetDateMillis }.maxByOrNull { it.id }
+                if (match != null) {
+                    repository.deleteTransaction(match)
+                }
+            }
+            autoSyncIfEnabled()
+        }
     }
 
     fun deleteTransaction(transaction: TransactionEntity) {
@@ -1595,9 +1651,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
-            if (!transaction.isIncome && (isCreditCardCategory(transaction.category) || isCreditCardExpense(transaction.title, transaction.category))) {
-                syncExpenseToDebtIfCreditCard(transaction.title, transaction.amount, transaction.category, transaction.isIncome)
-            }
             if (!transaction.isIncome && transaction.reminderDaysBefore >= 0 && !transaction.isCompleted) {
                 com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), transaction)
             } else {
@@ -1631,9 +1684,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     repository.updateTransaction(dbTx)
                 }
 
-                if (!finalTx.isIncome && (isCreditCardCategory(finalTx.category) || isCreditCardExpense(finalTx.title, finalTx.category))) {
-                    syncExpenseToDebtIfCreditCard(finalTx.title, finalTx.amount, finalTx.category, finalTx.isIncome)
-                }
                 if (!finalTx.isIncome && finalTx.reminderDaysBefore >= 0 && !finalTx.isCompleted) {
                     com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), finalTx)
                 } else {
@@ -1665,9 +1715,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     repository.updatePlannedExpense(updatedPlanned)
                 }
 
-                if (!updated.isIncome && (isCreditCardCategory(updated.category) || isCreditCardExpense(matchingPlanned.title, updated.category))) {
-                    syncExpenseToDebtIfCreditCard(matchingPlanned.title, updated.amount, updated.category, false)
-                }
                 autoSyncIfEnabled()
                 return@launch
             }
@@ -1708,9 +1755,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     repository.updateTransaction(updatedParent)
 
-                    if (!updatedParent.isIncome && (isCreditCardCategory(updatedParent.category) || isCreditCardExpense(updatedParent.title, updatedParent.category))) {
-                        syncExpenseToDebtIfCreditCard(updatedParent.title, updatedParent.amount, updatedParent.category, updatedParent.isIncome)
-                    }
                     autoSyncIfEnabled()
                     return@launch
                 } else {
@@ -1728,9 +1772,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     repository.insertTransaction(cancelledRecord)
 
-                    if (!oneOff.isIncome && (isCreditCardCategory(oneOff.category) || isCreditCardExpense(oneOff.title, oneOff.category))) {
-                        syncExpenseToDebtIfCreditCard(oneOff.title, oneOff.amount, oneOff.category, oneOff.isIncome)
-                    }
                     autoSyncIfEnabled()
                     return@launch
                 }
@@ -1787,9 +1828,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             )
             repository.insertTransaction(cancelledRecord)
 
-            if (!updated.isIncome && (isCreditCardCategory(updated.category) || isCreditCardExpense(updated.title, updated.category))) {
-                syncExpenseToDebtIfCreditCard(updated.title, updated.amount, updated.category, updated.isIncome)
-            }
             if (!updated.isIncome && updated.reminderDaysBefore >= 0 && !updated.isCompleted) {
                 val latest = repository.allTransactions.first().maxByOrNull { it.id } ?: insertedEntity
                 com.example.notification.BillReminderScheduler.scheduleTransactionReminder(getApplication(), latest)
@@ -1953,9 +1991,6 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             )
             repository.insertPlannedExpense(planned)
             com.example.notification.BillReminderScheduler.scheduleReminder(getApplication(), planned)
-            if (isCreditCardCategory(title) || isCreditCardExpense(title, "Credit Cards")) {
-                syncExpenseToDebtIfCreditCard(title, minAmount, "Credit Cards", false)
-            }
 
             autoSyncIfEnabled()
         }
@@ -1989,7 +2024,23 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun addDebt(name: String, balance: Double, interestRate: Double, minimumPayment: Double, category: String = "Credit Card", notes: String = "") {
+    fun addDebt(
+        name: String,
+        balance: Double,
+        interestRate: Double,
+        minimumPayment: Double,
+        category: String = "Credit Card",
+        notes: String = "",
+        promoApr: Double? = null,
+        promoExpirationDate: String? = null,
+        customPriorityRank: Int = 0,
+        originalBalance: Double = balance,
+        isLinkedToBills: Boolean = false,
+        billDueDay: Int = 15,
+        isPaidOff: Boolean = false,
+        linkedAccountId: Int? = null,
+        linkedAccountName: String? = null
+    ) {
         viewModelScope.launch {
             val debt = DebtEntity(
                 name = name,
@@ -1997,9 +2048,29 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 interestRate = interestRate,
                 minimumPayment = minimumPayment,
                 category = category,
-                notes = notes
+                notes = notes,
+                promoApr = promoApr,
+                promoExpirationDate = promoExpirationDate,
+                customPriorityRank = customPriorityRank,
+                originalBalance = if (originalBalance > 0.0) originalBalance else balance,
+                isLinkedToBills = isLinkedToBills,
+                billDueDay = billDueDay,
+                isPaidOff = isPaidOff,
+                linkedAccountId = linkedAccountId,
+                linkedAccountName = linkedAccountName
             )
             repository.insertDebt(debt)
+            if (isLinkedToBills) {
+                syncDebtToPlannedExpense(debt)
+            }
+            autoSyncIfEnabled()
+        }
+    }
+
+    fun toggleDebtPaidOff(debt: DebtEntity) {
+        viewModelScope.launch {
+            val updated = debt.copy(isPaidOff = !debt.isPaidOff)
+            repository.updateDebt(updated)
             autoSyncIfEnabled()
         }
     }
@@ -2007,19 +2078,414 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     fun updateDebt(debt: DebtEntity) {
         viewModelScope.launch {
             repository.updateDebt(debt)
+            if (debt.isLinkedToBills) {
+                syncDebtToPlannedExpense(debt)
+            }
             autoSyncIfEnabled()
         }
+    }
+
+    fun logDebtPayment(
+        debtId: Int,
+        paymentAmount: Double,
+        principalAmount: Double,
+        interestAmount: Double,
+        note: String = "",
+        createExpenseTransaction: Boolean = true
+    ) {
+        viewModelScope.launch {
+            val debts = repository.allDebts.first()
+            val debt = debts.firstOrNull { it.id == debtId } ?: return@launch
+            val payment = DebtPaymentEntity(
+                debtId = debtId,
+                paymentAmount = paymentAmount,
+                principalAmount = principalAmount,
+                interestAmount = interestAmount,
+                paymentDateMillis = System.currentTimeMillis(),
+                note = note
+            )
+            repository.insertDebtPayment(payment)
+            val newBalance = (debt.balance - principalAmount).coerceAtLeast(0.0)
+            val updatedDebt = debt.copy(balance = newBalance, isPaidOff = debt.isPaidOff || newBalance <= 0.0)
+            repository.updateDebt(updatedDebt)
+
+            if (createExpenseTransaction && paymentAmount > 0) {
+                val currentAcc = _activeAccountName.value
+                val accountName = if (currentAcc == "All Accounts" || currentAcc.isBlank()) "Primary Account" else currentAcc
+                val tx = TransactionEntity(
+                    title = "Debt Payment: ${debt.name}",
+                    amount = paymentAmount,
+                    dateMillis = System.currentTimeMillis(),
+                    category = "Debt Payment",
+                    isIncome = false,
+                    accountName = accountName,
+                    status = "cleared",
+                    isCompleted = true
+                )
+                repository.insertTransaction(tx)
+            }
+
+            pushUndoAction(
+                title = "Log Payment",
+                description = "Logged $${String.format(Locale.US, "%.2f", paymentAmount)} payment for '${debt.name}'"
+            ) {
+                repository.deleteDebtPayment(payment)
+                repository.updateDebt(debt)
+            }
+            autoSyncIfEnabled()
+        }
+    }
+
+    fun toggleDebtBillLink(debt: DebtEntity, isLinked: Boolean, dueDay: Int = debt.billDueDay) {
+        viewModelScope.launch {
+            val updatedDebt = debt.copy(isLinkedToBills = isLinked, billDueDay = dueDay)
+            repository.updateDebt(updatedDebt)
+            val debtBillTitle = "${debt.name} (Minimum Payment)"
+            val cleanBaseName = DateUtils.normalizeDebtOrBillName(debt.name)
+            val plannedList = repository.allPlannedExpenses.first()
+            val allTx = repository.allTransactions.first()
+
+            val existing = plannedList.firstOrNull { 
+                it.title.equals(debtBillTitle, ignoreCase = true) || 
+                DateUtils.normalizeDebtOrBillName(it.title).equals(cleanBaseName, ignoreCase = true)
+            }
+
+            // If user already has an active recurring transaction for this card, don't create a duplicate planned expense
+            val existingRecurringTx = allTx.firstOrNull {
+                !it.isIncome && it.isRecurring &&
+                DateUtils.normalizeDebtOrBillName(it.title).equals(cleanBaseName, ignoreCase = true)
+            }
+
+            if (isLinked) {
+                if (existingRecurringTx != null) {
+                    if (existing != null) {
+                        repository.deletePlannedExpense(existing)
+                    }
+                    autoSyncIfEnabled()
+                    return@launch
+                }
+
+                val today = LocalDate.now()
+                val targetDate = try {
+                    val safeDay = dueDay.coerceIn(1, 28)
+                    if (today.dayOfMonth <= safeDay) {
+                        today.withDayOfMonth(safeDay)
+                    } else {
+                        today.plusMonths(1).withDayOfMonth(safeDay)
+                    }
+                } catch (_: Exception) {
+                    today.plusDays(15)
+                }
+                val dueDateStr = targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE)
+
+                if (existing != null) {
+                    repository.updatePlannedExpense(
+                        existing.copy(
+                            minAmount = debt.minimumPayment,
+                            dueDate = dueDateStr
+                        )
+                    )
+                } else {
+                    repository.insertPlannedExpense(
+                        PlannedExpenseEntity(
+                            title = debtBillTitle,
+                            dueDate = dueDateStr,
+                            minAmount = debt.minimumPayment,
+                            targetAccount = "Primary Account",
+                            isAutoPay = false,
+                            reminderDaysBefore = 3
+                        )
+                    )
+                }
+            } else {
+                if (existing != null) {
+                    repository.deletePlannedExpense(existing)
+                }
+            }
+            autoSyncIfEnabled()
+        }
+    }
+
+    fun toggleDebtPriorityPin(debt: DebtEntity) {
+        viewModelScope.launch {
+            val newRank = if (debt.customPriorityRank > 0) 0 else 1
+            repository.updateDebt(debt.copy(customPriorityRank = newRank))
+            autoSyncIfEnabled()
+        }
+    }
+
+    fun deleteDebtPayment(payment: DebtPaymentEntity) {
+        viewModelScope.launch {
+            val debts = repository.allDebts.first()
+            val debt = debts.firstOrNull { it.id == payment.debtId }
+            repository.deleteDebtPayment(payment)
+            if (debt != null) {
+                val restoredBalance = debt.balance + payment.principalAmount
+                repository.updateDebt(debt.copy(balance = restoredBalance))
+            }
+            autoSyncIfEnabled()
+        }
+    }
+
+    fun syncDebtToPlannedExpense(debt: DebtEntity, dueDate: String? = null, isAutoPay: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                val plannedList = repository.allPlannedExpenses.first()
+                val debtBillTitle = "${debt.name} (Minimum Payment)"
+                val cleanBaseName = DateUtils.normalizeDebtOrBillName(debt.name)
+                val allTx = repository.allTransactions.first()
+
+                // Check if user already has an active recurring transaction for this card
+                val existingRecurringTx = allTx.firstOrNull {
+                    !it.isIncome && it.isRecurring &&
+                    DateUtils.normalizeDebtOrBillName(it.title).equals(cleanBaseName, ignoreCase = true)
+                }
+
+                val existing = plannedList.firstOrNull { 
+                    it.title.equals(debtBillTitle, ignoreCase = true) || 
+                    DateUtils.normalizeDebtOrBillName(it.title).equals(cleanBaseName, ignoreCase = true)
+                }
+
+                if (existingRecurringTx != null) {
+                    if (existing != null) {
+                        repository.deletePlannedExpense(existing)
+                    }
+                    autoSyncIfEnabled()
+                    return@launch
+                }
+
+                val effectiveDueDate = dueDate ?: run {
+                    val today = LocalDate.now()
+                    val safeDay = debt.billDueDay.coerceIn(1, 28)
+                    val targetDate = if (today.dayOfMonth <= safeDay) {
+                        today.withDayOfMonth(safeDay)
+                    } else {
+                        today.plusMonths(1).withDayOfMonth(safeDay)
+                    }
+                    targetDate.format(DateTimeFormatter.ISO_LOCAL_DATE)
+                }
+                if (existing != null) {
+                    repository.updatePlannedExpense(
+                        existing.copy(
+                            minAmount = debt.minimumPayment,
+                            dueDate = effectiveDueDate,
+                            isAutoPay = isAutoPay
+                        )
+                    )
+                } else {
+                    repository.insertPlannedExpense(
+                        PlannedExpenseEntity(
+                            title = debtBillTitle,
+                            dueDate = effectiveDueDate,
+                            minAmount = debt.minimumPayment,
+                            targetAccount = "Primary Account",
+                            isAutoPay = isAutoPay,
+                            reminderDaysBefore = 3
+                        )
+                    )
+                }
+                autoSyncIfEnabled()
+            } catch (e: Exception) {
+                Log.e("BudgetViewModel", "Error syncing debt to planned expense", e)
+            }
+        }
+    }
+
+    fun deduplicateTransactionsAndBills(onComplete: ((Int) -> Unit)? = null) {
+        viewModelScope.launch {
+            val count = performDeduplication()
+            onComplete?.invoke(count)
+        }
+    }
+
+    suspend fun performDeduplication(): Int {
+        var removedCount = 0
+        try {
+            val allTx = repository.allTransactions.first()
+            val allPlanned = repository.allPlannedExpenses.first()
+            val allDebts = repository.allDebts.first()
+
+            val toDeleteTx = mutableListOf<TransactionEntity>()
+            val toUpdateTx = mutableListOf<TransactionEntity>()
+
+            // 1. Deduplicate Real Transactions in Room
+            val validTxs = allTx.filter {
+                it.id > 0 && !it.title.contains("Cancelled", ignoreCase = true) && !it.title.contains("Deleted", ignoreCase = true)
+            }
+
+            val processedTxIds = mutableSetOf<Int>()
+
+            for (i in 0 until validTxs.size) {
+                val txA = validTxs[i]
+                if (processedTxIds.contains(txA.id) || toDeleteTx.any { it.id == txA.id }) continue
+
+                val normA = DateUtils.normalizeDebtOrBillName(txA.title).lowercase(Locale.US)
+                val dateA = DateUtils.millisToLocalDate(txA.dateMillis)
+
+                for (j in i + 1 until validTxs.size) {
+                    val txB = validTxs[j]
+                    if (processedTxIds.contains(txB.id) || toDeleteTx.any { it.id == txB.id }) continue
+
+                    val normB = DateUtils.normalizeDebtOrBillName(txB.title).lowercase(Locale.US)
+                    if (normA != normB) continue
+
+                    val dateB = DateUtils.millisToLocalDate(txB.dateMillis)
+                    val daysBetween = Math.abs(ChronoUnit.DAYS.between(dateA, dateB))
+
+                    val isSamePayPeriod = try {
+                        val anchor = _anchorPayday.value
+                        DateUtils.getPaydayOnOrBefore(dateA, anchor) == DateUtils.getPaydayOnOrBefore(dateB, anchor)
+                    } catch (_: Exception) {
+                        YearMonth.from(dateA) == YearMonth.from(dateB)
+                    }
+
+                    val isDuplicate = if (dateA == dateB) {
+                        true
+                    } else if (daysBetween <= 4 && isSamePayPeriod) {
+                        txA.title.contains("Minimum Payment", ignoreCase = true) ||
+                        txB.title.contains("Minimum Payment", ignoreCase = true) ||
+                        Math.abs(txA.amount - txB.amount) < 0.01
+                    } else false
+
+                    if (isDuplicate) {
+                        // Decide which to keep and which to remove:
+                        // Prefer the recurring one, or the one without "(Minimum Payment)"
+                        val (keep, remove) = if (txA.isRecurring && !txB.isRecurring) {
+                            txA to txB
+                        } else if (!txA.isRecurring && txB.isRecurring) {
+                            txB to txA
+                        } else if (!txA.title.contains("Minimum Payment", ignoreCase = true) && txB.title.contains("Minimum Payment", ignoreCase = true)) {
+                            txA to txB
+                        } else if (txA.title.contains("Minimum Payment", ignoreCase = true) && !txB.title.contains("Minimum Payment", ignoreCase = true)) {
+                            txB to txA
+                        } else {
+                            txA to txB
+                        }
+
+                        // Merge completion/status state into keep
+                        var merged = keep
+                        if (remove.isCompleted && !keep.isCompleted) {
+                            merged = merged.copy(isCompleted = true)
+                        }
+                        if (remove.status.isNotBlank() && (keep.status.isBlank() || keep.status == "due")) {
+                            merged = merged.copy(status = remove.status)
+                        }
+                        if (keep.accountName.isBlank() && remove.accountName.isNotBlank()) {
+                            merged = merged.copy(accountName = remove.accountName)
+                        }
+
+                        if (merged != keep) {
+                            toUpdateTx.add(merged)
+                        }
+                        toDeleteTx.add(remove)
+                        processedTxIds.add(remove.id)
+                    }
+                }
+            }
+
+            // 2. Deduplicate Planned Expenses
+            val toDeletePlanned = mutableListOf<PlannedExpenseEntity>()
+            val processedPlannedIds = mutableSetOf<Int>()
+            for (i in 0 until allPlanned.size) {
+                val pA = allPlanned[i]
+                if (processedPlannedIds.contains(pA.id)) continue
+                val normA = DateUtils.normalizeDebtOrBillName(pA.title).lowercase(Locale.US)
+
+                for (j in i + 1 until allPlanned.size) {
+                    val pB = allPlanned[j]
+                    if (processedPlannedIds.contains(pB.id)) continue
+                    val normB = DateUtils.normalizeDebtOrBillName(pB.title).lowercase(Locale.US)
+
+                    if (normA == normB) {
+                        val remove = if (pA.title.contains("Minimum Payment", ignoreCase = true) && !pB.title.contains("Minimum Payment", ignoreCase = true)) {
+                            pA
+                        } else {
+                            pB
+                        }
+                        toDeletePlanned.add(remove)
+                        processedPlannedIds.add(remove.id)
+                    }
+                }
+            }
+
+            // Also remove planned expenses that redundantly shadow an active recurring transaction
+            for (p in allPlanned) {
+                if (toDeletePlanned.any { it.id == p.id }) continue
+                val normP = DateUtils.normalizeDebtOrBillName(p.title).lowercase(Locale.US)
+                val hasRecurringTx = validTxs.any {
+                    it.isRecurring && !it.isIncome &&
+                    toDeleteTx.none { del -> del.id == it.id } &&
+                    DateUtils.normalizeDebtOrBillName(it.title).lowercase(Locale.US) == normP
+                }
+                if (hasRecurringTx && p.title.contains("Minimum Payment", ignoreCase = true)) {
+                    toDeletePlanned.add(p)
+                }
+            }
+
+            // 3. Deduplicate exact duplicate debts only (same name, balance, and APR)
+            val toDeleteDebts = mutableListOf<DebtEntity>()
+            val processedDebtIds = mutableSetOf<Int>()
+            for (i in 0 until allDebts.size) {
+                val dA = allDebts[i]
+                if (processedDebtIds.contains(dA.id)) continue
+                for (j in i + 1 until allDebts.size) {
+                    val dB = allDebts[j]
+                    if (processedDebtIds.contains(dB.id)) continue
+                    if (dA.name.trim().equals(dB.name.trim(), ignoreCase = true) &&
+                        Math.abs(dA.balance - dB.balance) < 0.01 &&
+                        Math.abs(dA.interestRate - dB.interestRate) < 0.01) {
+                        toDeleteDebts.add(dB)
+                        processedDebtIds.add(dB.id)
+                    }
+                }
+            }
+
+            for (tx in toUpdateTx) {
+                repository.updateTransaction(tx)
+            }
+            for (tx in toDeleteTx) {
+                repository.deleteTransaction(tx)
+                removedCount++
+            }
+            for (p in toDeletePlanned) {
+                repository.deletePlannedExpense(p)
+                removedCount++
+            }
+            for (d in toDeleteDebts) {
+                repository.deleteDebt(d)
+                removedCount++
+            }
+
+            if (removedCount > 0) {
+                autoSyncIfEnabled()
+                com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
+            }
+        } catch (e: Exception) {
+            Log.e("BudgetViewModel", "Error in performDeduplication", e)
+        }
+        return removedCount
     }
 
     fun deleteDebt(debt: DebtEntity) {
         viewModelScope.launch {
             val copy = debt.copy()
             repository.deleteDebt(debt)
+            val debtBillTitle = "${debt.name} (Minimum Payment)"
+            val plannedList = repository.allPlannedExpenses.first()
+            val existing = plannedList.firstOrNull { 
+                it.title.equals(debtBillTitle, ignoreCase = true) || it.title.equals(debt.name, ignoreCase = true)
+            }
+            if (existing != null) {
+                repository.deletePlannedExpense(existing)
+            }
             pushUndoAction(
                 title = "Delete Debt",
                 description = "Deleted debt '${debt.name}'"
             ) {
                 repository.insertDebt(copy.copy(id = 0))
+                if (copy.isLinkedToBills && existing != null) {
+                    repository.insertPlannedExpense(existing.copy(id = 0))
+                }
             }
             autoSyncIfEnabled()
         }
@@ -2054,119 +2520,19 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     suspend fun syncExpenseToDebtIfCreditCard(title: String, amount: Double, category: String, isIncome: Boolean = false) {
-        if (isIncome || amount <= 0.0) return
-        if (!isCreditCardCategory(category) && !isCreditCardExpense(title, category)) return
-
-        val cleanName = title.replace(" (Planned)", "").trim().ifBlank { "Credit Card" }
-        val allDebts = repository.allDebts.first()
-        val existing = allDebts.firstOrNull { it.name.equals(cleanName, ignoreCase = true) }
-
-        val minPay = if (amount <= 25.0) amount else maxOf(25.0, kotlin.math.round(amount * 0.02 * 100.0) / 100.0)
-
-        if (existing == null) {
-            val newDebt = DebtEntity(
-                name = cleanName,
-                balance = amount,
-                interestRate = 19.99,
-                minimumPayment = minPay,
-                category = "Credit Card",
-                notes = "Added from Expenses"
-            )
-            repository.insertDebt(newDebt)
-        } else {
-            if (Math.abs(existing.balance - amount) > 0.01) {
-                repository.updateDebt(
-                    existing.copy(
-                        balance = amount,
-                        minimumPayment = if (existing.minimumPayment <= 0.0) minPay else existing.minimumPayment
-                    )
-                )
-            }
-        }
+        // Safe no-op: Tracked debts are managed explicitly by the user in Debt Planner.
+        // Expense and bill transactions must never overwrite tracked debts or debt balances.
     }
 
     fun syncAllCreditCardExpensesToDebts() {
-        viewModelScope.launch {
-            try {
-                val allTx = repository.allTransactions.first()
-                val allPlanned = repository.allPlannedExpenses.first()
-                val allDebts = repository.allDebts.first()
-
-                val ccExpenses = allTx.filter { tx ->
-                    !tx.isIncome && tx.amount > 0.0 &&
-                            !tx.title.contains("Cancelled", ignoreCase = true) &&
-                            !tx.title.contains("Deleted", ignoreCase = true) &&
-                            (isCreditCardCategory(tx.category) || isCreditCardExpense(tx.title, tx.category))
-                }
-
-                // Group by normalized title, picking latest transaction
-                val latestByCard = ccExpenses
-                    .groupBy { it.title.trim().lowercase(Locale.US) }
-                    .mapValues { entry -> entry.value.maxByOrNull { it.dateMillis } ?: entry.value.first() }
-
-                for ((_, tx) in latestByCard) {
-                    val cleanName = tx.title.replace(" (Planned)", "").trim().ifBlank { "Credit Card" }
-                    val existing = allDebts.firstOrNull { it.name.equals(cleanName, ignoreCase = true) }
-                    val minPay = if (tx.amount <= 25.0) tx.amount else maxOf(25.0, kotlin.math.round(tx.amount * 0.02 * 100.0) / 100.0)
-
-                    if (existing == null) {
-                        repository.insertDebt(
-                            DebtEntity(
-                                name = cleanName,
-                                balance = tx.amount,
-                                interestRate = 19.99,
-                                minimumPayment = minPay,
-                                category = "Credit Card",
-                                notes = "Added from Expenses"
-                            )
-                        )
-                    } else if (Math.abs(existing.balance - tx.amount) > 0.01) {
-                        repository.updateDebt(
-                            existing.copy(
-                                balance = tx.amount,
-                                minimumPayment = if (existing.minimumPayment <= 0.0) minPay else existing.minimumPayment
-                            )
-                        )
-                    }
-                }
-
-                // Also sync any planned credit card expenses
-                for (p in allPlanned) {
-                    if (isCreditCardCategory(p.title) || isCreditCardExpense(p.title, "Credit Cards")) {
-                        val cleanName = p.title.replace(" (Planned)", "").trim().ifBlank { "Credit Card" }
-                        val existing = allDebts.firstOrNull { it.name.equals(cleanName, ignoreCase = true) }
-                        val minPay = if (p.minAmount <= 25.0) p.minAmount else maxOf(25.0, kotlin.math.round(p.minAmount * 0.02 * 100.0) / 100.0)
-                        if (existing == null) {
-                            repository.insertDebt(
-                                DebtEntity(
-                                    name = cleanName,
-                                    balance = p.minAmount,
-                                    interestRate = 19.99,
-                                    minimumPayment = minPay,
-                                    category = "Credit Card",
-                                    notes = "Added from Expenses"
-                                )
-                            )
-                        } else if (Math.abs(existing.balance - p.minAmount) > 0.01) {
-                            repository.updateDebt(
-                                existing.copy(
-                                    balance = p.minAmount,
-                                    minimumPayment = if (existing.minimumPayment <= 0.0) minPay else existing.minimumPayment
-                                )
-                            )
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("BudgetViewModel", "Error syncing credit card expenses to debts", e)
-            }
-        }
+        // Safe no-op: Tracked debts are managed explicitly by the user in Debt Planner.
+        // Expenses and bills must never overwrite or delete user debt entries.
     }
 
     fun exportDebtsToCsv(): String {
         val debts = uiState.value.allDebts
         val sb = StringBuilder()
-        sb.append("Debt Name,Balance,Interest Rate (APR),Minimum Payment,Category,Notes\n")
+        sb.append("Debt Name,Balance,Interest Rate (APR),Minimum Payment,Category,Notes,Promo APR,Promo Expiry,Priority Rank,Paid Off\n")
         for (debt in debts) {
             val safeName = "\"" + debt.name.replace("\"", "\"\"") + "\""
             val balStr = String.format(Locale.US, "%.2f", debt.balance)
@@ -2174,7 +2540,11 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             val minPayStr = String.format(Locale.US, "%.2f", debt.minimumPayment)
             val safeCat = "\"" + debt.category.replace("\"", "\"\"") + "\""
             val safeNotes = "\"" + debt.notes.replace("\"", "\"\"") + "\""
-            sb.append("$safeName,$balStr,$rateStr,$minPayStr,$safeCat,$safeNotes\n")
+            val promoAprStr = debt.promoApr?.let { String.format(Locale.US, "%.2f", it) } ?: ""
+            val promoExpStr = debt.promoExpirationDate ?: ""
+            val priorityStr = if (debt.customPriorityRank > 0) debt.customPriorityRank.toString() else ""
+            val paidOffStr = if (debt.isPaidOff) "TRUE" else "FALSE"
+            sb.append("$safeName,$balStr,$rateStr,$minPayStr,$safeCat,$safeNotes,$promoAprStr,$promoExpStr,$priorityStr,$paidOffStr\n")
         }
         return sb.toString()
     }
@@ -2208,11 +2578,19 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 var minPayIdx = -1
                 var categoryIdx = -1
                 var notesIdx = -1
+                var promoAprIdx = -1
+                var promoExpIdx = -1
+                var priorityIdx = -1
+                var paidOffIdx = -1
 
                 if (hasHeader) {
                     val headers = rows[0].map { it.trim().lowercase(Locale.US) }
                     headers.forEachIndexed { idx, h ->
                         when {
+                            h.contains("promo apr") || h.contains("promo rate") || h.contains("intro apr") || h.contains("intro rate") -> promoAprIdx = idx
+                            h.contains("promo exp") || h.contains("promo end") || h.contains("expiry") || h.contains("expiration") -> promoExpIdx = idx
+                            h.contains("priority") || h.contains("rank") || h.contains("pin") -> priorityIdx = idx
+                            h.contains("paid") || h.contains("settled") || h.contains("closed") -> paidOffIdx = idx
                             h.contains("debt") || h.contains("creditor") || h.contains("lender") || h.contains("card") || h.contains("name") || h.contains("title") || h.contains("item") -> if (nameIdx == -1) nameIdx = idx
                             h.contains("balance") || h.contains("owed") || h.contains("principal") || h.contains("amount") || h.contains("total") -> if (balanceIdx == -1) balanceIdx = idx
                             h.contains("rate") || h.contains("apr") || h.contains("interest") || h.contains("%") -> if (rateIdx == -1) rateIdx = idx
@@ -2230,6 +2608,10 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 if (minPayIdx == -1) minPayIdx = if (rows[0].size > 3) 3 else -1
                 if (categoryIdx == -1) categoryIdx = if (rows[0].size > 4) 4 else -1
                 if (notesIdx == -1) notesIdx = if (rows[0].size > 5) 5 else -1
+                if (promoAprIdx == -1 && rows[0].size > 6) promoAprIdx = 6
+                if (promoExpIdx == -1 && rows[0].size > 7) promoExpIdx = 7
+                if (priorityIdx == -1 && rows[0].size > 8) priorityIdx = 8
+                if (paidOffIdx == -1 && rows[0].size > 9) paidOffIdx = 9
 
                 var importedCount = 0
 
@@ -2266,6 +2648,24 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
                     val notesVal = if (notesIdx >= 0 && notesIdx < tokens.size) tokens[notesIdx].trim() else ""
 
+                    val promoAprVal = if (promoAprIdx >= 0 && promoAprIdx < tokens.size) {
+                        val (pApr, _) = parseAmountHelper(tokens[promoAprIdx])
+                        pApr
+                    } else null
+
+                    val promoExpVal = if (promoExpIdx >= 0 && promoExpIdx < tokens.size) {
+                        tokens[promoExpIdx].trim().ifBlank { null }
+                    } else null
+
+                    val priorityVal = if (priorityIdx >= 0 && priorityIdx < tokens.size) {
+                        tokens[priorityIdx].trim().toIntOrNull() ?: 0
+                    } else 0
+
+                    val isPaidOffVal = if (paidOffIdx >= 0 && paidOffIdx < tokens.size) {
+                        val v = tokens[paidOffIdx].trim().lowercase(Locale.US)
+                        v == "true" || v == "1" || v == "yes" || v == "paid"
+                    } else (balanceVal <= 0.0)
+
                     val existing = existingDebts.firstOrNull { debt ->
                         !usedIds.contains(debt.id) && debt.name.equals(cleanName, ignoreCase = true)
                     }
@@ -2278,7 +2678,11 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                 interestRate = rateVal,
                                 minimumPayment = minPayVal,
                                 category = categoryVal,
-                                notes = notesVal
+                                notes = notesVal,
+                                promoApr = promoAprVal ?: existing.promoApr,
+                                promoExpirationDate = promoExpVal ?: existing.promoExpirationDate,
+                                customPriorityRank = if (priorityVal > 0) priorityVal else existing.customPriorityRank,
+                                isPaidOff = isPaidOffVal
                             )
                         )
                     } else {
@@ -2289,7 +2693,11 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                 interestRate = rateVal,
                                 minimumPayment = minPayVal,
                                 category = categoryVal,
-                                notes = notesVal
+                                notes = notesVal,
+                                promoApr = promoAprVal,
+                                promoExpirationDate = promoExpVal,
+                                customPriorityRank = priorityVal,
+                                isPaidOff = isPaidOffVal
                             )
                         )
                     }
@@ -2336,6 +2744,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     obj.put("accountName", tx.accountName)
                     obj.put("isCompleted", tx.isCompleted)
                     obj.put("isAutoPay", tx.isAutoPay)
+                    obj.put("status", tx.getEffectiveStatus())
                     txArray.put(obj)
                 }
                 json.put("transactions", txArray)
@@ -2392,6 +2801,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     obj.put("minimumPayment", debt.minimumPayment)
                     obj.put("category", debt.category)
                     obj.put("notes", debt.notes)
+                    if (debt.promoApr != null) obj.put("promoApr", debt.promoApr)
+                    if (debt.promoExpirationDate != null) obj.put("promoExpirationDate", debt.promoExpirationDate)
+                    if (debt.customPriorityRank > 0) obj.put("customPriorityRank", debt.customPriorityRank)
                     debtArray.put(obj)
                 }
                 json.put("debts", debtArray)
@@ -2427,7 +2839,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                             isRecurring = obj.optBoolean("isRecurring", false),
                             accountName = obj.optString("accountName", "").let { if (it.equals("Primary Account", ignoreCase = true) || it.equals("Primary", ignoreCase = true)) "" else it },
                             isCompleted = obj.optBoolean("isCompleted", false),
-                            isAutoPay = obj.optBoolean("isAutoPay", false)
+                            isAutoPay = obj.optBoolean("isAutoPay", false),
+                            status = obj.optString("status", if (obj.optBoolean("isCompleted", false)) "cleared" else "due")
                         )
                         val exists = existingTxList.any {
                             it.title == entity.title &&
@@ -2518,13 +2931,20 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     val array = json.getJSONArray("debts")
                     for (i in 0 until array.length()) {
                         val obj = array.getJSONObject(i)
+                        val promoAprVal = if (obj.has("promoApr") && !obj.isNull("promoApr")) obj.getDouble("promoApr") else null
+                        val promoExpVal = if (obj.has("promoExpirationDate") && !obj.isNull("promoExpirationDate")) obj.getString("promoExpirationDate") else null
+                        val priorityVal = if (obj.has("customPriorityRank")) obj.optInt("customPriorityRank", 0) else 0
+
                         val entity = DebtEntity(
                             name = obj.getString("name"),
                             balance = obj.getDouble("balance"),
                             interestRate = obj.getDouble("interestRate"),
                             minimumPayment = obj.getDouble("minimumPayment"),
                             category = obj.optString("category", "Credit Card"),
-                            notes = obj.optString("notes", "")
+                            notes = obj.optString("notes", ""),
+                            promoApr = promoAprVal,
+                            promoExpirationDate = promoExpVal,
+                            customPriorityRank = priorityVal
                         )
                         val exists = existingDebtList.any {
                             it.name.equals(entity.name, ignoreCase = true)
@@ -2533,8 +2953,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                             repository.insertDebt(entity)
                         } else {
                             val current = existingDebtList.firstOrNull { it.name.equals(entity.name, ignoreCase = true) }
-                            if (current != null && (Math.abs(current.balance - entity.balance) > 0.01 || Math.abs(current.interestRate - entity.interestRate) > 0.01 || Math.abs(current.minimumPayment - entity.minimumPayment) > 0.01)) {
-                                repository.updateDebt(current.copy(balance = entity.balance, interestRate = entity.interestRate, minimumPayment = entity.minimumPayment, category = entity.category, notes = entity.notes))
+                            if (current != null && (Math.abs(current.balance - entity.balance) > 0.01 || Math.abs(current.interestRate - entity.interestRate) > 0.01 || Math.abs(current.minimumPayment - entity.minimumPayment) > 0.01 || current.promoApr != entity.promoApr || current.promoExpirationDate != entity.promoExpirationDate || current.customPriorityRank != entity.customPriorityRank)) {
+                                repository.updateDebt(current.copy(balance = entity.balance, interestRate = entity.interestRate, minimumPayment = entity.minimumPayment, category = entity.category, notes = entity.notes, promoApr = entity.promoApr, promoExpirationDate = entity.promoExpirationDate, customPriorityRank = entity.customPriorityRank))
                             }
                         }
                     }
@@ -3008,6 +3428,14 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
                     val completedStr = if (completedIdx >= 0 && completedIdx < tokens.size) tokens[completedIdx].trim() else ""
                     val isCompleted = completedStr.equals("Yes", ignoreCase = true) || completedStr.equals("true", ignoreCase = true) || completedStr.equals("Cleared", ignoreCase = true) || completedStr.equals("Paid", ignoreCase = true) || completedStr.equals("Done", ignoreCase = true)
+                    val parsedStatus = when (completedStr.lowercase()) {
+                        "due" -> "due"
+                        "pending" -> "pending"
+                        "paid" -> "paid"
+                        "cleared" -> "cleared"
+                        "yes", "true", "done" -> "cleared"
+                        else -> if (isCompleted) "cleared" else "due"
+                    }
 
                     val recurringStr = if (recurringIdx >= 0 && recurringIdx < tokens.size) tokens[recurringIdx].trim() else ""
                     val isRecurring = recurringStr.equals("Yes", ignoreCase = true) || recurringStr.equals("true", ignoreCase = true)
@@ -3054,7 +3482,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         isRecurring = isRecurring,
                         accountName = accountName,
                         isCompleted = isCompleted,
-                        isAutoPay = isAutoPay
+                        isAutoPay = isAutoPay,
+                        status = parsedStatus
                     )
 
                     val existing = existingTxList.firstOrNull { tx ->
@@ -3268,12 +3697,15 @@ data class BudgetUiState(
     val anchorPayday: LocalDate,
     val defaultPaycheckAmount: Double,
     val payPeriods: List<PayPeriod>,
+    val futurePayPeriods: List<PayPeriod> = emptyList(),
+    val allCalculatedPayPeriods: List<PayPeriod> = emptyList(),
     val monthlyTotalIncome: Double,
     val monthlyTotalExpenses: Double,
     val monthlyRemainingBalance: Double,
     val incomeSources: List<IncomeSourceEntity> = emptyList(),
     val plannedExpenses: List<PlannedExpenseEntity> = emptyList(),
     val allDebts: List<DebtEntity> = emptyList(),
+    val allDebtPayments: List<DebtPaymentEntity> = emptyList(),
     val activeAccountName: String = "All Accounts",
     val allAccounts: List<String> = emptyList(),
     val accountBalances: Map<String, AccountBalance> = emptyMap(),

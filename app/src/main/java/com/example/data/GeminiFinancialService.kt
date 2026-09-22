@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -42,6 +43,14 @@ data class ReceiptScanResult(
     val notes: String
 )
 
+data class MonthSummary(
+    val monthName: String,
+    val projectedIncome: Double,
+    val projectedExpenses: Double,
+    val projectedNet: Double,
+    val notes: String = ""
+)
+
 data class CashFlowForecastResult(
     val safeToSpendPerDay: Double,
     val safeToSpendPerWeek: Double,
@@ -49,7 +58,13 @@ data class CashFlowForecastResult(
     val riskLevel: String, // "LOW", "MODERATE", "HIGH"
     val summary: String,
     val recommendations: List<String>,
-    val criticalDates: List<String>
+    val criticalDates: List<String>,
+    val threeMonthIncome: Double = 0.0,
+    val threeMonthExpenses: Double = 0.0,
+    val threeMonthNetSavings: Double = 0.0,
+    val threeMonthOutlook: String = "",
+    val spendingAllocationTips: List<String> = emptyList(),
+    val monthlyBreakdown: List<MonthSummary> = emptyList()
 )
 
 data class WhatIfSimulationResult(
@@ -337,14 +352,15 @@ object GeminiFinancialService {
         }
     }
 
-    // 3. Pay Cycle Cash Flow Forecasting & "Safe-to-Spend" Advisor
+    // 3. Pay Cycle Cash Flow Forecasting & 3-Month Safe-to-Spend Financial Intelligence
     suspend fun generateCashFlowForecast(
         payPeriod: PayPeriod,
-        recentTransactions: List<TransactionEntity>
+        recentTransactions: List<TransactionEntity>,
+        futurePayPeriods: List<PayPeriod> = emptyList()
     ): Result<CashFlowForecastResult> = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
         if (apiKey.isBlank()) {
-            return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions))
+            return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions, futurePayPeriods))
         }
 
         val today = LocalDate.now()
@@ -355,29 +371,52 @@ object GeminiFinancialService {
         val pendingExpenses = payPeriod.transactions.filter { !it.isIncome && !it.isCompleted }.sumOf { it.amount }
         val totalIncome = payPeriod.totalIncomeWithCarryover
 
+        // 3-Month Horizon aggregation across up to 7-8 pay cycles (approx 90-100 days)
+        val horizonPeriods = if (futurePayPeriods.isNotEmpty()) futurePayPeriods.take(7) else listOf(payPeriod)
+        val threeMonthIncome = horizonPeriods.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
+        val threeMonthExpenses = horizonPeriods.sumOf { it.totalExpenses }
+        val threeMonthNet = threeMonthIncome - threeMonthExpenses
+
+        val periodsSb = StringBuilder()
+        horizonPeriods.forEachIndexed { idx, p ->
+            periodsSb.append("Cycle ${idx + 1} (${p.startDate} to ${p.endDate}): Income=$${String.format(Locale.US, "%.2f", p.totalIncomeWithCarryover)}, Expenses=$${String.format(Locale.US, "%.2f", p.totalExpenses)}, Net Balance=$${String.format(Locale.US, "%.2f", p.remainingBalance)}\n")
+        }
+
         val prompt = buildString {
-            append("You are an expert financial cash flow forecaster and safe-to-spend advisor for pay cycle budgeting.\n")
+            append("You are an expert AI financial advisor and safe-to-spend strategist for pay cycle budgeting.\n")
+            append("The user wants actionable financial intelligence on how to best spend their remaining disposable cash while considering their income and expenses over the next 3 months.\n\n")
             append("CURRENT PAY CYCLE METRICS:\n")
             append("- Cycle Range: ${payPeriod.startDate} to ${payPeriod.endDate} ($daysTotal days total, $daysRemaining days remaining)\n")
-            append("- Total Income (Paycheck + Carryover + Other): $${String.format(Locale.US, "%.2f", totalIncome)}\n")
-            append("- Expenses Paid / Cleared so far: $${String.format(Locale.US, "%.2f", completedExpenses)}\n")
+            append("- Current Cycle Income: $${String.format(Locale.US, "%.2f", totalIncome)}\n")
+            append("- Expenses Paid / Cleared: $${String.format(Locale.US, "%.2f", completedExpenses)}\n")
             append("- Pending / Upcoming scheduled bills: $${String.format(Locale.US, "%.2f", pendingExpenses)}\n")
-            append("- Net Remaining Balance: $${String.format(Locale.US, "%.2f", payPeriod.remainingBalance)}\n\n")
-            append("SCHEDULED TRANSACTIONS IN THIS CYCLE:\n")
-            payPeriod.transactions.forEach { tx ->
+            append("- Net Remaining Cash Available: $${String.format(Locale.US, "%.2f", payPeriod.remainingBalance)}\n\n")
+            append("UPCOMING 3-MONTH PAY CYCLES & CASH FLOW FORECAST:\n")
+            append(periodsSb.toString())
+            append("- 3-Month Projected Income: $${String.format(Locale.US, "%.2f", threeMonthIncome)}\n")
+            append("- 3-Month Projected Expenses: $${String.format(Locale.US, "%.2f", threeMonthExpenses)}\n")
+            append("- 3-Month Projected Net Savings / Surplus: $${String.format(Locale.US, "%.2f", threeMonthNet)}\n\n")
+            append("CURRENT CYCLE SCHEDULED BILLS:\n")
+            payPeriod.transactions.take(15).forEach { tx ->
                 val status = if (tx.isCompleted) "PAID" else "PENDING"
                 val date = DateUtils.millisToLocalDate(tx.dateMillis)
                 append("- [$status] ${tx.title} ($${String.format(Locale.US, "%.2f", tx.amount)}) on $date [${tx.category}]\n")
             }
-            append("\nAnalyze cash flow risk and output ONLY strict JSON:\n")
+            append("\nProvide guidance on how to allocate and spend the remaining balance safely without jeopardizing future cycles.\n")
+            append("Output ONLY strict JSON matching this structure:\n")
             append("{\n")
             append("  \"safeToSpendPerDay\": 0.00,\n")
             append("  \"safeToSpendPerWeek\": 0.00,\n")
             append("  \"projectedEndingBalance\": 0.00,\n")
             append("  \"riskLevel\": \"LOW | MODERATE | HIGH\",\n")
-            append("  \"summary\": \"2 sentence executive diagnosis\",\n")
+            append("  \"summary\": \"2 sentence concise executive synthesis of current & 3-month stance\",\n")
+            append("  \"threeMonthOutlook\": \"Detailed strategic outlook for the next 3 months highlighting whether surpluses or tighter cycles are ahead\",\n")
             append("  \"recommendations\": [\"Tip 1\", \"Tip 2\", \"Tip 3\"],\n")
-            append("  \"criticalDates\": [\"High-impact expense date or danger zone\"]\n")
+            append("  \"spendingAllocationTips\": [\"Specific advice on how to spend or reserve remaining funds (e.g., 50% buffer, 30% debt/savings, 20% guilt-free spending)\"],\n")
+            append("  \"criticalDates\": [\"High-impact upcoming dates or expense clusters\"],\n")
+            append("  \"monthlyBreakdown\": [\n")
+            append("    {\"monthName\": \"Month 1\", \"projectedIncome\": 0.00, \"projectedExpenses\": 0.00, \"projectedNet\": 0.00, \"notes\": \"Healthy buffer\"}\n")
+            append("  ]\n")
             append("}\n")
             append("Strict JSON only.")
         }
@@ -405,13 +444,13 @@ object GeminiFinancialService {
             val respString = response.body?.string() ?: ""
             if (!response.isSuccessful) {
                 Log.w(TAG, "Gemini forecast API error: ${response.code} $respString, falling back to local calculation")
-                return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions))
+                return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions, futurePayPeriods))
             }
 
             val rawText = extractTextFromGeminiResponse(respString)
             val cleanJson = cleanJsonString(rawText)
             if (cleanJson.isBlank()) {
-                return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions))
+                return@withContext Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions, futurePayPeriods))
             }
             val json = JSONObject(cleanJson)
 
@@ -421,10 +460,33 @@ object GeminiFinancialService {
                 for (i in 0 until recsArray.length()) recs.add(recsArray.optString(i))
             }
 
+            val allocTips = mutableListOf<String>()
+            val allocArray = json.optJSONArray("spendingAllocationTips")
+            if (allocArray != null) {
+                for (i in 0 until allocArray.length()) allocTips.add(allocArray.optString(i))
+            }
+
             val dates = mutableListOf<String>()
             val datesArray = json.optJSONArray("criticalDates")
             if (datesArray != null) {
                 for (i in 0 until datesArray.length()) dates.add(datesArray.optString(i))
+            }
+
+            val monthlyList = mutableListOf<MonthSummary>()
+            val monthArray = json.optJSONArray("monthlyBreakdown")
+            if (monthArray != null) {
+                for (i in 0 until monthArray.length()) {
+                    val mObj = monthArray.optJSONObject(i) ?: continue
+                    monthlyList.add(
+                        MonthSummary(
+                            monthName = mObj.optString("monthName", "Month ${i + 1}"),
+                            projectedIncome = mObj.optDouble("projectedIncome", 0.0),
+                            projectedExpenses = mObj.optDouble("projectedExpenses", 0.0),
+                            projectedNet = mObj.optDouble("projectedNet", 0.0),
+                            notes = mObj.optString("notes", "")
+                        )
+                    )
+                }
             }
 
             val defaultDaily = Math.max(0.0, payPeriod.remainingBalance / daysRemaining)
@@ -434,14 +496,25 @@ object GeminiFinancialService {
                     safeToSpendPerWeek = json.optDouble("safeToSpendPerWeek", defaultDaily * 7.0),
                     projectedEndingBalance = json.optDouble("projectedEndingBalance", payPeriod.remainingBalance),
                     riskLevel = json.optString("riskLevel", if (payPeriod.remainingBalance > 100) "LOW" else if (payPeriod.remainingBalance >= 0) "MODERATE" else "HIGH"),
-                    summary = json.optString("summary", "Your pay cycle forecast indicates safe discretionary pacing through ${payPeriod.endDate}."),
-                    recommendations = recs.ifEmpty { listOf("Track upcoming bills to ensure you maintain a safety buffer.") },
-                    criticalDates = dates
+                    summary = json.optString("summary", "Your pay cycle forecast indicates safe discretionary pacing through ${payPeriod.endDate} with a healthy 3-month outlook."),
+                    recommendations = recs.ifEmpty { listOf("Pace discretionary spending so you preserve buffer for upcoming month commitments.") },
+                    criticalDates = dates,
+                    threeMonthIncome = json.optDouble("threeMonthIncome", threeMonthIncome),
+                    threeMonthExpenses = json.optDouble("threeMonthExpenses", threeMonthExpenses),
+                    threeMonthNetSavings = json.optDouble("threeMonthNetSavings", threeMonthNet),
+                    threeMonthOutlook = json.optString("threeMonthOutlook", "Over the next 3 months, you are projected to generate $${String.format(Locale.US, "%,.2f", threeMonthIncome)} against $${String.format(Locale.US, "%,.2f", threeMonthExpenses)} in expenses."),
+                    spendingAllocationTips = allocTips.ifEmpty {
+                        listOf(
+                            "Reserve 40% ($${String.format(Locale.US, "%.0f", Math.max(0.0, payPeriod.remainingBalance * 0.4))}) for emergency buffer or debt acceleration.",
+                            "Use 60% ($${String.format(Locale.US, "%.0f", Math.max(0.0, payPeriod.remainingBalance * 0.6))}) for daily living and guilt-free discretionary spending."
+                        )
+                    },
+                    monthlyBreakdown = monthlyList.ifEmpty { calculateLocalCashFlowForecast(payPeriod, recentTransactions, futurePayPeriods).monthlyBreakdown }
                 )
             )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to generate cash flow forecast via AI, falling back to local computation", e)
-            Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions))
+            Result.success(calculateLocalCashFlowForecast(payPeriod, recentTransactions, futurePayPeriods))
         }
     }
 
@@ -710,7 +783,8 @@ object GeminiFinancialService {
 
     private fun calculateLocalCashFlowForecast(
         payPeriod: PayPeriod,
-        recentTransactions: List<TransactionEntity>
+        recentTransactions: List<TransactionEntity>,
+        futurePayPeriods: List<PayPeriod> = emptyList()
     ): CashFlowForecastResult {
         val today = LocalDate.now()
         val daysTotal = Math.max(1, java.time.temporal.ChronoUnit.DAYS.between(payPeriod.startDate, payPeriod.endDate).toInt() + 1)
@@ -720,33 +794,79 @@ object GeminiFinancialService {
         val pendingExpenses = payPeriod.transactions.filter { !it.isIncome && !it.isCompleted }.sumOf { it.amount }
         val remaining = payPeriod.remainingBalance
 
+        // 3-Month horizon calculation across upcoming pay cycles
+        val horizon = if (futurePayPeriods.isNotEmpty()) futurePayPeriods.take(7) else listOf(payPeriod)
+        val threeMonthIncome = horizon.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
+        val threeMonthExpenses = horizon.sumOf { it.totalExpenses }
+        val threeMonthNet = threeMonthIncome - threeMonthExpenses
+
+        // Safe spend pacing
         val safePerDay = Math.max(0.0, remaining / daysRemaining)
         val safePerWeek = safePerDay * 7.0
         val riskLevel = when {
-            remaining > 200 -> "LOW"
+            remaining > 200 && threeMonthNet >= 0 -> "LOW"
             remaining >= 0 -> "MODERATE"
             else -> "HIGH"
         }
 
         val summary = if (remaining >= 0) {
-            "You have $${String.format(Locale.US, "%,.2f", remaining)} projected buffer remaining across $daysRemaining days, giving you $${String.format(Locale.US, "%,.2f", safePerDay)}/day in safe discretionary spending."
+            "You have $${String.format(Locale.US, "%,.2f", remaining)} buffer remaining in this cycle ($${String.format(Locale.US, "%,.2f", safePerDay)}/day), with an estimated $${String.format(Locale.US, "%,.2f", threeMonthNet)} surplus across the next 3 months."
         } else {
-            "Caution: Pending commitments exceed available cycle funds by $${String.format(Locale.US, "%,.2f", Math.abs(remaining))}. Consider deferring optional expenses."
+            "Caution: Current scheduled bills exceed available funds by $${String.format(Locale.US, "%,.2f", Math.abs(remaining))}. Defer non-essential expenses to protect future cycles."
         }
 
+        // Actionable spending recommendations
         val recs = mutableListOf<String>()
-        recs.add("Pace discretionary spending to around $${String.format(Locale.US, "%,.2f", safePerDay)}/day to finish the cycle with buffer.")
+        recs.add("Pace discretionary spending to ~$${String.format(Locale.US, "%,.2f", safePerDay)}/day ($${String.format(Locale.US, "%,.2f", safePerWeek)}/week) to maintain your buffer.")
         if (pendingExpenses > 0) {
-            recs.add("Hold $${String.format(Locale.US, "%,.2f", pendingExpenses)} in checking to ensure upcoming scheduled bills clear safely.")
+            recs.add("Keep $${String.format(Locale.US, "%,.2f", pendingExpenses)} untouched in checking for upcoming scheduled commitments.")
         }
-        if (remaining > 300) {
-            recs.add("Consider transferring $${String.format(Locale.US, "%,.0f", remaining * 0.4)} towards debt reduction or high-yield savings.")
+        if (threeMonthNet > 500) {
+            recs.add("Your 3-month forecast is positive ($${String.format(Locale.US, "%,.2f", threeMonthNet)} net). You can comfortably allocate surplus towards savings or high-priority goals.")
+        } else if (threeMonthNet < 0) {
+            recs.add("Upcoming 3-month commitments show a projected deficit of $${String.format(Locale.US, "%,.2f", Math.abs(threeMonthNet))}. Consider reducing variable spending now.")
         }
 
+        // Smart spending allocation tips
+        val allocTips = mutableListOf<String>()
+        if (remaining > 0) {
+            val bufferPortion = remaining * 0.40
+            val goalPortion = remaining * 0.30
+            val guiltFreePortion = remaining * 0.30
+            allocTips.add("40% Safety Buffer ($${String.format(Locale.US, "%.0f", bufferPortion)}): Keep in checking to absorb irregular bills across the next 3 months.")
+            allocTips.add("30% Goal / Debt Acceleration ($${String.format(Locale.US, "%.0f", goalPortion)}): Channel toward upcoming large expenses or debt payoff.")
+            allocTips.add("30% Guilt-Free Discretionary ($${String.format(Locale.US, "%.0f", guiltFreePortion)}): Spend on dining, entertainment, or personal shopping.")
+        } else {
+            allocTips.add("Freeze discretionary purchases until next payday to preserve funds for core bills.")
+            allocTips.add("Review subscriptions and pending payments to unlock liquidity.")
+        }
+
+        // Critical upcoming dates
         val criticalDates = payPeriod.transactions
             .filter { !it.isIncome && !it.isCompleted && it.amount >= 40.0 }
             .sortedBy { it.dateMillis }
             .map { "${DateUtils.millisToLocalDate(it.dateMillis)}: ${it.title} ($${String.format(Locale.US, "%,.2f", it.amount)})" }
+
+        // Monthly breakdown for next 3 months
+        val monthlyBreakdown = horizon
+            .groupBy { it.payday.year to it.payday.monthValue }
+            .entries
+            .take(3)
+            .map { entry ->
+                val periodsInMonth = entry.value
+                val inc = periodsInMonth.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
+                val exp = periodsInMonth.sumOf { it.totalExpenses }
+                val net = inc - exp
+                val firstPeriod = periodsInMonth.first()
+                val monthName = firstPeriod.payday.month.name.lowercase().replaceFirstChar { it.uppercase() } + " " + firstPeriod.payday.year
+                MonthSummary(
+                    monthName = monthName,
+                    projectedIncome = inc,
+                    projectedExpenses = exp,
+                    projectedNet = net,
+                    notes = if (net >= 0.0) "Surplus of $${String.format(Locale.US, "%,.0f", net)}" else "Deficit of $${String.format(Locale.US, "%,.0f", Math.abs(net))}"
+                )
+            }
 
         return CashFlowForecastResult(
             safeToSpendPerDay = safePerDay,
@@ -755,7 +875,17 @@ object GeminiFinancialService {
             riskLevel = riskLevel,
             summary = summary,
             recommendations = recs,
-            criticalDates = criticalDates
+            criticalDates = criticalDates,
+            threeMonthIncome = threeMonthIncome,
+            threeMonthExpenses = threeMonthExpenses,
+            threeMonthNetSavings = threeMonthNet,
+            threeMonthOutlook = if (threeMonthNet >= 0) {
+                "Strong financial runway: Next 3 months project a net positive surplus of $${String.format(Locale.US, "%,.2f", threeMonthNet)} ($${String.format(Locale.US, "%,.2f", threeMonthIncome)} income vs $${String.format(Locale.US, "%,.2f", threeMonthExpenses)} expenses)."
+            } else {
+                "Caution required: Next 3 months project a net deficit of $${String.format(Locale.US, "%,.2f", Math.abs(threeMonthNet))} ($${String.format(Locale.US, "%,.2f", threeMonthExpenses)} in expenses vs $${String.format(Locale.US, "%,.2f", threeMonthIncome)} in income)."
+            },
+            spendingAllocationTips = allocTips,
+            monthlyBreakdown = monthlyBreakdown
         )
     }
 

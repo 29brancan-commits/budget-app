@@ -43,6 +43,41 @@ data class StrategyPayoffResult(
     val monthsSavedVsMinimum: Int = 0
 )
 
+data class SurplusImpactResult(
+    val surplusAmount: Double,
+    val daysSaved: Int,
+    val monthsSaved: Int,
+    val interestSaved: Double,
+    val baselinePayoffDate: LocalDate,
+    val acceleratedPayoffDate: LocalDate,
+    val targetDebtName: String?,
+    val targetDebtId: Int? = null
+)
+
+data class DebtPaymentPlanItem(
+    val debt: DebtEntity,
+    val minimumPayment: Double,
+    val extraPayment: Double,
+    val totalPayment: Double,
+    val isPaidOffThisCycle: Boolean,
+    val remainingBalance: Double,
+    val isPrimaryTarget: Boolean
+)
+
+data class PromoPayoffAnalysis(
+    val debtId: Int,
+    val debtName: String,
+    val monthsRemaining: Long,
+    val isExpiringSoon: Boolean,
+    val isExpired: Boolean,
+    val requiredMonthlyPayment: Double,
+    val minimumPayment: Double,
+    val monthlyPaymentDifference: Double,
+    val standardApr: Double,
+    val promoApr: Double,
+    val expirationDateStr: String
+)
+
 object DebtPayoffCalculator {
 
     fun calculatePayoff(
@@ -118,17 +153,220 @@ object DebtPayoffCalculator {
         return best
     }
 
+    fun calculateSurplusImpact(
+        debts: List<DebtEntity>,
+        strategy: PayoffStrategy,
+        currentExtraMonthlyBudget: Double,
+        surplusAmount: Double,
+        startDate: LocalDate = LocalDate.now()
+    ): SurplusImpactResult {
+        if (debts.isEmpty() || surplusAmount <= 0.0) {
+            return SurplusImpactResult(
+                surplusAmount = surplusAmount,
+                daysSaved = 0,
+                monthsSaved = 0,
+                interestSaved = 0.0,
+                baselinePayoffDate = startDate,
+                acceleratedPayoffDate = startDate,
+                targetDebtName = null
+            )
+        }
+
+        // Baseline calculation with current extra monthly budget
+        val baseline = simulate(debts, strategy, currentExtraMonthlyBudget, startDate, 360)
+
+        // Identify target debt according to pinned priority / strategy
+        val unpaid = debts.filter { it.balance > 0.0 }
+        val pinned = unpaid.filter { it.customPriorityRank > 0 }.minByOrNull { it.customPriorityRank }
+        val target = pinned ?: when (strategy) {
+            PayoffStrategy.SNOWBALL -> unpaid.minByOrNull { it.balance }
+            PayoffStrategy.AVALANCHE -> unpaid.maxByOrNull { it.interestRate }
+            PayoffStrategy.MINIMUM_ONLY -> unpaid.minByOrNull { it.balance }
+        }
+
+        if (target == null) {
+            return SurplusImpactResult(
+                surplusAmount = surplusAmount,
+                daysSaved = 0,
+                monthsSaved = 0,
+                interestSaved = 0.0,
+                baselinePayoffDate = baseline.payoffDate,
+                acceleratedPayoffDate = baseline.payoffDate,
+                targetDebtName = null
+            )
+        }
+
+        // Sort unpaid debts in priority order (pinned first, then by strategy)
+        val sortedDebts = unpaid.sortedWith { a, b ->
+            val rankA = if (a.customPriorityRank > 0) a.customPriorityRank else Int.MAX_VALUE
+            val rankB = if (b.customPriorityRank > 0) b.customPriorityRank else Int.MAX_VALUE
+            if (rankA != rankB) {
+                rankA.compareTo(rankB)
+            } else {
+                when (strategy) {
+                    PayoffStrategy.SNOWBALL -> a.balance.compareTo(b.balance)
+                    PayoffStrategy.AVALANCHE -> b.interestRate.compareTo(a.interestRate)
+                    PayoffStrategy.MINIMUM_ONLY -> a.balance.compareTo(b.balance)
+                }
+            }
+        }
+
+        // Model immediate application of surplus cascading across debts so surplus is not lost
+        var remSurplus = surplusAmount
+        val balMap = debts.associate { it.id to it.balance }.toMutableMap()
+        for (d in sortedDebts) {
+            if (remSurplus <= 0.0) break
+            val currentBal = balMap[d.id] ?: d.balance
+            val payment = minOf(currentBal, remSurplus)
+            balMap[d.id] = (currentBal - payment).coerceAtLeast(0.0)
+            remSurplus -= payment
+        }
+
+        val acceleratedDebts = debts.map { d ->
+            d.copy(balance = balMap[d.id] ?: d.balance)
+        }
+
+        val accelerated = simulate(acceleratedDebts, strategy, currentExtraMonthlyBudget, startDate, 360)
+
+        val monthsSaved = (baseline.totalMonths - accelerated.totalMonths).coerceAtLeast(0)
+        val totalMonthlyPay = debts.sumOf { it.minimumPayment } + currentExtraMonthlyBudget
+        val daysSaved = if (monthsSaved > 0) {
+            monthsSaved * 30
+        } else {
+            if (totalMonthlyPay > 0) {
+                ((surplusAmount / totalMonthlyPay) * 30.0).toInt().coerceIn(1, 29)
+            } else 0
+        }
+
+        val interestSaved = (baseline.totalInterestPaid - accelerated.totalInterestPaid).coerceAtLeast(0.0)
+
+        return SurplusImpactResult(
+            surplusAmount = surplusAmount,
+            daysSaved = maxOf(daysSaved, if (monthsSaved > 0) monthsSaved * 30 else 0),
+            monthsSaved = monthsSaved,
+            interestSaved = interestSaved,
+            baselinePayoffDate = baseline.payoffDate,
+            acceleratedPayoffDate = accelerated.payoffDate,
+            targetDebtName = target.name,
+            targetDebtId = target.id
+        )
+    }
+
+    fun calculateSurplusAllocation(
+        debts: List<DebtEntity>,
+        strategy: PayoffStrategy,
+        surplusAmount: Double
+    ): List<DebtPaymentPlanItem> {
+        val unpaid = debts.filter { it.balance > 0.0 }
+        if (unpaid.isEmpty()) return emptyList()
+
+        val sortedDebts = unpaid.sortedWith { a, b ->
+            val rankA = if (a.customPriorityRank > 0) a.customPriorityRank else Int.MAX_VALUE
+            val rankB = if (b.customPriorityRank > 0) b.customPriorityRank else Int.MAX_VALUE
+            if (rankA != rankB) {
+                rankA.compareTo(rankB)
+            } else {
+                when (strategy) {
+                    PayoffStrategy.SNOWBALL -> a.balance.compareTo(b.balance)
+                    PayoffStrategy.AVALANCHE -> b.interestRate.compareTo(a.interestRate)
+                    PayoffStrategy.MINIMUM_ONLY -> a.balance.compareTo(b.balance)
+                }
+            }
+        }
+
+        var remainingSurplus = surplusAmount.coerceAtLeast(0.0)
+        val result = mutableListOf<DebtPaymentPlanItem>()
+
+        for ((index, debt) in sortedDebts.withIndex()) {
+            val minPay = minOf(debt.balance, debt.minimumPayment)
+            // Available room to pay off after minimum payment
+            val roomForExtra = (debt.balance - minPay).coerceAtLeast(0.0)
+            val extraPay = minOf(remainingSurplus, roomForExtra)
+            remainingSurplus -= extraPay
+
+            val totalPay = minPay + extraPay
+            val remainingBal = (debt.balance - totalPay).coerceAtLeast(0.0)
+            val isPaidOff = remainingBal <= 0.001
+
+            result.add(
+                DebtPaymentPlanItem(
+                    debt = debt,
+                    minimumPayment = minPay,
+                    extraPayment = extraPay,
+                    totalPayment = totalPay,
+                    isPaidOffThisCycle = isPaidOff,
+                    remainingBalance = remainingBal,
+                    isPrimaryTarget = (index == 0)
+                )
+            )
+        }
+
+        return result
+    }
+
+    fun analyzePromoApr(
+        debt: DebtEntity,
+        today: LocalDate = LocalDate.now()
+    ): PromoPayoffAnalysis? {
+        val expStr = debt.promoExpirationDate?.trim() ?: return null
+        if (debt.promoApr == null || debt.balance <= 0) return null
+
+        val expDate = try {
+            LocalDate.parse(expStr)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val monthsRemaining = java.time.temporal.ChronoUnit.MONTHS.between(today, expDate)
+        val isExpired = today.isAfter(expDate)
+        val isExpiringSoon = !isExpired && monthsRemaining in 0..18
+
+        val requiredPayment = if (monthsRemaining > 0) {
+            debt.balance / monthsRemaining
+        } else {
+            debt.balance
+        }
+
+        return PromoPayoffAnalysis(
+            debtId = debt.id,
+            debtName = debt.name,
+            monthsRemaining = monthsRemaining,
+            isExpiringSoon = isExpiringSoon,
+            isExpired = isExpired,
+            requiredMonthlyPayment = requiredPayment,
+            minimumPayment = debt.minimumPayment,
+            monthlyPaymentDifference = (requiredPayment - debt.minimumPayment).coerceAtLeast(0.0),
+            standardApr = debt.interestRate,
+            promoApr = debt.promoApr,
+            expirationDateStr = expStr
+        )
+    }
+
     private class SimulationDebt(
         val id: Int,
         val name: String,
         var currentBalance: Double,
-        val interestRate: Double,
+        val standardInterestRate: Double,
+        val promoApr: Double?,
+        val promoExpirationDate: LocalDate?,
+        val customPriorityRank: Int,
         val minimumPayment: Double
     ) {
         val initialBalance: Double = currentBalance
         var totalInterestPaid: Double = 0.0
         var payoffMonth: Int = 0
         var isPaidOff: Boolean = false
+
+        fun getEffectiveRate(currentDate: LocalDate): Double {
+            if (promoApr != null && promoExpirationDate != null) {
+                if (!currentDate.isAfter(promoExpirationDate)) {
+                    return promoApr
+                }
+            } else if (promoApr != null && promoExpirationDate == null) {
+                return promoApr
+            }
+            return standardInterestRate
+        }
     }
 
     private fun simulate(
@@ -139,11 +377,17 @@ object DebtPayoffCalculator {
         maxMonths: Int
     ): StrategyPayoffResult {
         val simDebts = debts.map {
+            val promoExpDate = it.promoExpirationDate?.let { expStr ->
+                try { LocalDate.parse(expStr.trim()) } catch (_: Exception) { null }
+            }
             SimulationDebt(
                 id = it.id,
                 name = it.name,
                 currentBalance = it.balance,
-                interestRate = it.interestRate,
+                standardInterestRate = it.interestRate,
+                promoApr = it.promoApr,
+                promoExpirationDate = promoExpDate,
+                customPriorityRank = it.customPriorityRank,
                 minimumPayment = it.minimumPayment
             )
         }.toMutableList()
@@ -157,10 +401,11 @@ object DebtPayoffCalculator {
             monthIndex++
             val currentDate = startDate.plusMonths(monthIndex.toLong())
 
-            // 1. Accrue monthly interest on remaining balances
+            // 1. Accrue monthly interest on remaining balances using effective APR (checking promo APR & expiration)
             for (debt in simDebts) {
                 if (!debt.isPaidOff && debt.currentBalance > 0) {
-                    val monthlyInterestRate = (debt.interestRate / 100.0) / 12.0
+                    val effectiveApr = debt.getEffectiveRate(currentDate)
+                    val monthlyInterestRate = (effectiveApr / 100.0) / 12.0
                     val accruedInterest = debt.currentBalance * monthlyInterestRate
                     debt.currentBalance += accruedInterest
                     debt.totalInterestPaid += accruedInterest
@@ -195,19 +440,28 @@ object DebtPayoffCalculator {
                 }
             }
 
-            // 3. Apply extra budget to target debt based on strategy
+            // 3. Apply extra budget to target debt based on priority pinning & strategy
             if (availableExtra > 0 && simDebts.any { !it.isPaidOff }) {
-                val targetDebt = when (strategy) {
-                    PayoffStrategy.SNOWBALL -> {
-                        simDebts.filter { !it.isPaidOff }.minByOrNull { it.currentBalance }
+                val unpaidDebts = simDebts.filter { !it.isPaidOff }
+                // Check if any debt has a custom pinned priority (customPriorityRank > 0)
+                val pinnedDebt = unpaidDebts.filter { it.customPriorityRank > 0 }
+                    .minByOrNull { it.customPriorityRank }
+
+                val targetDebt = if (pinnedDebt != null) {
+                    pinnedDebt
+                } else {
+                    when (strategy) {
+                        PayoffStrategy.SNOWBALL -> {
+                            unpaidDebts.minByOrNull { it.currentBalance }
+                        }
+                        PayoffStrategy.AVALANCHE -> {
+                            unpaidDebts.minWithOrNull(
+                                compareByDescending<SimulationDebt> { it.getEffectiveRate(currentDate) }
+                                    .thenBy { it.currentBalance }
+                            )
+                        }
+                        PayoffStrategy.MINIMUM_ONLY -> null
                     }
-                    PayoffStrategy.AVALANCHE -> {
-                        simDebts.filter { !it.isPaidOff }.minWithOrNull(
-                            compareByDescending<SimulationDebt> { it.interestRate }
-                                .thenBy { it.currentBalance }
-                        )
-                    }
-                    PayoffStrategy.MINIMUM_ONLY -> null
                 }
 
                 if (targetDebt != null) {
@@ -253,7 +507,7 @@ object DebtPayoffCalculator {
                 debtId = debt.id,
                 debtName = debt.name,
                 initialBalance = debt.initialBalance,
-                interestRate = debt.interestRate,
+                interestRate = debt.standardInterestRate,
                 minimumPayment = debt.minimumPayment,
                 payoffMonth = pMonth,
                 totalInterestPaid = debt.totalInterestPaid,

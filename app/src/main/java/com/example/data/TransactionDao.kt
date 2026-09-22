@@ -88,4 +88,19 @@ interface TransactionDao {
 
     @Query("DELETE FROM debts")
     suspend fun clearDebts()
+
+    @Query("SELECT * FROM debt_payments ORDER BY paymentDateMillis DESC")
+    fun getAllDebtPayments(): Flow<List<DebtPaymentEntity>>
+
+    @Query("SELECT * FROM debt_payments WHERE debtId = :debtId ORDER BY paymentDateMillis DESC")
+    fun getPaymentsForDebt(debtId: Int): Flow<List<DebtPaymentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDebtPayment(payment: DebtPaymentEntity)
+
+    @Delete
+    suspend fun deleteDebtPayment(payment: DebtPaymentEntity)
+
+    @Query("DELETE FROM debt_payments WHERE debtId = :debtId")
+    suspend fun deletePaymentsForDebt(debtId: Int)
 }

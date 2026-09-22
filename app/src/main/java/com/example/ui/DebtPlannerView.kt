@@ -46,7 +46,13 @@ fun DebtPlannerView(
     onSyncGoogleDrive: (() -> Unit)? = null,
     onConnectGoogleDrive: (() -> Unit)? = null,
     isSyncing: Boolean = false,
-    accountEmail: String? = null
+    accountEmail: String? = null,
+    onLogPayment: ((debtId: Int, paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit)? = null,
+    onDeletePayment: ((DebtPaymentEntity) -> Unit)? = null,
+    onToggleBillLink: ((DebtEntity, Boolean, Int) -> Unit)? = null,
+    onTogglePriorityPin: ((DebtEntity) -> Unit)? = null,
+    onTogglePaidOff: ((DebtEntity) -> Unit)? = null,
+    onAddFullDebt: ((DebtEntity) -> Unit)? = null
 ) {
     var selectedStrategy by remember { mutableStateOf(PayoffStrategy.SNOWBALL) }
     var extraPaymentInput by remember { mutableStateOf("150") }
@@ -63,15 +69,27 @@ fun DebtPlannerView(
     var debtImportStatusMsg by remember { mutableStateOf("") }
     var isImportingDebtsProgress by remember { mutableStateOf(false) }
 
+    // Payment logging & history states
+    var debtForPaymentLog by remember { mutableStateOf<DebtEntity?>(null) }
+    var prefilledPaymentAmount by remember { mutableStateOf<Double?>(null) }
+    var expandedPaymentHistoryDebtId by remember { mutableStateOf<Int?>(null) }
+
+    // Cycle Safe-to-Spend Buffer Calculation
+    val cycleSafeToSpend = remember(uiState.currentPayPeriod, uiState.monthlyRemainingBalance) {
+        maxOf(0.0, uiState.currentPayPeriod?.remainingBalance ?: uiState.monthlyRemainingBalance)
+    }
+
     // AI Debt Payoff Advisor States
     var aiSuggestionsResult by remember { mutableStateOf<String?>(null) }
     var isLoadingAiSuggestions by remember { mutableStateOf(false) }
     var aiErrorMessage by remember { mutableStateOf<String?>(null) }
 
+    val activeDebts = remember(debts) { debts.filter { !it.isPaidOff && it.balance > 0.0 } }
+
     // Target timeline mode calculation
-    val computedExtraForTarget = remember(debts, selectedStrategy, targetMonthsGoal) {
-        if (debts.isNotEmpty()) {
-            DebtPayoffCalculator.calculateRequiredExtraPayment(debts, selectedStrategy, targetMonthsGoal)
+    val computedExtraForTarget = remember(activeDebts, selectedStrategy, targetMonthsGoal) {
+        if (activeDebts.isNotEmpty()) {
+            DebtPayoffCalculator.calculateRequiredExtraPayment(activeDebts, selectedStrategy, targetMonthsGoal)
         } else 0.0
     }
 
@@ -81,7 +99,7 @@ fun DebtPlannerView(
         extraPaymentInput.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
     }
 
-    val runAiAnalysis: (String?) -> Unit = { customPrompt ->
+    val runAiAnalysis: (String?, Double, Double?) -> Unit = { customPrompt, windfall, consolidationApr ->
         if (debts.isEmpty()) {
             aiErrorMessage = "Please add at least one debt to generate AI payoff suggestions."
         } else {
@@ -94,7 +112,9 @@ fun DebtPlannerView(
                     extraMonthlyBudget = extraMonthlyBudget,
                     targetMonthsGoal = targetMonthsGoal,
                     isTargetTimelineMode = isTargetTimelineMode,
-                    customPrompt = customPrompt
+                    customPrompt = customPrompt,
+                    windfallAmount = windfall,
+                    consolidationApr = consolidationApr
                 )
                 isLoadingAiSuggestions = false
                 result.onSuccess { text ->
@@ -112,9 +132,9 @@ fun DebtPlannerView(
     var showTimelineDetails by remember { mutableStateOf(false) }
 
     // Strategy calculations
-    val strategyMap = remember(debts, extraMonthlyBudget) {
+    val strategyMap = remember(activeDebts, extraMonthlyBudget) {
         DebtPayoffCalculator.calculatePayoff(
-            debts = debts,
+            debts = activeDebts,
             extraMonthlyBudget = extraMonthlyBudget
         )
     }
@@ -122,10 +142,21 @@ fun DebtPlannerView(
     val activeResult = strategyMap[selectedStrategy] ?: strategyMap[PayoffStrategy.SNOWBALL]!!
     val minimumResult = strategyMap[PayoffStrategy.MINIMUM_ONLY]!!
 
-    val totalDebtBalance = remember(debts) { debts.sumOf { it.balance } }
-    val totalMinimumPayments = remember(debts) { debts.sumOf { it.minimumPayment } }
-    val averageApr = remember(debts) {
-        if (debts.isNotEmpty()) debts.map { it.interestRate }.average() else 0.0
+    val surplusImpact = remember(activeDebts, selectedStrategy, extraMonthlyBudget, cycleSafeToSpend) {
+        if (cycleSafeToSpend > 0.0 && activeDebts.isNotEmpty()) {
+            DebtPayoffCalculator.calculateSurplusImpact(
+                debts = activeDebts,
+                strategy = selectedStrategy,
+                currentExtraMonthlyBudget = extraMonthlyBudget,
+                surplusAmount = cycleSafeToSpend
+            )
+        } else null
+    }
+
+    val totalDebtBalance = remember(activeDebts) { activeDebts.sumOf { it.balance } }
+    val totalMinimumPayments = remember(activeDebts) { activeDebts.sumOf { it.minimumPayment } }
+    val averageApr = remember(activeDebts) {
+        if (activeDebts.isNotEmpty()) activeDebts.map { it.interestRate }.average() else 0.0
     }
 
     val monthYearFormatter = remember { DateTimeFormatter.ofPattern("MMM yyyy", Locale.US) }
@@ -286,7 +317,9 @@ fun DebtPlannerView(
             aiResult = aiSuggestionsResult,
             isLoading = isLoadingAiSuggestions,
             errorMessage = aiErrorMessage,
-            onGenerateSuggestions = { prompt -> runAiAnalysis(prompt) },
+            onGenerateSuggestions = { prompt, windfall, apr ->
+                runAiAnalysis(prompt, windfall, apr)
+            },
             onClearSuggestions = {
                 aiSuggestionsResult = null
                 aiErrorMessage = null
@@ -442,6 +475,554 @@ fun DebtPlannerView(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+        }
+
+        // 3b. Pay-Cycle "Safe-to-Spend" Surplus Accelerator Card
+        val targetDebt = remember(debts, selectedStrategy, surplusImpact) {
+            debts.firstOrNull { it.id == surplusImpact?.targetDebtId }
+                ?: debts.firstOrNull { it.name == surplusImpact?.targetDebtName }
+                ?: debts.filter { it.customPriorityRank > 0 }.minByOrNull { it.customPriorityRank }
+                ?: (if (selectedStrategy == PayoffStrategy.AVALANCHE) debts.maxByOrNull { it.interestRate } else debts.minByOrNull { it.balance })
+        }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("cycle_surplus_acceleration_card"),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDark) Color(0xFF04241B) else Color(0xFFECFDF5)
+            ),
+            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f))
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text("🔗", fontSize = 13.sp)
+                        Text(
+                            text = "Accelerate with Pay Cycle Surplus",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF047857)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFF10B981).copy(alpha = 0.2f)
+                    ) {
+                        Text(
+                            text = "SAFE-TO-SPEND BUFFER",
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFF047857),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Active Safe Surplus",
+                            fontSize = 9.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = String.format(Locale.US, "$%,.2f", cycleSafeToSpend),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (cycleSafeToSpend > 0) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (surplusImpact != null && surplusImpact.surplusAmount > 0) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                text = "Projected Interest Saved",
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = String.format(Locale.US, "+$%,.2f", surplusImpact.interestSaved),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF059669)
+                            )
+                        }
+                    }
+                }
+
+                val surplusAmt = surplusImpact?.surplusAmount ?: 0.0
+                val planItems = remember(debts, selectedStrategy, surplusAmt) {
+                    DebtPayoffCalculator.calculateSurplusAllocation(
+                        debts = debts,
+                        strategy = selectedStrategy,
+                        surplusAmount = surplusAmt
+                    )
+                }
+                val primaryItem = planItems.firstOrNull { it.isPrimaryTarget }
+                val rolloverItems = planItems.filter { !it.isPrimaryTarget && it.extraPayment > 0.0 }
+                val minOnlyItems = planItems.filter { !it.isPrimaryTarget && it.extraPayment == 0.0 && it.debt.balance > 0.0 }
+
+                if (primaryItem != null) {
+                    val targetDebt = primaryItem.debt
+                    val targetMinPay = primaryItem.minimumPayment
+                    val targetExtraPay = primaryItem.extraPayment
+                    val targetTotalPay = primaryItem.totalPayment
+                    val isTargetPaidOff = primaryItem.isPaidOffThisCycle
+
+                    val targetReasonBadge = when {
+                        targetDebt.customPriorityRank > 0 -> "Pinned Priority #${targetDebt.customPriorityRank}"
+                        targetDebt.promoApr != null && targetDebt.promoExpirationDate != null -> "0% Promo Expiring"
+                        selectedStrategy == PayoffStrategy.AVALANCHE -> "Highest APR (${String.format(Locale.US, "%.1f%%", targetDebt.interestRate)}) • Avalanche"
+                        selectedStrategy == PayoffStrategy.SNOWBALL -> "Lowest Balance ($${String.format(Locale.US, "%,.0f", targetDebt.balance)}) • Snowball"
+                        else -> "Primary Payoff Target"
+                    }
+
+                    // Detailed Bill Payment Plan
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isDark) Color(0xFF0F172A) else Color.White,
+                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(9.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("📋", fontSize = 11.sp)
+                                    Text(
+                                        text = "EXACT BILLS TO PAY THIS CYCLE",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF047857),
+                                        letterSpacing = 0.4.sp
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = targetReasonBadge,
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF047857),
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+
+                            // 1. Primary Target Debt Box (Never exceeds remaining balance)
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF10B981).copy(alpha = 0.08f),
+                                border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.3f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text("🎯", fontSize = 11.sp)
+                                                Text(
+                                                    text = targetDebt.name,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                            Text(
+                                                text = "Balance: ${String.format(Locale.US, "$%,.2f", targetDebt.balance)} • ${String.format(Locale.US, "%.1f%% APR", targetDebt.interestRate)}${if (targetDebt.isLinkedToBills) " • Due day ${targetDebt.billDueDay}" else ""}",
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                text = String.format(Locale.US, "$%,.2f", targetTotalPay),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFF059669)
+                                            )
+                                            Text(
+                                                text = if (isTargetPaidOff) "🎉 PAYS OFF IN FULL" else if (targetExtraPay > 0) "min + surplus" else "minimum due",
+                                                fontSize = 8.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isTargetPaidOff) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    Divider(color = Color(0xFF10B981).copy(alpha = 0.2f), thickness = 0.5.dp)
+                                    if (isTargetPaidOff) {
+                                        Text(
+                                            text = if (targetDebt.balance <= targetMinPay) {
+                                                "• Balance is only ${String.format(Locale.US, "$%,.2f", targetDebt.balance)}. Required minimum payment of ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates this card completely!"
+                                            } else {
+                                                "• Balance is only ${String.format(Locale.US, "$%,.2f", targetDebt.balance)}. Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} (${String.format(Locale.US, "$%,.2f", targetMinPay)} min + ${String.format(Locale.US, "$%,.2f", targetExtraPay)} surplus) clears this debt in full!"
+                                            },
+                                            fontSize = 9.sp,
+                                            lineHeight = 12.5.sp,
+                                            color = Color(0xFF047857),
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "• Required Minimum: ${String.format(Locale.US, "$%,.2f", targetMinPay)}\n• Surplus Acceleration: +${String.format(Locale.US, "$%,.2f", targetExtraPay)}",
+                                            fontSize = 9.sp,
+                                            lineHeight = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 2. Rollover Debts Box (When primary debt needed less than full surplus)
+                            if (rolloverItems.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF0EA5E9).copy(alpha = 0.08f),
+                                    border = BorderStroke(1.dp, Color(0xFF0EA5E9).copy(alpha = 0.35f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text("⚡", fontSize = 11.sp)
+                                                Text(
+                                                    text = "SURPLUS ROLLOVER CASCADE",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF0284C7)
+                                                )
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(50),
+                                                color = Color(0xFF0EA5E9).copy(alpha = 0.15f)
+                                            ) {
+                                                Text(
+                                                    text = "+$${String.format(Locale.US, "%,.0f", rolloverItems.sumOf { it.extraPayment })} Rolled Over",
+                                                    fontSize = 8.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF0284C7),
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "Because ${targetDebt.name} only needed ${String.format(Locale.US, "$%,.2f", targetTotalPay)} to clear, your remaining surplus automatically rolls over to your next priority:",
+                                            fontSize = 8.5.sp,
+                                            lineHeight = 11.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        rolloverItems.forEach { roll ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 2.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "• ${roll.debt.name} (Bal: ${String.format(Locale.US, "$%,.2f", roll.debt.balance)})",
+                                                        fontSize = 9.5.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Text(
+                                                        text = "${String.format(Locale.US, "$%,.2f", roll.minimumPayment)} min + ${String.format(Locale.US, "$%,.2f", roll.extraPayment)} rollover surplus${if (roll.isPaidOffThisCycle) " (🎉 Pays off in full!)" else ""}",
+                                                        fontSize = 8.5.sp,
+                                                        color = Color(0xFF0284C7)
+                                                    )
+                                                }
+                                                Text(
+                                                    text = String.format(Locale.US, "$%,.2f", roll.totalPayment),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF0284C7)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Other debts minimum obligations
+                            if (minOnlyItems.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(
+                                        text = "Other bills to pay minimum only to avoid late fees:",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    minOnlyItems.forEach { otherItem ->
+                                        val other = otherItem.debt
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 2.dp, vertical = 1.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "• ${other.name}${if (other.isLinkedToBills) " (Due day ${other.billDueDay})" else ""}",
+                                                fontSize = 9.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                text = String.format(Locale.US, "$%,.2f min", otherItem.minimumPayment),
+                                                fontSize = 9.5.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. Total cycle cash outlay (exact allocated sum)
+                            val totalOutlay = planItems.sumOf { it.totalPayment }
+                            Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Total Debt Payments This Cycle:",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = String.format(Locale.US, "$%,.2f", totalOutlay),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    if (surplusImpact != null && surplusImpact.surplusAmount > 0) {
+                        val daysSaved = surplusImpact.daysSaved
+                        val timelineAdvancementText = if (daysSaved > 0) "$daysSaved days" else "${surplusImpact.monthsSaved} months"
+                        val summaryText = if (isTargetPaidOff && rolloverItems.isNotEmpty()) {
+                            "Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates ${targetDebt.name} in full! The remaining ${String.format(Locale.US, "$%,.2f", rolloverItems.sumOf { it.extraPayment })} surplus rolls over to your next debt, advancing your debt-free date by $timelineAdvancementText and saving ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
+                        } else if (isTargetPaidOff) {
+                            "Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates ${targetDebt.name} in full, advancing your debt-free date by $timelineAdvancementText and saving ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
+                        } else {
+                            "Putting ${String.format(Locale.US, "$%,.0f", targetExtraPay)} toward ${targetDebt.name} moves your debt-free date forward by $timelineAdvancementText and saves ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isDark) Color(0xFF0F172A) else Color.White,
+                            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("⚡", fontSize = 13.sp)
+                                Text(
+                                    text = summaryText,
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            if (isTargetPaidOff) {
+                                Button(
+                                    onClick = {
+                                        debtForPaymentLog = targetDebt
+                                        prefilledPaymentAmount = targetTotalPay
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Pay Off ${targetDebt.name} in Full (${String.format(Locale.US, "$%,.2f", targetTotalPay)})",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        debtForPaymentLog = targetDebt
+                                        prefilledPaymentAmount = targetExtraPay
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Pay ${String.format(Locale.US, "$%,.0f", targetExtraPay)} Extra to ${targetDebt.name}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+
+                            val firstRollover = rolloverItems.firstOrNull()
+                            if (firstRollover != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            debtForPaymentLog = firstRollover.debt
+                                            prefilledPaymentAmount = firstRollover.totalPayment
+                                        },
+                                        modifier = Modifier.weight(1.2f),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Pay ${String.format(Locale.US, "$%,.0f", firstRollover.totalPayment)} to ${firstRollover.debt.name} (Rollover)",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            extraPaymentInput = String.format(Locale.US, "%.0f", surplusImpact.surplusAmount)
+                                            isTargetTimelineMode = false
+                                        },
+                                        modifier = Modifier.weight(0.8f),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("⚡ Monthly Extra", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            debtForPaymentLog = targetDebt
+                                            prefilledPaymentAmount = targetTotalPay
+                                        },
+                                        modifier = Modifier.weight(1.1f),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Pay Full ${String.format(Locale.US, "$%,.0f", targetTotalPay)} (Min + Extra)",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            extraPaymentInput = String.format(Locale.US, "%.0f", surplusImpact.surplusAmount)
+                                            isTargetTimelineMode = false
+                                        },
+                                        modifier = Modifier.weight(0.9f),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("⚡ Set Monthly Extra", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Currently $0.00 safe surplus in this pay cycle. Pay minimums as scheduled above. Any surplus earned will accelerate ${targetDebt.name} first.",
+                            fontSize = 9.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    debtForPaymentLog = targetDebt
+                                    prefilledPaymentAmount = targetMinPay
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(12.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Pay $${String.format(Locale.US, "%.0f", targetMinPay)} Min to ${targetDebt.name}", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Add at least one debt below to unlock one-tap pay cycle payoff acceleration and itemized bill instructions.",
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -712,22 +1293,37 @@ fun DebtPlannerView(
                 }
             } else {
                 val sortedDebts = remember(debts, selectedStrategy) {
-                    when (selectedStrategy) {
-                        PayoffStrategy.AVALANCHE -> debts.sortedWith(
-                            compareBy<DebtEntity> { it.balance <= 0.0 }
+                    val pinned = debts.filter { it.customPriorityRank > 0 && !it.isPaidOff && it.balance > 0.0 }.sortedBy { it.customPriorityRank }
+                    val unpinned = debts.filter { it.customPriorityRank <= 0 || it.isPaidOff || it.balance <= 0.0 }
+                    val sortedUnpinned = when (selectedStrategy) {
+                        PayoffStrategy.AVALANCHE -> unpinned.sortedWith(
+                            compareBy<DebtEntity> { it.isPaidOff || it.balance <= 0.0 }
                                 .thenByDescending { it.interestRate }
                                 .thenBy { it.balance }
                         )
-                        else -> debts.sortedWith(
-                            compareBy<DebtEntity> { it.balance <= 0.0 }
+                        else -> unpinned.sortedWith(
+                            compareBy<DebtEntity> { it.isPaidOff || it.balance <= 0.0 }
                                 .thenBy { it.balance }
                                 .thenByDescending { it.interestRate }
                         )
                     }
+                    pinned + sortedUnpinned
                 }
 
                 sortedDebts.forEachIndexed { index, debt ->
                     val paybackResult = activeResult.individualPayoffs.firstOrNull { it.debtId == debt.id }
+                    val originalBalance = if (debt.originalBalance > 0.0) debt.originalBalance else debt.balance
+                    val amountPaid = maxOf(0.0, originalBalance - debt.balance)
+                    val progressRatio = if (originalBalance > 0.0) (amountPaid / originalBalance).coerceIn(0.0, 1.0) else 0.0
+                    val progressPct = (progressRatio * 100.0).toInt()
+                    val debtPayments = remember(uiState.allDebtPayments, debt.id) {
+                        uiState.allDebtPayments.filter { it.debtId == debt.id }
+                    }
+                    val linkedAccount = remember(uiState.allAccounts, debt.linkedAccountName, debt.linkedAccountId) {
+                        debt.linkedAccountName?.takeIf { it.isNotBlank() }
+                            ?: debt.linkedAccountId?.let { accId -> uiState.allAccounts.getOrNull(accId) }
+                    }
+
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -736,12 +1332,16 @@ fun DebtPlannerView(
                         colors = CardDefaults.cardColors(
                             containerColor = if (isDark) Color(0xFF18181B) else Color.White
                         ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        border = BorderStroke(
+                            if (debt.customPriorityRank > 0) 1.5.dp else 1.dp,
+                            if (debt.customPriorityRank > 0) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.outlineVariant
+                        )
                     ) {
                         Column(
                             modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            // Header: Name, Priority Badge, Edit/Delete
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -749,28 +1349,49 @@ fun DebtPlannerView(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.weight(1f)
                                 ) {
                                     Surface(
                                         shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                        color = if (debt.customPriorityRank > 0) Color(0xFF8B5CF6).copy(alpha = 0.2f) else MaterialTheme.colorScheme.secondaryContainer,
                                         modifier = Modifier.size(24.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Text(
-                                                text = "${index + 1}",
-                                                fontSize = 10.5.sp,
+                                                text = if (debt.customPriorityRank > 0) "📌" else "${index + 1}",
+                                                fontSize = if (debt.customPriorityRank > 0) 11.sp else 10.5.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         }
                                     }
-                                    Text(
-                                        text = "${getCategoryEmoji(debt.category)} ${debt.name}",
-                                        fontSize = 12.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                text = "${getCategoryEmoji(debt.category)} ${debt.name}",
+                                                fontSize = 12.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        if (linkedAccount != null) {
+                                            Text(
+                                                text = "🏦 $linkedAccount",
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                        if (debt.customPriorityRank > 0) {
+                                            Text(
+                                                text = "📌 Priority Target #${debt.customPriorityRank}",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF7C3AED)
+                                            )
+                                        }
+                                    }
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -798,6 +1419,117 @@ fun DebtPlannerView(
                                 }
                             }
 
+                            // Progress Bar & Milestone Tracker
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f / $%,.0f paid", amountPaid, originalBalance),
+                                        fontSize = 9.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "$progressPct%",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (progressPct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { progressRatio.toFloat() },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = if (progressPct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                )
+
+                                // Visual Milestones Row
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    when {
+                                        debt.balance <= 0.0 || progressPct >= 100 -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF10B981).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    "🎉 PAID OFF / DEBT FREE",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = Color(0xFF047857),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        progressPct >= 75 -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF8B5CF6).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    "🏆 75% Mark Reached",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF6D28D9),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        progressPct >= 50 -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF3B82F6).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    "⭐ 50% Halfway Mark",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF1D4ED8),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        progressPct >= 25 -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFFF59E0B).copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    "🚀 25% Started Strong",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFB45309),
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (debt.balance in 0.01..999.99 && originalBalance >= 1000.0) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = Color(0xFFEC4899).copy(alpha = 0.2f)
+                                        ) {
+                                            Text(
+                                                "🔥 Under $1,000 Milestone",
+                                                fontSize = 8.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFBE185D),
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Balance, APR, Min Payment, Payoff Date
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -844,10 +1576,196 @@ fun DebtPlannerView(
                                 }
                             }
 
+                            // 0% Promo APR / Balance Transfer Badge
+                            if (debt.promoApr != null) {
+                                val promoAnalysis = remember(debt) { DebtPayoffCalculator.analyzePromoApr(debt) }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isDark) Color(0xFF2D2305) else Color(0xFFFEF3C7),
+                                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "⏳ ${debt.promoApr}% Promo APR until ${debt.promoExpirationDate ?: "N/A"}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDark) Color(0xFFFBBF24) else Color(0xFF92400E)
+                                            )
+                                            if ((promoAnalysis?.monthsRemaining ?: 0) > 0) {
+                                                Text(
+                                                    text = "${promoAnalysis?.monthsRemaining} mos left",
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isDark) Color(0xFFFDE68A) else Color(0xFFB45309)
+                                                )
+                                            }
+                                        }
+                                        if (promoAnalysis != null && promoAnalysis.requiredMonthlyPayment > 0) {
+                                            Text(
+                                                text = "Pay $${String.format(Locale.US, "%,.2f", promoAnalysis.requiredMonthlyPayment)}/mo to clear before expiration and avoid retroactive ${debt.interestRate}% interest.",
+                                                fontSize = 9.sp,
+                                                color = if (isDark) Color(0xFFFCD34D) else Color(0xFF78350F)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Action Bar: Bill Link, Priority Pin, History & Log Payment
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Priority Pin Chip
+                                    FilterChip(
+                                        selected = debt.customPriorityRank > 0,
+                                        onClick = { onTogglePriorityPin?.invoke(debt) },
+                                        label = {
+                                            Text(
+                                                if (debt.customPriorityRank > 0) "📌 Pinned" else "📌 Pin",
+                                                fontSize = 9.sp
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    )
+
+                                    // Scheduled Bill Link Chip
+                                    FilterChip(
+                                        selected = debt.isLinkedToBills,
+                                        onClick = {
+                                            onToggleBillLink?.invoke(debt, !debt.isLinkedToBills, debt.billDueDay)
+                                        },
+                                        label = {
+                                            Text(
+                                                if (debt.isLinkedToBills) "📅 Linked (${debt.billDueDay}th)" else "📅 Link Bill",
+                                                fontSize = 9.sp
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    )
+
+                                    // Paid Off Status Toggle Chip
+                                    FilterChip(
+                                        selected = debt.isPaidOff || debt.balance <= 0.0,
+                                        onClick = { onTogglePaidOff?.invoke(debt) },
+                                        label = {
+                                            Text(
+                                                if (debt.isPaidOff || debt.balance <= 0.0) "✅ Paid Off" else "⭕ Active",
+                                                fontSize = 9.sp
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = Color(0xFF10B981).copy(alpha = 0.2f),
+                                            selectedLabelColor = Color(0xFF10B981)
+                                        ),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    )
+                                }
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (debtPayments.isNotEmpty()) {
+                                        TextButton(
+                                            onClick = {
+                                                expandedPaymentHistoryDebtId = if (expandedPaymentHistoryDebtId == debt.id) null else debt.id
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            modifier = Modifier.height(24.dp)
+                                        ) {
+                                            Text(
+                                                text = "${debtPayments.size} logs ${if (expandedPaymentHistoryDebtId == debt.id) "▲" else "▼"}",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    FilledTonalButton(
+                                        onClick = {
+                                            debtForPaymentLog = debt
+                                            prefilledPaymentAmount = null
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.height(24.dp).testTag("log_payment_debt_${debt.id}")
+                                    ) {
+                                        Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(11.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text("Log Payment", fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+
+                            // Payment History dropdown
+                            AnimatedVisibility(visible = expandedPaymentHistoryDebtId == debt.id) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                            shape = RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text("Payment Log & Principal vs Interest Breakdown", fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                                    debtPayments.forEach { pmt ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(if (isDark) Color(0xFF27272A) else Color.White, RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = String.format(Locale.US, "$%,.2f paid", pmt.paymentAmount) +
+                                                        if (pmt.note.isNotBlank()) " • ${pmt.note}" else "",
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = String.format(Locale.US, "$%,.2f principal + $%,.2f interest", pmt.principalAmount, pmt.interestAmount) +
+                                                        " • " + java.time.Instant.ofEpochMilli(pmt.paymentDateMillis)
+                                                            .atZone(java.time.ZoneId.systemDefault())
+                                                            .toLocalDate()
+                                                            .format(DateTimeFormatter.ofPattern("MMM dd, yyyy", Locale.US)),
+                                                    fontSize = 8.5.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = { onDeletePayment?.invoke(pmt) },
+                                                modifier = Modifier.size(20.dp)
+                                            ) {
+                                                Icon(imageVector = Icons.Default.Close, contentDescription = "Delete payment", modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             if (debt.notes.isNotBlank()) {
                                 Text(
                                     text = "Note: ${debt.notes}",
-                                    fontSize = 10.sp,
+                                    fontSize = 9.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -858,36 +1776,39 @@ fun DebtPlannerView(
         }
     }
 
-    if (isWideScreen) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-                .testTag("debt_planner_view"),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Box(modifier = Modifier.weight(0.48f)) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    plannerControls()
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
+        if (useSplitColumns) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .testTag("debt_planner_view"),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Box(modifier = Modifier.weight(0.48f)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        plannerControls()
+                    }
+                }
+                Box(modifier = Modifier.weight(0.52f)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        trackedDebtsList()
+                    }
                 }
             }
-            Box(modifier = Modifier.weight(0.52f)) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    trackedDebtsList()
-                }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .testTag("debt_planner_view"),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                plannerControls()
+                trackedDebtsList()
             }
-        }
-    } else {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-                .testTag("debt_planner_view"),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            plannerControls()
-            trackedDebtsList()
         }
     }
 
@@ -895,9 +1816,15 @@ fun DebtPlannerView(
     if (showAddDialog) {
         DebtEditDialog(
             debt = null,
+            accounts = uiState.allAccounts,
+            accountBalances = uiState.accountBalances,
             onDismiss = { showAddDialog = false },
-            onConfirm = { name, balance, interest, minPay, cat, notes ->
-                onAddDebt(name, balance, interest, minPay, cat, notes)
+            onConfirmDebt = { newDebt ->
+                if (onAddFullDebt != null) {
+                    onAddFullDebt(newDebt)
+                } else {
+                    onAddDebt(newDebt.name, newDebt.balance, newDebt.interestRate, newDebt.minimumPayment, newDebt.category, newDebt.notes)
+                }
                 showAddDialog = false
             }
         )
@@ -907,18 +1834,36 @@ fun DebtPlannerView(
     if (debtToEdit != null) {
         DebtEditDialog(
             debt = debtToEdit,
+            accounts = uiState.allAccounts,
+            accountBalances = uiState.accountBalances,
             onDismiss = { debtToEdit = null },
-            onConfirm = { name, balance, interest, minPay, cat, notes ->
-                val updated = debtToEdit!!.copy(
-                    name = name,
-                    balance = balance,
-                    interestRate = interest,
-                    minimumPayment = minPay,
-                    category = cat,
-                    notes = notes
-                )
+            onConfirmDebt = { updated ->
                 onUpdateDebt(updated)
                 debtToEdit = null
+            }
+        )
+    }
+
+    // Log Debt Payment Dialog
+    if (debtForPaymentLog != null) {
+        LogDebtPaymentDialog(
+            debt = debtForPaymentLog!!,
+            prefilledAmount = prefilledPaymentAmount,
+            onDismiss = {
+                debtForPaymentLog = null
+                prefilledPaymentAmount = null
+            },
+            onConfirm = { pAmt, princ, intAmt, note, createExp ->
+                onLogPayment?.invoke(
+                    debtForPaymentLog!!.id,
+                    pAmt,
+                    princ,
+                    intAmt,
+                    note,
+                    createExp
+                )
+                debtForPaymentLog = null
+                prefilledPaymentAmount = null
             }
         )
     }
@@ -1320,16 +2265,45 @@ fun DebtCsvExportDialog(
 @Composable
 fun DebtEditDialog(
     debt: DebtEntity?,
+    accounts: List<String> = emptyList(),
+    accountBalances: Map<String, AccountBalance> = emptyMap(),
     onDismiss: () -> Unit,
-    onConfirm: (name: String, balance: Double, interestRate: Double, minimumPayment: Double, category: String, notes: String) -> Unit
+    onConfirmDebt: (DebtEntity) -> Unit
 ) {
     var name by remember { mutableStateOf(debt?.name ?: "") }
     var balanceInput by remember { mutableStateOf(debt?.balance?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
+    var originalBalanceInput by remember {
+        mutableStateOf(debt?.let {
+            val orig = if (it.originalBalance > 0.0) it.originalBalance else it.balance
+            String.format(Locale.US, "%.2f", orig)
+        } ?: "")
+    }
     var interestInput by remember { mutableStateOf(debt?.interestRate?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
     var minPaymentInput by remember { mutableStateOf(debt?.minimumPayment?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
     var selectedCategory by remember { mutableStateOf(debt?.category ?: "Credit Card") }
-    var notes by remember { mutableStateOf(debt?.notes ?: "") }
 
+    // 0% Promo APR & Balance Transfer Fields
+    var hasPromoApr by remember { mutableStateOf(debt?.promoApr != null) }
+    var promoAprInput by remember { mutableStateOf(debt?.promoApr?.let { String.format(Locale.US, "%.2f", it) } ?: "0.0") }
+    var promoExpirationInput by remember { mutableStateOf(debt?.promoExpirationDate ?: "") }
+
+    // Scheduled Bill Sync Fields
+    var isLinkedToBills by remember { mutableStateOf(debt?.isLinkedToBills ?: false) }
+    var billDueDayInput by remember { mutableStateOf((debt?.billDueDay ?: 15).toString()) }
+
+    // Priority Pinning
+    var isPriorityPinned by remember { mutableStateOf((debt?.customPriorityRank ?: 0) > 0) }
+
+    // Link to Account
+    var selectedAccountName by remember {
+        mutableStateOf(
+            debt?.linkedAccountName
+                ?: debt?.linkedAccountId?.let { id -> accounts.getOrNull(id) }
+        )
+    }
+    var accountDropdownExpanded by remember { mutableStateOf(false) }
+
+    var notes by remember { mutableStateOf(debt?.notes ?: "") }
     var errorMessage by remember { mutableStateOf("") }
 
     val categories = listOf("Credit Card", "Auto Loan", "Student Loan", "Personal Loan", "Mortgage", "Medical", "Other")
@@ -1360,8 +2334,13 @@ fun DebtEditDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = balanceInput,
-                        onValueChange = { balanceInput = it },
-                        label = { Text("Balance ($)") },
+                        onValueChange = {
+                            balanceInput = it
+                            if (originalBalanceInput.isBlank()) {
+                                originalBalanceInput = it
+                            }
+                        },
+                        label = { Text("Current Balance ($)") },
                         prefix = { Text("$ ") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -1369,26 +2348,39 @@ fun DebtEditDialog(
                     )
 
                     OutlinedTextField(
+                        value = originalBalanceInput,
+                        onValueChange = { originalBalanceInput = it },
+                        label = { Text("Starting Balance ($)") },
+                        prefix = { Text("$ ") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
                         value = interestInput,
                         onValueChange = { interestInput = it },
-                        label = { Text("APR (%)") },
+                        label = { Text("Regular APR (%)") },
                         suffix = { Text("%") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.weight(1f).testTag("debt_apr_field")
                     )
+
+                    OutlinedTextField(
+                        value = minPaymentInput,
+                        onValueChange = { minPaymentInput = it },
+                        label = { Text("Min Payment ($)") },
+                        prefix = { Text("$ ") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("debt_min_payment_field")
+                    )
                 }
 
-                OutlinedTextField(
-                    value = minPaymentInput,
-                    onValueChange = { minPaymentInput = it },
-                    label = { Text("Minimum Monthly Payment ($)") },
-                    prefix = { Text("$ ") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("debt_min_payment_field")
-                )
-
+                // Category selection
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Category", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(
@@ -1401,6 +2393,185 @@ fun DebtEditDialog(
                                 onClick = { selectedCategory = cat },
                                 label = { Text(cat, fontSize = 10.5.sp) }
                             )
+                        }
+                    }
+                }
+
+                // 0% Promo APR & Balance Transfer Tracker
+                Card(
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("0% Promo APR / Balance Transfer", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Track promotional window to avoid retroactive interest", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(
+                                checked = hasPromoApr,
+                                onCheckedChange = { hasPromoApr = it }
+                            )
+                        }
+
+                        if (hasPromoApr) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedTextField(
+                                    value = promoAprInput,
+                                    onValueChange = { promoAprInput = it },
+                                    label = { Text("Promo APR (%)") },
+                                    suffix = { Text("%") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = promoExpirationInput,
+                                    onValueChange = { promoExpirationInput = it },
+                                    label = { Text("Expiration Date") },
+                                    placeholder = { Text("YYYY-MM-DD") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1.3f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Scheduled Bill Sync Toggle
+                Card(
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Link to Scheduled Bills", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Auto-syncs minimum payment as upcoming bill in your pay cycle", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(
+                                checked = isLinkedToBills,
+                                onCheckedChange = { isLinkedToBills = it }
+                            )
+                        }
+
+                        if (isLinkedToBills) {
+                            OutlinedTextField(
+                                value = billDueDayInput,
+                                onValueChange = { billDueDayInput = it },
+                                label = { Text("Monthly Due Day (1-28)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                // Priority Pinning
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Pin as #1 Priority Payoff Target", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Overrides strategy to tackle this debt first", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = isPriorityPinned,
+                        onCheckedChange = { isPriorityPinned = it }
+                    )
+                }
+
+                // Link to Account Selector
+                if (accounts.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Linked Account (Optional)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { accountDropdownExpanded = !accountDropdownExpanded }
+                                .testTag("debt_account_selector"),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = selectedAccountName ?: "None (Unlinked)",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    if (selectedAccountName != null) {
+                                        val bal = accountBalances[selectedAccountName]?.remainingBalance
+                                        if (bal != null) {
+                                            Text(
+                                                text = "Balance: $${String.format(Locale.US, "%.2f", bal)}",
+                                                fontSize = 9.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                                Icon(
+                                    imageVector = if (accountDropdownExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Select Account",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = accountDropdownExpanded,
+                            onDismissRequest = { accountDropdownExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("None (Unlinked)", fontSize = 12.sp) },
+                                onClick = {
+                                    selectedAccountName = null
+                                    accountDropdownExpanded = false
+                                }
+                            )
+                            accounts.forEach { accName ->
+                                val bal = accountBalances[accName]?.remainingBalance
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(accName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                            if (bal != null) {
+                                                Text(
+                                                    "Balance: $${String.format(Locale.US, "%.2f", bal)}",
+                                                    fontSize = 9.5.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedAccountName = accName
+                                        accountDropdownExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -1418,8 +2589,11 @@ fun DebtEditDialog(
             Button(
                 onClick = {
                     val b = balanceInput.toDoubleOrNull()
+                    val origB = originalBalanceInput.toDoubleOrNull() ?: b
                     val r = interestInput.toDoubleOrNull()
                     val m = minPaymentInput.toDoubleOrNull()
+                    val pApr = if (hasPromoApr) promoAprInput.toDoubleOrNull() else null
+                    val dueDay = billDueDayInput.toIntOrNull()?.coerceIn(1, 28) ?: 15
 
                     if (name.isBlank()) {
                         errorMessage = "Please enter a debt name."
@@ -1430,12 +2604,269 @@ fun DebtEditDialog(
                     } else if (m == null || m <= 0) {
                         errorMessage = "Please enter a valid minimum monthly payment."
                     } else {
-                        onConfirm(name.trim(), b, r, m, selectedCategory, notes.trim())
+                        val selAccIdx = selectedAccountName?.let { name -> accounts.indexOf(name).takeIf { it >= 0 } }
+                        val resultDebt = debt?.copy(
+                            name = name.trim(),
+                            balance = b,
+                            originalBalance = origB ?: b,
+                            interestRate = r,
+                            minimumPayment = m,
+                            category = selectedCategory,
+                            notes = notes.trim(),
+                            promoApr = pApr,
+                            promoExpirationDate = if (hasPromoApr && promoExpirationInput.isNotBlank()) promoExpirationInput.trim() else null,
+                            customPriorityRank = if (isPriorityPinned) 1 else 0,
+                            isLinkedToBills = isLinkedToBills,
+                            billDueDay = dueDay,
+                            linkedAccountId = selAccIdx,
+                            linkedAccountName = selectedAccountName
+                        ) ?: DebtEntity(
+                            name = name.trim(),
+                            balance = b,
+                            originalBalance = origB ?: b,
+                            interestRate = r,
+                            minimumPayment = m,
+                            category = selectedCategory,
+                            notes = notes.trim(),
+                            promoApr = pApr,
+                            promoExpirationDate = if (hasPromoApr && promoExpirationInput.isNotBlank()) promoExpirationInput.trim() else null,
+                            customPriorityRank = if (isPriorityPinned) 1 else 0,
+                            isLinkedToBills = isLinkedToBills,
+                            billDueDay = dueDay,
+                            linkedAccountId = selAccIdx,
+                            linkedAccountName = selectedAccountName
+                        )
+                        onConfirmDebt(resultDebt)
                     }
                 },
                 modifier = Modifier.testTag("save_debt_button")
             ) {
                 Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun LogDebtPaymentDialog(
+    debt: DebtEntity,
+    prefilledAmount: Double? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpenseTransaction: Boolean) -> Unit
+) {
+    val initialPayment = prefilledAmount ?: debt.minimumPayment
+    var paymentInput by remember { mutableStateOf(String.format(Locale.US, "%.2f", initialPayment)) }
+
+    // Calculate default interest and principal based on APR
+    val estimatedMonthlyInterest = remember(debt) {
+        (debt.balance * (debt.interestRate / 100.0) / 12.0).coerceAtLeast(0.0)
+    }
+
+    var isManualSplit by remember { mutableStateOf(false) }
+    var principalInput by remember {
+        val initialPrinc = (initialPayment - estimatedMonthlyInterest).coerceAtLeast(0.0).coerceAtMost(debt.balance)
+        mutableStateOf(String.format(Locale.US, "%.2f", initialPrinc))
+    }
+    var interestInput by remember {
+        val initialInt = (initialPayment - (initialPayment - estimatedMonthlyInterest).coerceAtLeast(0.0)).coerceAtLeast(0.0)
+        mutableStateOf(String.format(Locale.US, "%.2f", minOf(estimatedMonthlyInterest, initialPayment)))
+    }
+    var note by remember { mutableStateOf("") }
+    var createExpenseTransaction by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf("") }
+
+    // When paymentInput changes and not in manual split, auto-calculate
+    LaunchedEffect(paymentInput, isManualSplit) {
+        if (!isManualSplit) {
+            val p = paymentInput.toDoubleOrNull() ?: 0.0
+            val estInt = minOf(p, estimatedMonthlyInterest)
+            val estPrinc = (p - estInt).coerceAtLeast(0.0).coerceAtMost(debt.balance)
+            principalInput = String.format(Locale.US, "%.2f", estPrinc)
+            interestInput = String.format(Locale.US, "%.2f", estInt)
+        }
+    }
+
+    val currentPrinc = principalInput.toDoubleOrNull() ?: 0.0
+    val projectedBalance = maxOf(0.0, debt.balance - currentPrinc)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("💳 Log Payment", fontWeight = FontWeight.Bold)
+                Text(
+                    text = "${debt.name} • Current Balance: ${String.format(Locale.US, "$%,.2f", debt.balance)}",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (errorMessage.isNotEmpty()) {
+                    Text(text = errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                }
+
+                OutlinedTextField(
+                    value = paymentInput,
+                    onValueChange = { paymentInput = it },
+                    label = { Text("Total Payment Amount ($)") },
+                    prefix = { Text("$ ") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("payment_amount_input")
+                )
+
+                // Quick buttons for Minimum and Full Payoff
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SuggestionChip(
+                        onClick = {
+                            paymentInput = String.format(Locale.US, "%.2f", debt.minimumPayment)
+                        },
+                        label = { Text("Min ($${String.format(Locale.US, "%.0f", debt.minimumPayment)})", fontSize = 10.sp) }
+                    )
+                    SuggestionChip(
+                        onClick = {
+                            paymentInput = String.format(Locale.US, "%.2f", debt.balance)
+                        },
+                        label = { Text("Payoff in Full", fontSize = 10.sp) }
+                    )
+                }
+
+                // Principal vs Interest Breakdown Card
+                Card(
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Principal vs. Interest Breakdown", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            TextButton(
+                                onClick = { isManualSplit = !isManualSplit },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                modifier = Modifier.height(24.dp)
+                            ) {
+                                Text(if (isManualSplit) "Auto-Split" else "Edit Split", fontSize = 9.5.sp)
+                            }
+                        }
+
+                        if (!isManualSplit) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Principal Paid:", fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                                Text(String.format(Locale.US, "$%,.2f", currentPrinc), fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Interest Portion:", fontSize = 10.sp, color = Color(0xFFEF4444))
+                                Text(String.format(Locale.US, "$%,.2f", interestInput.toDoubleOrNull() ?: 0.0), fontSize = 10.sp, color = Color(0xFFEF4444))
+                            }
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedTextField(
+                                    value = principalInput,
+                                    onValueChange = { principalInput = it },
+                                    label = { Text("Principal ($)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = interestInput,
+                                    onValueChange = { interestInput = it },
+                                    label = { Text("Interest ($)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("New Balance Preview:", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                String.format(Locale.US, "$%,.2f", projectedBalance),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (projectedBalance <= 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Note / Confirmation (Optional)") },
+                    placeholder = { Text("e.g. Cycle surplus extra, Conf #1234") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Checkbox(
+                        checked = createExpenseTransaction,
+                        onCheckedChange = { createExpenseTransaction = it },
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Record as Expense in Budget Ledger",
+                        fontSize = 10.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val p = paymentInput.toDoubleOrNull()
+                    val princ = principalInput.toDoubleOrNull() ?: 0.0
+                    val intAmt = interestInput.toDoubleOrNull() ?: 0.0
+
+                    if (p == null || p <= 0) {
+                        errorMessage = "Please enter a valid payment amount."
+                    } else {
+                        onConfirm(p, princ, intAmt, note.trim(), createExpenseTransaction)
+                    }
+                },
+                modifier = Modifier.testTag("confirm_log_payment_button")
+            ) {
+                Text("Log Payment")
             }
         },
         dismissButton = {

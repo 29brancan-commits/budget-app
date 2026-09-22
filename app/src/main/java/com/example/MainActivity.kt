@@ -90,15 +90,20 @@ import com.example.ui.AiNaturalLanguageQuickEntryDialog
 import com.example.ui.AiReceiptScannerDialog
 import com.example.ui.AiFinancialHubView
 import com.example.ui.BudgetViewModel
+import com.example.ui.TransactionStatusChip
+import com.example.ui.TxStatus
+import com.example.ui.LogDebtPaymentDialog
 import com.example.ui.theme.AppTheme
 import com.example.ui.theme.AppIcon
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
+import com.example.ui.SwipeableTransactionRow
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 @Composable
@@ -491,10 +496,15 @@ fun BudgetAppMain(
     // Formatters
     val monthTitleFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US) }
     val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val isWideScreen = maxWidth >= 600.dp || isLandscape
+        // Unfolded Foldable & Multi-Window split-screen handling:
+        // On foldables (e.g. Galaxy Z Fold, Pixel Fold) in split-screen or multi-window mode,
+        // the app may only occupy half the screen (< 600dp width) even when the device is unfolded
+        // or rotated to landscape. We adapt strictly according to the actual container width (maxWidth)
+        // rather than the physical device screen width or device orientation.
+        val isWideScreen = maxWidth >= 600.dp
+        val isCompactHeight = maxHeight < 480.dp
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -516,7 +526,7 @@ fun BudgetAppMain(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                .padding(horizontal = 16.dp, vertical = if (isCompactHeight) 2.dp else 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
@@ -600,7 +610,7 @@ fun BudgetAppMain(
                                     modifier = Modifier.testTag("topbar_debt_button")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Star,
+                                        imageVector = Icons.Default.CreditCard,
                                         contentDescription = "Debt Planner",
                                         tint = if (selectedTab == 4) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -752,7 +762,7 @@ fun BudgetAppMain(
                                     modifier = Modifier.size(30.dp).testTag("topbar_debt_button")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Star,
+                                        imageVector = Icons.Default.CreditCard,
                                         contentDescription = "Debt Planner",
                                         modifier = Modifier.size(17.dp),
                                         tint = if (selectedTab == 4) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -847,7 +857,8 @@ fun BudgetAppMain(
                 if (isWideScreen) {
                     FoldableNavigationRail(
                         selectedTab = selectedTab,
-                        onTabSelected = { selectedTab = it }
+                        onTabSelected = { selectedTab = it },
+                        isCompactHeight = isCompactHeight
                     )
                 }
 
@@ -855,12 +866,6 @@ fun BudgetAppMain(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .animateContentSize(
-                            animationSpec = spring(
-                                stiffness = Spring.StiffnessLow,
-                                dampingRatio = Spring.DampingRatioMediumBouncy
-                            )
-                        )
                 ) {
                     when (selectedTab) {
                     0 -> {
@@ -887,7 +892,22 @@ fun BudgetAppMain(
                         ) {
                             SafeToSpendHeroCard(
                                 uiState = uiState,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                                isWideScreen = isWideScreen,
+                                isCompactHeight = isCompactHeight
+                            )
+
+                            CurrentFocusDebtCard(
+                                uiState = uiState,
+                                onNavigateToDebtPlanner = { selectedTab = 4 },
+                                onLogPayment = { debtId, paymentAmount, principalAmount, interestAmount, note, createExpense ->
+                                    viewModel.logDebtPayment(debtId, paymentAmount, principalAmount, interestAmount, note, createExpense)
+                                },
+                                onTogglePaidOff = { debt ->
+                                    viewModel.toggleDebtPaidOff(debt)
+                                },
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                                isWideScreen = isWideScreen
                             )
 
                             if (isDashboardReorderActive || dashboardSectionOrder != listOf("accounts", "cycles")) {
@@ -1044,9 +1064,18 @@ fun BudgetAppMain(
                                                 },
                                                 onDeleteTransaction = { tx -> viewModel.deleteTransaction(tx) },
                                                 onEditTransaction = { tx -> editingTransaction = tx },
+                                                onDuplicateTransaction = { tx -> viewModel.duplicateTransaction(tx) },
                                                 onToggleCompleted = handleRequestToggleCompleted,
+                                                onUpdateTransactionStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
+                                                onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
                                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                                 onNavigateToUpcoming = { selectedTab = 3 },
+                                                onDeduplicate = {
+                                                    viewModel.deduplicateTransactionsAndBills { count ->
+                                                        val msg = if (count > 0) "Deduplicated $count item(s)!" else "No duplicates found"
+                                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
                                                 isWideScreen = isWideScreen
                                             )
                                         }
@@ -1127,7 +1156,7 @@ fun BudgetAppMain(
                             Spacer(modifier = Modifier.height(4.dp))
                             EnterExpensesView(
                                 uiState = uiState,
-                                onAddExpense = { title, amount, dueDate, category, isRecurring, accountName, isAutoPay, isCompleted ->
+                                onAddExpense = { title, amount, dueDate, category, isRecurring, accountName, isAutoPay, isCompleted, status ->
                                     viewModel.addTransaction(
                                         title = title,
                                         amount = amount,
@@ -1137,12 +1166,16 @@ fun BudgetAppMain(
                                         isRecurring = isRecurring,
                                         accountName = accountName,
                                         isCompleted = isCompleted,
-                                        isAutoPay = isAutoPay
+                                        isAutoPay = isAutoPay,
+                                        status = status
                                     )
                                 },
                                 onDeleteExpense = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditExpense = { tx -> editingTransaction = tx },
+                                onDuplicateExpense = { tx -> viewModel.duplicateTransaction(tx) },
                                 onToggleExpense = handleRequestToggleCompleted,
+                                onUpdateExpenseStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
+                                onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
@@ -1173,6 +1206,7 @@ fun BudgetAppMain(
                             com.example.ui.UpcomingExpensesView(
                                 uiState = uiState,
                                 onToggleCompleted = handleRequestToggleCompleted,
+                                onUpdateTransactionStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
                                 onOpenAddBill = { showPlannedBillsDialog = true },
                                 onOpenAddExpense = {
                                     preselectedDateForAdd = null
@@ -1180,6 +1214,9 @@ fun BudgetAppMain(
                                 },
                                 onDeleteExpense = { item -> viewModel.deleteUpcomingExpense(item) },
                                 onEditTransaction = { tx -> editingTransaction = tx },
+                                onDuplicateTransaction = { tx -> viewModel.duplicateTransaction(tx) },
+                                onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
+                                onTestReminderNotification = { viewModel.testNotificationReminder() },
                                 onUndo = { viewModel.undo() },
                                 isWideScreen = isWideScreen
                             )
@@ -1212,7 +1249,41 @@ fun BudgetAppMain(
                                 onSyncGoogleDrive = { viewModel.performDebtDriveSync(null) },
                                 onConnectGoogleDrive = { viewModel.performDebtDriveSync(null) },
                                 isSyncing = uiState.syncState is com.example.sync.SyncState.Syncing,
-                                accountEmail = uiState.driveAccountEmail
+                                accountEmail = uiState.driveAccountEmail,
+                                onLogPayment = { dId, pAmt, princ, intAmt, note, createExp ->
+                                    viewModel.logDebtPayment(dId, pAmt, princ, intAmt, note, createExp)
+                                },
+                                onDeletePayment = { payment ->
+                                    viewModel.deleteDebtPayment(payment)
+                                },
+                                onToggleBillLink = { debt, isLinked, dueDay ->
+                                    viewModel.toggleDebtBillLink(debt, isLinked, dueDay)
+                                },
+                                onTogglePriorityPin = { debt ->
+                                    viewModel.toggleDebtPriorityPin(debt)
+                                },
+                                onTogglePaidOff = { debt ->
+                                    viewModel.toggleDebtPaidOff(debt)
+                                },
+                                onAddFullDebt = { debt ->
+                                    viewModel.addDebt(
+                                        name = debt.name,
+                                        balance = debt.balance,
+                                        interestRate = debt.interestRate,
+                                        minimumPayment = debt.minimumPayment,
+                                        category = debt.category,
+                                        notes = debt.notes,
+                                        promoApr = debt.promoApr,
+                                        promoExpirationDate = debt.promoExpirationDate,
+                                        customPriorityRank = debt.customPriorityRank,
+                                        originalBalance = debt.originalBalance,
+                                        isLinkedToBills = debt.isLinkedToBills,
+                                        billDueDay = debt.billDueDay,
+                                        isPaidOff = debt.isPaidOff,
+                                        linkedAccountId = debt.linkedAccountId,
+                                        linkedAccountName = debt.linkedAccountName
+                                    )
+                                }
                             )
                         }
                     }
@@ -1246,7 +1317,10 @@ fun BudgetAppMain(
                                 },
                                 onDeleteTransaction = { tx -> viewModel.deleteTransaction(tx) },
                                 onEditTransaction = { tx -> editingTransaction = tx },
+                                onDuplicateTransaction = { tx -> viewModel.duplicateTransaction(tx) },
                                 onToggleCompleted = handleRequestToggleCompleted,
+                                onUpdateTransactionStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
+                                onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
@@ -1327,7 +1401,7 @@ fun BudgetAppMain(
             allAccounts = uiState.allAccounts,
             initialAccountName = uiState.activeAccountName,
             onDismiss = { showAddDialog = false },
-            onConfirm = { title, amount, date, category, isIncome, isRecurring, accountName, isAutoPay, reminderDaysBefore, isCompleted ->
+            onConfirm = { title, amount, date, category, isIncome, isRecurring, accountName, isAutoPay, reminderDaysBefore, isCompleted, status ->
                 viewModel.addTransaction(
                     title = title,
                     amount = amount,
@@ -1338,7 +1412,8 @@ fun BudgetAppMain(
                     accountName = accountName,
                     isCompleted = isCompleted,
                     isAutoPay = isAutoPay,
-                    reminderDaysBefore = reminderDaysBefore
+                    reminderDaysBefore = reminderDaysBefore,
+                    status = status
                 )
                 showAddDialog = false
             }
@@ -1809,8 +1884,10 @@ fun EnterIncomeView(
 
         scopeFiltered.filter { tx ->
             when (statusFilter) {
-                1 -> !tx.isCompleted
-                2 -> tx.isCompleted
+                1 -> tx.getEffectiveStatus() == "due"
+                2 -> tx.getEffectiveStatus() == "pending"
+                3 -> tx.getEffectiveStatus() == "paid"
+                4 -> tx.getEffectiveStatus() == "cleared"
                 else -> true
             }
         }
@@ -1884,7 +1961,8 @@ fun EnterIncomeView(
 
             TransactionSearchAndFilterBar(
                 statusFilter = statusFilter,
-                onStatusFilterChange = { statusFilter = it }
+                onStatusFilterChange = { statusFilter = it },
+                customLabels = listOf("All Statuses", "⏳ Due", "🕒 Pending", "✓ Received", "🛡️ Cleared")
             )
 
             // Excel Sheet Formula Bar / Status Header
@@ -2577,41 +2655,15 @@ fun EnterIncomeView(
                                         )
                                     }
 
-                                    if (tx.isCompleted) {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFF10B981).copy(alpha = 0.2f),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .clickable(enabled = onToggleIncome != null) { onToggleIncome?.invoke(tx) }
-                                                .testTag("income_status_chip_${tx.id}")
-                                        ) {
-                                            Text(
-                                                text = "✓ Received",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    } else {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFFF59E0B).copy(alpha = 0.2f),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .clickable(enabled = onToggleIncome != null) { onToggleIncome?.invoke(tx) }
-                                                .testTag("income_status_chip_${tx.id}")
-                                        ) {
-                                            Text(
-                                                text = "⏳ Pending",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
+                                    TransactionStatusChip(
+                                        status = tx.getEffectiveStatus(),
+                                        isIncome = true,
+                                        fontSize = 11.sp,
+                                        onStatusChange = { newSt ->
+                                            onEditIncome(tx.copy(status = newSt, isCompleted = newSt in listOf("paid", "cleared")))
+                                        },
+                                        testTag = "income_status_chip_${tx.id}"
+                                    )
                                 }
 
                                 Row(
@@ -2702,10 +2754,12 @@ fun EnterIncomeView(
         }
     }
 
-    if (isWideScreen) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
+        if (useSplitColumns) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
                 .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top
@@ -2823,14 +2877,18 @@ fun EnterIncomeView(
         }
     }
 }
+}
 
 @Composable
 fun EnterExpensesView(
     uiState: BudgetUiState,
-    onAddExpense: (title: String, amount: Double, dueDate: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, isCompleted: Boolean) -> Unit,
+    onAddExpense: (title: String, amount: Double, dueDate: LocalDate, category: String, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, isCompleted: Boolean, status: String) -> Unit,
     onDeleteExpense: (TransactionEntity) -> Unit,
     onEditExpense: (TransactionEntity) -> Unit = {},
+    onDuplicateExpense: ((TransactionEntity) -> Unit)? = null,
     onToggleExpense: ((TransactionEntity) -> Unit)? = null,
+    onUpdateExpenseStatus: ((TransactionEntity, String) -> Unit)? = null,
+    onToggleReminder: ((TransactionEntity, Int) -> Unit)? = null,
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
@@ -2842,7 +2900,8 @@ fun EnterExpensesView(
     var selectedAccount by remember { mutableStateOf(if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName) }
     var isRecurring by remember { mutableStateOf(false) }
     var isAutoPay by remember { mutableStateOf(false) }
-    var isExpenseCompleted by remember { mutableStateOf(false) }
+    var expenseStatus by remember { mutableStateOf("due") }
+    val isExpenseCompleted = expenseStatus in listOf("paid", "cleared")
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var isQuickInsertExpanded by remember { mutableStateOf(false) }
@@ -2967,8 +3026,10 @@ fun EnterExpensesView(
 
         val statusFiltered = scopeFiltered.filter { tx ->
             when (statusFilter) {
-                1 -> !tx.isCompleted
-                2 -> tx.isCompleted
+                1 -> tx.getEffectiveStatus() == "due"
+                2 -> tx.getEffectiveStatus() == "pending"
+                3 -> tx.getEffectiveStatus() == "paid"
+                4 -> tx.getEffectiveStatus() == "cleared"
                 else -> true
             }
         }
@@ -3057,7 +3118,7 @@ fun EnterExpensesView(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val statusLabels = listOf("All Statuses", "⏳ Pending", "✅ Cleared")
+                val statusLabels = listOf("All Statuses", "⏳ Due", "🕒 Pending", "💳 Paid", "🛡️ Cleared")
                 statusLabels.forEachIndexed { index, label ->
                     val selected = statusFilter == index
                     FilterChip(
@@ -3247,25 +3308,27 @@ fun EnterExpensesView(
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .clickable { isExpenseCompleted = !isExpenseCompleted }
                                     .padding(horizontal = 2.dp, vertical = 1.dp)
                             ) {
                                 Checkbox(
                                     checked = isExpenseCompleted,
-                                    onCheckedChange = { isExpenseCompleted = it },
+                                    onCheckedChange = { checked ->
+                                        expenseStatus = if (checked) "paid" else "due"
+                                    },
                                     modifier = Modifier
                                         .size(16.dp)
                                         .testTag("enter_expense_completed_checkbox")
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text(
-                                    text = if (isExpenseCompleted) "✓ Paid" else "⏳ Pending",
+                                TransactionStatusChip(
+                                    status = expenseStatus,
+                                    isIncome = false,
                                     fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isExpenseCompleted) Color(0xFF10B981) else (if (isDark) Color(0xFFFCD34D) else Color(0xFFB45309))
+                                    onStatusChange = { expenseStatus = it },
+                                    testTag = "enter_expense_status_chip"
                                 )
                             }
                             if (isAutoPay) {
@@ -3382,7 +3445,7 @@ fun EnterExpensesView(
                                         errorMessage = "Please enter a valid due date (YYYY-MM-DD)."
                                         statusMessage = ""
                                     } else {
-                                        onAddExpense(t, amt, parsedDate, selectedCategory, isRecurring, selectedAccount, isAutoPay, isExpenseCompleted)
+                                        onAddExpense(t, amt, parsedDate, selectedCategory, isRecurring, selectedAccount, isAutoPay, isExpenseCompleted, expenseStatus)
                                         filterScope = 0
                                         statusMessage = "✅ Added '$t' (${String.format(Locale.US, "%.2f", amt)}) to expense spreadsheet!"
                                         errorMessage = ""
@@ -3441,20 +3504,49 @@ fun EnterExpensesView(
                     }
                 }
             } else {
+                val today = LocalDate.now()
                 displayedExpensesList.forEach { tx ->
                     val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onEditExpense(tx) }
-                            .testTag("expense_card_${tx.id}"),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isDark) Color(0xFF1E293B) else Color.White
-                        ),
-                        border = BorderStroke(1.dp, if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    val daysDiff = ChronoUnit.DAYS.between(today, txDate)
+                    val isSettled = tx.isPaidOrCleared
+                    val cardBorder = when {
+                        !isSettled && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                        !isSettled && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                        else -> BorderStroke(1.dp, if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
+                    }
+                    val cardBg = when {
+                        !isSettled && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
+                        !isSettled && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
+                        else -> if (isDark) Color(0xFF1E293B) else Color.White
+                    }
+
+                    SwipeableTransactionRow(
+                        transaction = tx,
+                        onDelete = { onDeleteExpense(tx) },
+                        onEdit = { onEditExpense(tx) },
+                        onDuplicate = { onDuplicateExpense?.invoke(tx) },
+                        onUpdateStatus = { newSt ->
+                            if (onUpdateExpenseStatus != null) {
+                                onUpdateExpenseStatus(tx, newSt)
+                            } else {
+                                onToggleExpense?.invoke(tx)
+                            }
+                        },
+                        onToggleCompleted = { onToggleExpense?.invoke(tx) },
+                        modifier = Modifier.fillMaxWidth()
                     ) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onEditExpense(tx) }
+                                .testTag("expense_card_${tx.id}"),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = cardBg
+                            ),
+                            border = cardBorder,
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        ) {
                         Column(
                             modifier = Modifier.padding(8.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -3596,77 +3688,150 @@ fun EnterExpensesView(
                                             )
                                         }
                                     }
-                                    if (tx.isCompleted) {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFF10B981).copy(alpha = 0.2f),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .clickable(enabled = onToggleExpense != null) { onToggleExpense?.invoke(tx) }
-                                                .testTag("expense_status_chip_${tx.id}")
-                                        ) {
-                                            Text(
-                                                text = "✓ Paid",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    } else {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFFEF4444).copy(alpha = 0.18f),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .clickable(enabled = onToggleExpense != null) { onToggleExpense?.invoke(tx) }
-                                                .testTag("expense_status_chip_${tx.id}")
-                                        ) {
-                                            Text(
-                                                text = "⏳ Pending",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDark) Color(0xFFFCA5A5) else Color(0xFFB91C1C),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
+                                    TransactionStatusChip(
+                                        status = tx.getEffectiveStatus(),
+                                        isIncome = false,
+                                        fontSize = 11.sp,
+                                        onStatusChange = { newSt ->
+                                            if (onUpdateExpenseStatus != null) {
+                                                onUpdateExpenseStatus(tx, newSt)
+                                            } else {
+                                                onEditExpense(tx.copy(status = newSt, isCompleted = newSt in listOf("paid", "cleared")))
+                                            }
+                                        },
+                                        testTag = "expense_status_chip_${tx.id}"
+                                    )
                                 }
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
-                                    if (onToggleExpense != null) {
+                                    if (onToggleExpense != null || onUpdateExpenseStatus != null) {
+                                        val curStatus = tx.getEffectiveStatus()
+                                        val isDone = curStatus in listOf("paid", "cleared")
                                         IconButton(
-                                            onClick = { onToggleExpense(tx) },
+                                            onClick = {
+                                                if (onUpdateExpenseStatus != null) {
+                                                    onUpdateExpenseStatus(tx, TxStatus.nextStatus(curStatus))
+                                                } else {
+                                                    onToggleExpense?.invoke(tx)
+                                                }
+                                            },
                                             modifier = Modifier
                                                 .size(28.dp)
                                                 .testTag("toggle_page_expense_${tx.id}")
                                         ) {
+                                            val circleBg = when (curStatus) {
+                                                "cleared" -> Color(0xFF10B981)
+                                                "paid" -> Color(0xFF3B82F6)
+                                                "pending" -> Color(0xFFF59E0B).copy(alpha = 0.25f)
+                                                else -> Color.Transparent
+                                            }
+                                            val circleBorder = when (curStatus) {
+                                                "cleared" -> Color(0xFF10B981)
+                                                "paid" -> Color(0xFF3B82F6)
+                                                "pending" -> Color(0xFFF59E0B)
+                                                else -> if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                                            }
                                             Box(
                                                 modifier = Modifier
                                                     .size(18.dp)
                                                     .border(
                                                         width = 2.dp,
-                                                        color = if (tx.isCompleted) Color(0xFF10B981) else if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        color = circleBorder,
                                                         shape = CircleShape
                                                     )
                                                     .background(
-                                                        color = if (tx.isCompleted) Color(0xFF10B981) else Color.Transparent,
+                                                        color = circleBg,
                                                         shape = CircleShape
                                                     ),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                if (tx.isCompleted) {
+                                                if (isDone) {
                                                     Icon(
                                                         imageVector = Icons.Default.Check,
-                                                        contentDescription = "Paid / Completed",
+                                                        contentDescription = if (curStatus == "cleared") "Cleared" else "Paid",
                                                         tint = Color.White,
                                                         modifier = Modifier.size(12.dp)
                                                     )
                                                 }
                                             }
+                                        }
+                                    }
+
+                                    if (onToggleReminder != null && !tx.isIncome) {
+                                        var showReminderMenu by remember { mutableStateOf(false) }
+                                        Box {
+                                            IconButton(
+                                                onClick = { showReminderMenu = true },
+                                                modifier = Modifier
+                                                    .size(28.dp)
+                                                    .testTag("reminder_page_expense_${tx.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (tx.reminderDaysBefore >= 0) Icons.Default.NotificationsActive else Icons.Default.NotificationsNone,
+                                                    contentDescription = "Set Due Reminder",
+                                                    tint = if (tx.reminderDaysBefore >= 0) Color(0xFF10B981) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = showReminderMenu,
+                                                onDismissRequest = { showReminderMenu = false }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("No reminder") },
+                                                    onClick = {
+                                                        onToggleReminder(tx, -1)
+                                                        showReminderMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("On due date (Day of)") },
+                                                    onClick = {
+                                                        onToggleReminder(tx, 0)
+                                                        showReminderMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("1 day before") },
+                                                    onClick = {
+                                                        onToggleReminder(tx, 1)
+                                                        showReminderMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("3 days before") },
+                                                    onClick = {
+                                                        onToggleReminder(tx, 3)
+                                                        showReminderMenu = false
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("1 week before") },
+                                                    onClick = {
+                                                        onToggleReminder(tx, 7)
+                                                        showReminderMenu = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (onDuplicateExpense != null) {
+                                        IconButton(
+                                            onClick = { onDuplicateExpense(tx) },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .testTag("duplicate_page_expense_${tx.id}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCopy,
+                                                contentDescription = "Duplicate expense",
+                                                tint = if (isDark) Color(0xFFA78BFA) else Color(0xFF7C3AED),
+                                                modifier = Modifier.size(17.dp)
+                                            )
                                         }
                                     }
 
@@ -3703,6 +3868,7 @@ fun EnterExpensesView(
                     }
                 }
             }
+        }
 
             // Expense Total Summary Card
             Card(
@@ -3738,10 +3904,12 @@ fun EnterExpensesView(
         }
     }
 
-    if (isWideScreen) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
+        if (useSplitColumns) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
                 .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top
@@ -3858,6 +4026,7 @@ fun EnterExpensesView(
             }
         }
     }
+}
 }
 
 @Composable
@@ -4078,7 +4247,7 @@ fun TabSelector(
         TabItem("Income", Icons.Default.TrendingUp),
         TabItem("Expenses", Icons.Default.ShoppingCart),
         TabItem("Upcoming", Icons.Default.Schedule),
-        TabItem("Debt", Icons.Default.Star),
+        TabItem("Debt", Icons.Default.CreditCard),
         TabItem("Calendar", Icons.Default.DateRange),
         TabItem("AI Hub", Icons.Default.AutoAwesome),
         TabItem("Settings", Icons.Default.Settings)
@@ -4092,46 +4261,49 @@ fun TabSelector(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(if (isWideScreen) Modifier else Modifier.horizontalScroll(rememberScrollState()))
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items.forEachIndexed { index, item ->
-                val isSelected = selectedTab == index
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    modifier = Modifier
-                        .then(if (isWideScreen) Modifier.weight(1f) else Modifier)
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { onTabSelected(index) }
-                        .testTag("nav_tab_$index")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val fitAllTabs = isWideScreen && maxWidth >= 720.dp
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (fitAllTabs) Modifier else Modifier.horizontalScroll(rememberScrollState()))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items.forEachIndexed { index, item ->
+                    val isSelected = selectedTab == index
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        modifier = Modifier
+                            .then(if (fitAllTabs) Modifier.weight(1f) else Modifier)
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onTabSelected(index) }
+                            .testTag("nav_tab_$index")
                     ) {
-                        Icon(
-                            imageVector = item.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = item.title,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = item.title,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -4143,7 +4315,8 @@ fun TabSelector(
 fun FoldableNavigationRail(
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isCompactHeight: Boolean = false
 ) {
     data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
     val items = listOf(
@@ -4151,7 +4324,7 @@ fun FoldableNavigationRail(
         NavItem("Income", Icons.Default.TrendingUp),
         NavItem("Expenses", Icons.Default.ShoppingCart),
         NavItem("Upcoming", Icons.Default.Schedule),
-        NavItem("Debt", Icons.Default.Star),
+        NavItem("Debt", Icons.Default.CreditCard),
         NavItem("Calendar", Icons.Default.DateRange),
         NavItem("AI Hub", Icons.Default.AutoAwesome),
         NavItem("Settings", Icons.Default.Settings)
@@ -4165,37 +4338,39 @@ fun FoldableNavigationRail(
         header = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                modifier = Modifier.padding(top = if (isCompactHeight) 4.dp else 16.dp, bottom = if (isCompactHeight) 2.dp else 8.dp)
             ) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(if (isCompactHeight) 30.dp else 40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.AccountBalanceWallet,
                             contentDescription = "PayCycle Fold",
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(if (isCompactHeight) 16.dp else 22.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "PayCycle",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "FOLD 8",
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    letterSpacing = 0.5.sp
-                )
+                if (!isCompactHeight) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "PayCycle",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "FOLD 8",
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        letterSpacing = 0.5.sp
+                    )
+                }
             }
         },
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
@@ -4204,7 +4379,7 @@ fun FoldableNavigationRail(
             modifier = Modifier
                 .fillMaxHeight()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+            verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 1.dp else 4.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             items.forEachIndexed { index, item ->
@@ -4219,13 +4394,13 @@ fun FoldableNavigationRail(
                         Icon(
                             imageVector = item.icon,
                             contentDescription = item.title,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(if (isCompactHeight) 18.dp else 22.dp)
                         )
                     },
                     label = {
                         Text(
                             text = item.title,
-                            fontSize = 11.sp,
+                            fontSize = if (isCompactHeight) 9.5.sp else 11.sp,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                         )
                     },
@@ -4319,13 +4494,14 @@ fun FoldableBottomNavBar(
 @Composable
 fun SafeToSpendHeroCard(
     uiState: BudgetUiState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isWideScreen: Boolean = false,
+    isCompactHeight: Boolean = false
 ) {
     val today = LocalDate.now()
     val period = uiState.currentPayPeriod
     val df = remember { java.time.format.DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     var isRecapDismissed by rememberSaveable { mutableStateOf(false) }
-    val isWideScreen = LocalConfiguration.current.screenWidthDp >= 600
 
     val safeToSpend = period?.remainingBalance ?: uiState.monthlyRemainingBalance
     val totalIncome = period?.totalIncome ?: uiState.monthlyTotalIncome
@@ -4420,7 +4596,7 @@ fun SafeToSpendHeroCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = if (isWideScreen) 14.dp else 10.dp, vertical = if (isWideScreen) 10.dp else 7.dp),
+                    .padding(horizontal = if (isWideScreen) 14.dp else 10.dp, vertical = if (isCompactHeight) 4.dp else if (isWideScreen) 10.dp else 7.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 // Top header: Status Badge + Cycle Range
@@ -4603,6 +4779,436 @@ fun SafeToSpendHeroCard(
                         )
                     }
                 }
+
+                // 3-Month Horizon Financial Intelligence Snapshot
+                if (uiState.futurePayPeriods.isNotEmpty()) {
+                    val horizonPeriods = uiState.futurePayPeriods.take(7)
+                    val threeMoIncome = horizonPeriods.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
+                    val threeMoExpenses = horizonPeriods.sumOf { it.totalExpenses }
+                    val threeMoNet = threeMoIncome - threeMoExpenses
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "3-Mo Financial Outlook",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        Text(
+                            text = "${if (threeMoNet >= 0) "Surplus: +" else "Deficit: "}${String.format(Locale.US, "$%,.0f", threeMoNet)}",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (threeMoNet >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    // Spend Remaining Guidance Summary
+                    val guidance = if (safeToSpend > 0) {
+                        if (threeMoNet >= 0) {
+                            "Safe to allocate: 40% safety buffer ($${String.format(Locale.US, "%.0f", safeToSpend * 0.4)}), 30% savings/goals ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)}), 30% guilt-free ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)})."
+                        } else {
+                            "Caution: Upcoming 3-mo deficit ($${String.format(Locale.US, "%,.0f", Math.abs(threeMoNet))}). Prioritize reserving remaining buffer to protect future cycles."
+                        }
+                    } else {
+                        "Discretionary funds exhausted for this cycle. Freeze optional spending until next payday."
+                    }
+
+                    Text(
+                        text = guidance,
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 13.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun getDebtCategoryEmoji(category: String): String {
+    return when (category.lowercase(Locale.US)) {
+        "credit card" -> "💳"
+        "auto loan", "car loan" -> "🚗"
+        "student loan" -> "🎓"
+        "personal loan" -> "💰"
+        "mortgage" -> "🏠"
+        "medical" -> "🩺"
+        else -> "🏦"
+    }
+}
+
+@Composable
+fun CurrentFocusDebtCard(
+    uiState: BudgetUiState,
+    onNavigateToDebtPlanner: () -> Unit,
+    onLogPayment: (debtId: Int, paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit,
+    onTogglePaidOff: (DebtEntity) -> Unit,
+    modifier: Modifier = Modifier,
+    isWideScreen: Boolean = false
+) {
+    val debts = uiState.allDebts
+    if (debts.isEmpty()) return
+
+    val activeDebts = remember(debts) {
+        debts.filter { !it.isPaidOff && it.balance > 0.0 }
+    }
+
+    var showPaymentDialog by remember { mutableStateOf(false) }
+
+    // If all debts are paid off, show an inspiring celebration banner
+    if (activeDebts.isEmpty()) {
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFF10B981).copy(alpha = 0.12f)
+            ),
+            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
+            modifier = modifier
+                .fillMaxWidth()
+                .clickable { onNavigateToDebtPlanner() }
+                .testTag("debt_free_celebration_card")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("🎉", fontSize = 22.sp)
+                    Column {
+                        Text(
+                            text = "100% Debt-Free!",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF047857)
+                        )
+                        Text(
+                            text = "All ${debts.size} debts are completely paid off. Amazing work!",
+                            fontSize = 10.5.sp,
+                            color = Color(0xFF065F46)
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = "View Debt Planner",
+                    tint = Color(0xFF047857),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        return
+    }
+
+    // Determine the focus debt:
+    // 1. Pinned debts first (lowest customPriorityRank > 0)
+    // 2. Snowball order: lowest current balance first, then highest APR
+    val focusDebt = remember(activeDebts) {
+        val pinned = activeDebts.filter { it.customPriorityRank > 0 }.minByOrNull { it.customPriorityRank }
+        pinned ?: activeDebts.minWithOrNull(
+            compareBy<DebtEntity> { it.balance }.thenByDescending { it.interestRate }
+        )
+    } ?: return
+
+    val isPinned = focusDebt.customPriorityRank > 0
+    val originalBal = if (focusDebt.originalBalance > 0.0) focusDebt.originalBalance else focusDebt.balance
+    val progress = if (originalBal > 0.0) {
+        ((originalBal - focusDebt.balance) / originalBal).coerceIn(0.0, 1.0).toFloat()
+    } else 0f
+    val progressPct = (progress * 100).toInt()
+
+    if (showPaymentDialog) {
+        LogDebtPaymentDialog(
+            debt = focusDebt,
+            prefilledAmount = focusDebt.minimumPayment,
+            onDismiss = { showPaymentDialog = false },
+            onConfirm = { paymentAmount, principalAmount, interestAmount, note, createExpense ->
+                onLogPayment(focusDebt.id, paymentAmount, principalAmount, interestAmount, note, createExpense)
+                showPaymentDialog = false
+            }
+        )
+    }
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(
+            1.5.dp,
+            if (isPinned) Color(0xFF8B5CF6).copy(alpha = 0.6f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("current_focus_debt_card")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (isWideScreen) 14.dp else 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Header Row: Target Badge + Total Active Count + Link to Planner
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isPinned) Color(0xFF8B5CF6).copy(alpha = 0.18f) else MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = if (isPinned) "📌 PINNED FOCUS" else "🎯 TARGET #1 (SNOWBALL)",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp,
+                                color = if (isPinned) Color(0xFF7C3AED) else MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "1 of ${activeDebts.size} active",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onNavigateToDebtPlanner() }
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("focus_debt_open_planner")
+                ) {
+                    Text(
+                        text = "Planner",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Open Debt Planner",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+
+            // Middle: Name, Category, Balance & Terms
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = getDebtCategoryEmoji(focusDebt.category),
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            text = focusDebt.name,
+                            fontSize = if (isWideScreen) 16.sp else 14.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "${String.format(Locale.US, "%.1f", focusDebt.interestRate)}% APR",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "•",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                        Text(
+                            text = "Min: $${String.format(Locale.US, "%.0f", focusDebt.minimumPayment)}/mo",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!focusDebt.linkedAccountName.isNullOrBlank()) {
+                            Text(
+                                text = "•",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            Text(
+                                text = "🏦 ${focusDebt.linkedAccountName}",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    modifier = Modifier.padding(start = 8.dp)
+                ) {
+                    Text(
+                        text = String.format(Locale.US, "$%,.2f", focusDebt.balance),
+                        fontSize = if (isWideScreen) 20.sp else 17.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (focusDebt.totalPaidSoFar > 0.0) {
+                            "Paid: $${String.format(Locale.US, "%,.0f", focusDebt.totalPaidSoFar)}"
+                        } else {
+                            "Remaining Balance"
+                        },
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Progress Bar
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (isPinned) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "$progressPct% Paid Off",
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (progressPct > 0) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (focusDebt.isLinkedToBills) "📅 Due Day: ${focusDebt.billDueDay}th" else "Pay minimums on other debts",
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // Action Row: Log Payment Button + Mark Paid Off Button + Payoff Hint
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("💡", fontSize = 12.sp)
+                    Text(
+                        text = "Focus extra cash here for fastest payoff.",
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { onTogglePaidOff(focusDebt) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .height(28.dp)
+                            .testTag("focus_debt_mark_paid_button"),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Mark Paid",
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("Paid Off", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    Button(
+                        onClick = { showPaymentDialog = true },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .height(28.dp)
+                            .testTag("focus_debt_log_payment_button"),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Payment,
+                            contentDescription = "Log Payment",
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Log Payment", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }
@@ -4620,7 +5226,7 @@ fun TransactionSearchAndFilterBar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val filters = customLabels ?: listOf("All Statuses", "⏳ Pending", "✅ Cleared")
+        val filters = customLabels ?: listOf("All Statuses", "⏳ Due", "🕒 Pending", "💳 Paid", "🛡️ Cleared")
         filters.forEachIndexed { index, label ->
             val selected = statusFilter == index
             FilterChip(
@@ -4641,16 +5247,18 @@ fun PayCyclesListView(
     onEditPaycheckClick: (LocalDate, Double) -> Unit = { _, _ -> },
     onDeleteTransaction: (TransactionEntity) -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit = {},
+    onDuplicateTransaction: ((TransactionEntity) -> Unit)? = null,
     onToggleCompleted: (TransactionEntity) -> Unit = {},
+    onUpdateTransactionStatus: ((TransactionEntity, String) -> Unit)? = null,
+    onToggleReminder: ((TransactionEntity, Int) -> Unit)? = null,
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     onNavigateToUpcoming: (() -> Unit)? = null,
+    onDeduplicate: (() -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     var isSyncingSheets by remember { mutableStateOf(false) }
     var statusFilter by remember { mutableIntStateOf(0) } // 0 = All, 1 = Pending, 2 = Cleared
     val context = LocalContext.current
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Column(
         modifier = Modifier
@@ -4723,17 +5331,51 @@ fun PayCyclesListView(
                                             }
                                         }
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Text(
-                                            text = if (isWideScreen) "✨ Side-by-Side (${uiState.payPeriods.size} Cycles)" else "${uiState.payPeriods.size} Cycles",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
+                                        if (onDeduplicate != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = Color(0xFFF59E0B).copy(alpha = 0.18f),
+                                                border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.6f)),
+                                                modifier = Modifier
+                                                    .clickable { onDeduplicate() }
+                                                    .testTag("cycles_deduplicate_all_button")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.AutoAwesome,
+                                                        contentDescription = "Deduplicate",
+                                                        tint = Color(0xFFD97706),
+                                                        modifier = Modifier.size(12.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = "Deduplicate",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFFD97706)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                        ) {
+                                            Text(
+                                                text = if (isWideScreen) "✨ Side-by-Side (${uiState.payPeriods.size} Cycles)" else "${uiState.payPeriods.size} Cycles",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                            )
+                                        }
                                     }
                                 }
 
@@ -4743,7 +5385,7 @@ fun PayCyclesListView(
                                 )
 
                                 BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                                    val canUseTwoColumns = (isWideScreen || maxWidth >= 540.dp) && uiState.payPeriods.size > 1
+                                    val canUseTwoColumns = isWideScreen && maxWidth >= 640.dp && uiState.payPeriods.size > 1
                                     val colSpacing = 8.dp
                                     if (canUseTwoColumns) {
                                         val today = LocalDate.now()
@@ -4769,8 +5411,12 @@ fun PayCyclesListView(
                                                             onEditPaycheckClick = onEditPaycheckClick,
                                                             onDeleteTransaction = onDeleteTransaction,
                                                             onEditTransaction = onEditTransaction,
+                                                            onDuplicateTransaction = onDuplicateTransaction,
                                                             onToggleCompleted = onToggleCompleted,
+                                                            onUpdateTransactionStatus = onUpdateTransactionStatus,
+                                                            onToggleReminder = onToggleReminder,
                                                             onNavigateToUpcoming = onNavigateToUpcoming,
+                                                            onDeduplicate = onDeduplicate,
                                                             isWideScreen = isWideScreen
                                                         )
                                                     }
@@ -4788,8 +5434,12 @@ fun PayCyclesListView(
                                                                 onEditPaycheckClick = onEditPaycheckClick,
                                                                 onDeleteTransaction = onDeleteTransaction,
                                                                 onEditTransaction = onEditTransaction,
+                                                                onDuplicateTransaction = onDuplicateTransaction,
                                                                 onToggleCompleted = onToggleCompleted,
+                                                                onUpdateTransactionStatus = onUpdateTransactionStatus,
+                                                                onToggleReminder = onToggleReminder,
                                                                 onNavigateToUpcoming = onNavigateToUpcoming,
+                                                                onDeduplicate = onDeduplicate,
                                                                 isWideScreen = isWideScreen
                                                             )
                                                         }
@@ -4818,8 +5468,12 @@ fun PayCyclesListView(
                                                     onEditPaycheckClick = onEditPaycheckClick,
                                                     onDeleteTransaction = onDeleteTransaction,
                                                     onEditTransaction = onEditTransaction,
+                                                    onDuplicateTransaction = onDuplicateTransaction,
                                                     onToggleCompleted = onToggleCompleted,
+                                                    onUpdateTransactionStatus = onUpdateTransactionStatus,
+                                                    onToggleReminder = onToggleReminder,
                                                     onNavigateToUpcoming = onNavigateToUpcoming,
+                                                    onDeduplicate = onDeduplicate,
                                                     isWideScreen = false
                                                 )
                                             }
@@ -4843,8 +5497,12 @@ fun PayCycleCard(
     onEditPaycheckClick: (LocalDate, Double) -> Unit = { _, _ -> },
     onDeleteTransaction: (TransactionEntity) -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit = {},
+    onDuplicateTransaction: ((TransactionEntity) -> Unit)? = null,
     onToggleCompleted: (TransactionEntity) -> Unit = {},
+    onUpdateTransactionStatus: ((TransactionEntity, String) -> Unit)? = null,
+    onToggleReminder: ((TransactionEntity, Int) -> Unit)? = null,
     onNavigateToUpcoming: (() -> Unit)? = null,
+    onDeduplicate: (() -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     val today = remember { LocalDate.now() }
@@ -5448,8 +6106,10 @@ fun PayCycleCard(
                             if (!isValid) return@filter false
 
                             val matchesStatus = when (statusFilter) {
-                                1 -> !tx.isCompleted
-                                2 -> tx.isCompleted
+                                1 -> tx.getEffectiveStatus() == "due"
+                                2 -> tx.getEffectiveStatus() == "pending"
+                                3 -> tx.getEffectiveStatus() == "paid"
+                                4 -> tx.getEffectiveStatus() == "cleared"
                                 else -> true
                             }
                             if (!matchesStatus) return@filter false
@@ -5462,6 +6122,11 @@ fun PayCycleCard(
 
                             true
                         }.sortedWith(compareBy({ it.isCompleted }, { it.dateMillis }))
+
+                        val hasDuplicates = remember(cycleTransactions) {
+                            val names = cycleTransactions.map { DateUtils.normalizeDebtOrBillName(it.title).lowercase(Locale.US) }
+                            names.size != names.distinct().size
+                        }
 
                         Row(
                             modifier = Modifier
@@ -5481,14 +6146,46 @@ fun PayCycleCard(
                                 modifier = Modifier.weight(1f, fill = false)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "${cycleTransactions.size} items",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                softWrap = false
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (hasDuplicates && onDeduplicate != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFFF59E0B).copy(alpha = 0.18f),
+                                        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.6f)),
+                                        modifier = Modifier
+                                            .clickable { onDeduplicate() }
+                                            .testTag("cycle_item_deduplicate_btn")
+                                            .padding(end = 6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.AutoAwesome,
+                                                contentDescription = "Deduplicate",
+                                                tint = Color(0xFFD97706),
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = "Deduplicate",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFD97706)
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = "${cycleTransactions.size} items",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
                         }
 
                         if (cycleTransactions.isEmpty()) {
@@ -5514,19 +6211,52 @@ fun PayCycleCard(
                                 verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 for (tx in cycleTransactions) {
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                    val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                                    val daysDiff = ChronoUnit.DAYS.between(today, txDate)
+                                    val isSettled = tx.isPaidOrCleared
+                                    val itemBorder = when {
+                                        !isSettled && !tx.isIncome && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                                        !isSettled && !tx.isIncome && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                                        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                    }
+                                    val itemBg = when {
+                                        !isSettled && !tx.isIncome && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
+                                        !isSettled && !tx.isIncome && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
+                                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                    }
+
+                                    SwipeableTransactionRow(
+                                        transaction = tx,
+                                        onDelete = { onDeleteTransaction(tx) },
+                                        onEdit = { onEditTransaction(tx) },
+                                        onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                        onUpdateStatus = { newSt ->
+                                            onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                        },
+                                        onToggleCompleted = { onToggleCompleted(tx) },
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        TransactionItemRow(
-                                            transaction = tx,
-                                            onDelete = { onDeleteTransaction(tx) },
-                                            onEdit = { onEditTransaction(tx) },
-                                            onToggleCompleted = { onToggleCompleted(tx) },
-                                            modifier = Modifier.padding(vertical = 0.dp)
-                                        )
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = itemBg,
+                                            border = itemBorder
+                                        ) {
+                                            TransactionItemRow(
+                                                transaction = tx,
+                                                onDelete = { onDeleteTransaction(tx) },
+                                                onEdit = { onEditTransaction(tx) },
+                                                onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                                onToggleCompleted = { onToggleCompleted(tx) },
+                                                onUpdateStatus = { newSt ->
+                                                    onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                                },
+                                                onToggleReminder = { days ->
+                                                    onToggleReminder?.invoke(tx, days)
+                                                },
+                                                modifier = Modifier.padding(vertical = 0.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -5602,12 +6332,19 @@ fun TransactionItemRow(
     transaction: TransactionEntity,
     onDelete: () -> Unit,
     onEdit: (() -> Unit)? = null,
+    onDuplicate: (() -> Unit)? = null,
     onToggleCompleted: (() -> Unit)? = null,
+    onUpdateStatus: ((String) -> Unit)? = null,
+    onToggleReminder: ((Int) -> Unit)? = null,
     showDateChip: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val df = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     val date = remember(transaction.dateMillis) { DateUtils.millisToLocalDate(transaction.dateMillis) }
+    val today = remember { LocalDate.now() }
+    val isUnpaidExpense = !transaction.isIncome && !transaction.isPaidOrCleared
+    val daysBetween = remember(today, date) { ChronoUnit.DAYS.between(today, date) }
+    val dark = isSystemInDarkTheme()
 
     val transitionState = remember {
         MutableTransitionState(false).apply {
@@ -5638,31 +6375,51 @@ fun TransactionItemRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (onToggleCompleted != null) {
+                if (onToggleCompleted != null || onUpdateStatus != null) {
+                    val status = transaction.getEffectiveStatus()
+                    val isDone = status in listOf("paid", "cleared")
                     IconButton(
-                        onClick = onToggleCompleted,
+                        onClick = {
+                            if (onUpdateStatus != null) {
+                                onUpdateStatus(TxStatus.nextStatus(status))
+                            } else {
+                                onToggleCompleted?.invoke()
+                            }
+                        },
                         modifier = Modifier
                             .size(24.dp)
                             .testTag("toggle_completed_tx_${transaction.id}")
                     ) {
+                        val checkBg = when (status) {
+                            "cleared" -> Color(0xFF10B981)
+                            "paid" -> Color(0xFF3B82F6)
+                            "pending" -> Color(0xFFF59E0B).copy(alpha = 0.25f)
+                            else -> Color.Transparent
+                        }
+                        val checkBorder = when (status) {
+                            "cleared" -> Color(0xFF10B981)
+                            "paid" -> Color(0xFF3B82F6)
+                            "pending" -> Color(0xFFF59E0B)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        }
                         Box(
                             modifier = Modifier
                                 .size(18.dp)
                                 .border(
                                     width = 1.5.dp,
-                                    color = if (transaction.isCompleted) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    color = checkBorder,
                                     shape = CircleShape
                                 )
                                 .background(
-                                    color = if (transaction.isCompleted) Color(0xFF10B981) else Color.Transparent,
+                                    color = checkBg,
                                     shape = CircleShape
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (transaction.isCompleted) {
+                            if (isDone) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
-                                    contentDescription = "Completed / Paid",
+                                    contentDescription = if (status == "cleared") "Cleared" else "Paid",
                                     tint = Color.White,
                                     modifier = Modifier.size(11.dp)
                                 )
@@ -5748,32 +6505,77 @@ fun TransactionItemRow(
                             )
                         }
                     }
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = if (transaction.isCompleted) {
-                            Color(0xFF10B981).copy(alpha = 0.18f)
-                        } else {
-                            Color(0xFFF59E0B).copy(alpha = 0.15f)
-                        },
-                        border = BorderStroke(
-                            1.dp,
-                            if (transaction.isCompleted) Color(0xFF10B981).copy(alpha = 0.4f) else Color(0xFFF59E0B).copy(alpha = 0.4f)
-                        ),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable(enabled = onToggleCompleted != null) { onToggleCompleted?.invoke() }
-                            .testTag("tx_status_chip_${transaction.id}")
-                    ) {
-                        Text(
-                            text = if (transaction.isCompleted) (if (transaction.isIncome) "✓ Received" else "✓ Paid") else "⏳ Pending",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (transaction.isCompleted) Color(0xFF047857) else (if (isSystemInDarkTheme()) Color(0xFFFCD34D) else Color(0xFFB45309)),
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                            maxLines = 1,
-                            softWrap = false
-                        )
+
+                    // Upcoming Due-Date Alerts & Overdue Badging:
+                    // Highlighting transactions Due within next 48 hours in warm amber, and past-due unpaid bills in soft crimson
+                    if (isUnpaidExpense) {
+                        if (daysBetween < 0) {
+                            // Overdue badge (Soft Crimson)
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (dark) Color(0xFF450A0A) else Color(0xFFFEE2E2),
+                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                            ) {
+                                Text(
+                                    text = if (daysBetween == -1L) "⚠️ 1d Overdue" else "⚠️ ${kotlin.math.abs(daysBetween)}d Overdue",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (dark) Color(0xFFFCA5A5) else Color(0xFFDC2626),
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        } else if (daysBetween == 0L) {
+                            // Due Today badge (Soft Crimson / Alert)
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (dark) Color(0xFF7F1D1D).copy(alpha = 0.6f) else Color(0xFFFEF2F2),
+                                border = BorderStroke(1.dp, Color(0xFFF87171))
+                            ) {
+                                Text(
+                                    text = "⚡ Due Today",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (dark) Color(0xFFFCA5A5) else Color(0xFFDC2626),
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        } else if (daysBetween in 1L..2L) {
+                            // Due within 48 hours badge (Warm Amber)
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = if (dark) Color(0xFF78350F).copy(alpha = 0.5f) else Color(0xFFFEF3C7),
+                                border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                            ) {
+                                Text(
+                                    text = if (daysBetween == 1L) "⏳ Due Tomorrow" else "🕒 Due in 2d (48h)",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (dark) Color(0xFFFDE68A) else Color(0xFFB45309),
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
                     }
+
+                    TransactionStatusChip(
+                        status = transaction.getEffectiveStatus(),
+                        isIncome = transaction.isIncome,
+                        fontSize = 9.sp,
+                        onStatusChange = { newStatus ->
+                            if (onUpdateStatus != null) {
+                                onUpdateStatus(newStatus)
+                            } else {
+                                onToggleCompleted?.invoke()
+                            }
+                        },
+                        testTag = "tx_status_chip_${transaction.id}"
+                    )
                     if (transaction.isAutoPay) {
                         Surface(
                             shape = RoundedCornerShape(4.dp),
@@ -5785,6 +6587,23 @@ fun TransactionItemRow(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                    if (isUnpaidExpense && transaction.reminderDaysBefore >= 0) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (dark) Color(0xFF78350F).copy(alpha = 0.35f) else Color(0xFFFEF3C7),
+                            border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "🔔 Alert Active",
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (dark) Color(0xFFFDE68A) else Color(0xFFB45309),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -5837,6 +6656,42 @@ fun TransactionItemRow(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (onToggleReminder != null && isUnpaidExpense) {
+                        val isReminderActive = transaction.reminderDaysBefore >= 0
+                        IconButton(
+                            onClick = {
+                                val nextRem = if (isReminderActive) -1 else 1
+                                onToggleReminder(nextRem)
+                            },
+                            modifier = Modifier
+                                .size(24.dp)
+                                .testTag("reminder_tx_${transaction.id}")
+                        ) {
+                            Icon(
+                                if (isReminderActive) Icons.Default.NotificationsActive else Icons.Default.Notifications,
+                                contentDescription = if (isReminderActive) "Reminder Active" else "Set Reminder",
+                                tint = if (isReminderActive) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+
+                    if (onDuplicate != null) {
+                        IconButton(
+                            onClick = onDuplicate,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .testTag("duplicate_tx_${transaction.id}")
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "Duplicate",
+                                tint = Color(0xFF8B5CF6).copy(alpha = 0.85f),
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+
                     if (onEdit != null) {
                         IconButton(
                             onClick = onEdit,
@@ -5893,7 +6748,10 @@ fun CalendarGridView(
     onAddTransactionClick: (LocalDate) -> Unit,
     onDeleteTransaction: (TransactionEntity) -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit = {},
+    onDuplicateTransaction: ((TransactionEntity) -> Unit)? = null,
     onToggleCompleted: (TransactionEntity) -> Unit = {},
+    onUpdateTransactionStatus: ((TransactionEntity, String) -> Unit)? = null,
+    onToggleReminder: ((TransactionEntity, Int) -> Unit)? = null,
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
@@ -6296,21 +7154,56 @@ fun CalendarGridView(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        val today = LocalDate.now()
+                        val isDark = isSystemInDarkTheme()
                         for (tx in dayTransactions) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                            val daysDiff = ChronoUnit.DAYS.between(today, txDate)
+                            val isSettled = tx.isPaidOrCleared
+                            val itemBorder = when {
+                                !isSettled && !tx.isIncome && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                                !isSettled && !tx.isIncome && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                                else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            }
+                            val itemBg = when {
+                                !isSettled && !tx.isIncome && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
+                                !isSettled && !tx.isIncome && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
+                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            }
+
+                            SwipeableTransactionRow(
+                                transaction = tx,
+                                onDelete = { onDeleteTransaction(tx) },
+                                onEdit = { onEditTransaction(tx) },
+                                onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                onUpdateStatus = { newSt ->
+                                    onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                },
+                                onToggleCompleted = { onToggleCompleted(tx) },
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                TransactionItemRow(
-                                    transaction = tx,
-                                    onDelete = { onDeleteTransaction(tx) },
-                                    onEdit = { onEditTransaction(tx) },
-                                    onToggleCompleted = { onToggleCompleted(tx) },
-                                    showDateChip = false,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                )
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = itemBg,
+                                    border = itemBorder
+                                ) {
+                                    TransactionItemRow(
+                                        transaction = tx,
+                                        onDelete = { onDeleteTransaction(tx) },
+                                        onEdit = { onEditTransaction(tx) },
+                                        onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                        onToggleCompleted = { onToggleCompleted(tx) },
+                                        onUpdateStatus = { newSt ->
+                                            onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                        },
+                                        onToggleReminder = { days ->
+                                            onToggleReminder?.invoke(tx, days)
+                                        },
+                                        showDateChip = false,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -6319,30 +7212,33 @@ fun CalendarGridView(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        topBannerContent()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useSideBySide = isWideScreen && maxWidth >= 680.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            topBannerContent()
 
-        if (isWideScreen) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    calendarGridContent()
+            if (useSideBySide) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        calendarGridContent()
+                    }
+                    Box(modifier = Modifier.weight(1f)) {
+                        dailyDetailCardContent()
+                    }
                 }
-                Box(modifier = Modifier.weight(1f)) {
-                    dailyDetailCardContent()
-                }
+            } else {
+                calendarGridContent()
+                dailyDetailCardContent()
             }
-        } else {
-            calendarGridContent()
-            dailyDetailCardContent()
         }
     }
 }
@@ -8728,12 +9624,13 @@ fun SettingsView(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp)
     ) {
-        if (isWideScreen) {
+        val useTwoColumns = isWideScreen && maxWidth >= 680.dp
+        if (useTwoColumns) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -8764,13 +9661,89 @@ fun SettingsView(
 }
 
 @Composable
+fun StatusSelectorSegmentedRow(
+    status: String,
+    onStatusSelected: (String) -> Unit,
+    isIncome: Boolean = false,
+    prefixTag: String = "dialog_status",
+    modifier: Modifier = Modifier
+) {
+    val dark = isSystemInDarkTheme()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            .padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        val options = listOf(
+            Triple("due", "Due", "⏳"),
+            Triple("pending", "Pending", "🕒"),
+            Triple("paid", if (isIncome) "Received" else "Paid", "💳"),
+            Triple("cleared", "Cleared", "🛡️")
+        )
+        options.forEach { (key, label, icon) ->
+            val selected = status.lowercase().trim() == key
+            val selectedBg = when (key) {
+                "cleared" -> if (dark) Color(0xFF064E3B).copy(alpha = 0.6f) else Color(0xFFD1FAE5)
+                "paid" -> if (dark) Color(0xFF1E3A8A).copy(alpha = 0.6f) else Color(0xFFDBEAFE)
+                "pending" -> if (dark) Color(0xFF78350F).copy(alpha = 0.6f) else Color(0xFFFEF3C7)
+                else -> if (dark) Color(0xFF334155).copy(alpha = 0.8f) else Color(0xFFE2E8F0)
+            }
+            val selectedBorder = when (key) {
+                "cleared" -> Color(0xFF10B981)
+                "paid" -> Color(0xFF3B82F6)
+                "pending" -> Color(0xFFF59E0B)
+                else -> Color(0xFF94A3B8)
+            }
+            val selectedTextColor = when (key) {
+                "cleared" -> if (dark) Color(0xFF6EE7B7) else Color(0xFF047857)
+                "paid" -> if (dark) Color(0xFF93C5FD) else Color(0xFF1D4ED8)
+                "pending" -> if (dark) Color(0xFFFCD34D) else Color(0xFFB45309)
+                else -> if (dark) Color(0xFFCBD5E1) else Color(0xFF334155)
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .then(
+                        if (selected) Modifier
+                            .background(selectedBg)
+                            .border(1.dp, selectedBorder, RoundedCornerShape(6.dp))
+                        else Modifier.background(Color.Transparent)
+                    )
+                    .clickable { onStatusSelected(key) }
+                    .padding(vertical = 6.dp)
+                    .testTag("${prefixTag}_$key"),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Text(icon, fontSize = 11.sp)
+                    Text(
+                        text = label,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 10.sp,
+                        color = if (selected) selectedTextColor else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun AddTransactionDialog(
     preselectedDate: LocalDate,
     selectedMonth: YearMonth,
     allAccounts: List<String>,
     initialAccountName: String,
     onDismiss: () -> Unit,
-    onConfirm: (title: String, amount: Double, date: LocalDate, category: String, isIncome: Boolean, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, reminderDaysBefore: Int, isCompleted: Boolean) -> Unit
+    onConfirm: (title: String, amount: Double, date: LocalDate, category: String, isIncome: Boolean, isRecurring: Boolean, accountName: String, isAutoPay: Boolean, reminderDaysBefore: Int, isCompleted: Boolean, status: String) -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
@@ -8780,7 +9753,8 @@ fun AddTransactionDialog(
     var isRecurring by remember { mutableStateOf(false) }
     var recurFrequency by remember { mutableStateOf("Bi-Weekly") }
     var isAutoPay by remember { mutableStateOf(false) }
-    var isCompleted by remember { mutableStateOf(false) }
+    var txStatus by remember { mutableStateOf("due") }
+    val isCompleted = txStatus in listOf("paid", "cleared")
     var selectedAccount by remember { mutableStateOf(if (initialAccountName == "All Accounts" || initialAccountName.isBlank() || initialAccountName.equals("Primary Account", ignoreCase = true) || initialAccountName.equals("Primary", ignoreCase = true)) (allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else initialAccountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var reminderDaysBefore by remember { mutableIntStateOf(0) }
@@ -8831,49 +9805,15 @@ fun AddTransactionDialog(
                     }
                 }
 
-                // Status Segmented Toggle: Pending vs Completed
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                        .padding(2.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (!isCompleted) MaterialTheme.colorScheme.surface else Color.Transparent)
-                            .clickable { isCompleted = false }
-                            .padding(vertical = 6.dp)
-                            .testTag("add_dialog_status_pending"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("⏳", fontSize = 11.sp)
-                            Text("Pending", fontWeight = if (!isCompleted) FontWeight.Bold else FontWeight.Medium, fontSize = 11.5.sp)
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isCompleted) Color(0xFF10B981).copy(alpha = 0.2f) else Color.Transparent)
-                            .clickable { isCompleted = true }
-                            .padding(vertical = 6.dp)
-                            .testTag("add_dialog_status_completed"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
-                            Text(
-                                text = if (isIncome) "Received" else "Paid / Cleared",
-                                fontWeight = if (isCompleted) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 11.5.sp,
-                                color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
+                // Status Segmented Selector: due, pending, paid, cleared
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Status", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    StatusSelectorSegmentedRow(
+                        status = txStatus,
+                        onStatusSelected = { txStatus = it },
+                        isIncome = isIncome,
+                        prefixTag = "add_dialog_status"
+                    )
                 }
 
                 OutlinedTextField(
@@ -9218,7 +10158,7 @@ fun AddTransactionDialog(
                         } else {
                             selectedCategory
                         }
-                        onConfirm(title, amt, dateParsed, finalCategory, isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore, isCompleted)
+                        onConfirm(title, amt, dateParsed, finalCategory, isIncome, isRecurring, selectedAccount, isAutoPay, if (isIncome) -1 else reminderDaysBefore, isCompleted, txStatus)
                     }
                 },
                 modifier = Modifier.testTag("save_transaction_button")
@@ -9268,7 +10208,8 @@ fun EditTransactionDialog(
         )
     }
     var isAutoPay by remember { mutableStateOf(transaction.isAutoPay) }
-    var isCompleted by remember { mutableStateOf(transaction.isCompleted) }
+    var txStatus by remember { mutableStateOf(transaction.getEffectiveStatus()) }
+    val isCompleted = txStatus in listOf("paid", "cleared")
     var selectedAccount by remember { mutableStateOf(if (transaction.accountName.isEmpty() || transaction.accountName == "All Accounts" || transaction.accountName.equals("Primary Account", ignoreCase = true) || transaction.accountName.equals("Primary", ignoreCase = true)) (allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else transaction.accountName) }
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var reminderDaysBefore by remember { mutableIntStateOf(transaction.reminderDaysBefore) }
@@ -9336,49 +10277,15 @@ fun EditTransactionDialog(
                     }
                 }
 
-                // Status Segmented Toggle: Pending vs Completed
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                        .padding(2.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (!isCompleted) MaterialTheme.colorScheme.surface else Color.Transparent)
-                            .clickable { isCompleted = false }
-                            .padding(vertical = 6.dp)
-                            .testTag("edit_dialog_status_pending"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("⏳", fontSize = 11.sp)
-                            Text("Pending", fontWeight = if (!isCompleted) FontWeight.Bold else FontWeight.Medium, fontSize = 11.5.sp)
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isCompleted) Color(0xFF10B981).copy(alpha = 0.2f) else Color.Transparent)
-                            .clickable { isCompleted = true }
-                            .padding(vertical = 6.dp)
-                            .testTag("edit_dialog_status_completed"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
-                            Text(
-                                text = if (isIncome) "Received" else "Paid / Cleared",
-                                fontWeight = if (isCompleted) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 11.5.sp,
-                                color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
+                // Status Segmented Selector: due, pending, paid, cleared
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Status", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    StatusSelectorSegmentedRow(
+                        status = txStatus,
+                        onStatusSelected = { txStatus = it },
+                        isIncome = isIncome,
+                        prefixTag = "edit_dialog_status"
+                    )
                 }
 
                 OutlinedTextField(
@@ -9683,7 +10590,8 @@ fun EditTransactionDialog(
                             isAutoPay = isAutoPay,
                             accountName = selectedAccount,
                             reminderDaysBefore = if (isIncome) -1 else reminderDaysBefore,
-                            isCompleted = isCompleted
+                            isCompleted = isCompleted,
+                            status = txStatus
                         )
                         onSave(updatedTx)
                     }

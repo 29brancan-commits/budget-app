@@ -87,6 +87,20 @@ class BudgetRepository(private val transactionDao: TransactionDao) {
         transactionDao.deleteDebtById(id)
     }
 
+    val allDebtPayments: Flow<List<DebtPaymentEntity>> = transactionDao.getAllDebtPayments()
+
+    fun getPaymentsForDebt(debtId: Int): Flow<List<DebtPaymentEntity>> {
+        return transactionDao.getPaymentsForDebt(debtId)
+    }
+
+    suspend fun insertDebtPayment(payment: DebtPaymentEntity) {
+        transactionDao.insertDebtPayment(payment)
+    }
+
+    suspend fun deleteDebtPayment(payment: DebtPaymentEntity) {
+        transactionDao.deleteDebtPayment(payment)
+    }
+
     suspend fun clearAllData() {
         transactionDao.clearTransactions()
         transactionDao.clearSettings()

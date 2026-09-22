@@ -21,4 +21,13 @@ object DateUtils {
         val mod = (daysBetween % 14 + 14) % 14
         return date.minusDays(mod)
     }
+
+    fun normalizeDebtOrBillName(name: String): String {
+        return name
+            .replace(" (Minimum Payment)", "", ignoreCase = true)
+            .replace("(Minimum Payment)", "", ignoreCase = true)
+            .replace(" (Planned)", "", ignoreCase = true)
+            .replace("(Planned)", "", ignoreCase = true)
+            .trim()
+    }
 }
