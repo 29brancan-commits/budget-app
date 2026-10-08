@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
@@ -23,14 +24,29 @@ class BillReminderReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_MARK_COMPLETE = "com.example.notification.ACTION_MARK_COMPLETE"
+        private const val WAKELOCK_TAG = "PayCycleBudget:BillReminderReceiverWakeLock"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action
         Log.d("BillReminderReceiver", "Received intent action: $action")
 
-        if (Intent.ACTION_BOOT_COMPLETED == action || Intent.ACTION_MY_PACKAGE_REPLACED == action) {
-            // Reschedule all reminders after device reboot or app update
+        // Ensure MainActivity and all shortcuts are enabled so app opens without showing App Info
+        com.example.PayCycleApplication.ensureAllLauncherComponentsEnabled(context)
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)?.apply {
+            setReferenceCounted(false)
+            acquire(30_000L) // 30-second safe timeout
+        }
+
+        if (Intent.ACTION_BOOT_COMPLETED == action ||
+            Intent.ACTION_MY_PACKAGE_REPLACED == action ||
+            "android.intent.action.QUICKBOOT_POWERON" == action ||
+            "com.htc.intent.action.QUICKBOOT_POWERON" == action ||
+            "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" == action
+        ) {
+            // Reschedule all reminders after device reboot, app update, or permission change
             val pendingResult = goAsync()
             CoroutineScope(Dispatchers.IO).launch {
                 try {
@@ -38,9 +54,16 @@ class BillReminderReceiver : BroadcastReceiver() {
                     val bills = db.transactionDao().getAllPlannedExpenses().first()
                     val txs = db.transactionDao().getAllTransactions().first()
                     BillReminderScheduler.rescheduleAll(context, bills, txs)
+
+                    // Also restart keep-alive foreground service if user enabled it
+                    NotificationReliabilityHelper.startKeepAliveServiceIfEnabled(context)
+                    NotificationReliabilityHelper.schedulePeriodicWork(context)
                 } catch (e: Exception) {
-                    Log.e("BillReminderReceiver", "Error rescheduling reminders on boot", e)
+                    Log.e("BillReminderReceiver", "Error rescheduling reminders on system event", e)
                 } finally {
+                    try {
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    } catch (_: Exception) {}
                     pendingResult.finish()
                 }
             }
@@ -65,7 +88,7 @@ class BillReminderReceiver : BroadcastReceiver() {
                         val allTx = db.transactionDao().getAllTransactions().first()
                         val tx = allTx.find { it.id == originalId }
                         if (tx != null) {
-                            db.transactionDao().updateTransaction(tx.copy(isCompleted = true))
+                            db.transactionDao().updateTransaction(tx.copy(isCompleted = true, status = "paid"))
                         }
                     } else {
                         // For planned bill, insert completed transaction record
@@ -79,6 +102,7 @@ class BillReminderReceiver : BroadcastReceiver() {
                                 category = "Planned Bill",
                                 isIncome = false,
                                 isCompleted = true,
+                                status = "paid",
                                 accountName = bill.targetAccount,
                                 isAutoPay = bill.isAutoPay
                             )
@@ -92,9 +116,13 @@ class BillReminderReceiver : BroadcastReceiver() {
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
                     }
+                    com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(context)
                 } catch (e: Exception) {
                     Log.e("BillReminderReceiver", "Error marking bill complete from notification action", e)
                 } finally {
+                    try {
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    } catch (_: Exception) {}
                     pendingResult.finish()
                 }
             }
@@ -152,9 +180,16 @@ class BillReminderReceiver : BroadcastReceiver() {
                     Log.e("BillReminderReceiver", "Error checking bill completion state, posting notification", e)
                     postBillNotification(context, billId, originalId, isTx, title, minAmount, dueDate, daysBefore, isAutoPay)
                 } finally {
+                    try {
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    } catch (_: Exception) {}
                     pendingResult.finish()
                 }
             }
+        } else {
+            try {
+                if (wakeLock?.isHeld == true) wakeLock.release()
+            } catch (_: Exception) {}
         }
     }
 
@@ -183,7 +218,22 @@ class BillReminderReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Action: Mark complete with confirmation dialog in app
+        // Direct Action: Mark paid immediately from notification shade without opening app
+        val directMarkPaidIntent = Intent(context, BillReminderReceiver::class.java).apply {
+            action = ACTION_MARK_COMPLETE
+            putExtra(BillReminderScheduler.EXTRA_BILL_ID, billId)
+            putExtra(BillReminderScheduler.EXTRA_ORIGINAL_ID, originalId)
+            putExtra(BillReminderScheduler.EXTRA_IS_TX, isTx)
+            putExtra(BillReminderScheduler.EXTRA_TITLE, title)
+        }
+        val directMarkPaidPendingIntent = PendingIntent.getBroadcast(
+            context,
+            billId + 600000,
+            directMarkPaidIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action: Open app with confirmation dialog
         val markCompleteIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("confirm_complete_bill_id", billId)
@@ -225,12 +275,16 @@ class BillReminderReceiver : BroadcastReceiver() {
                 .setContentTitle(titleText)
                 .setContentText(bodyText)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setVibrate(longArrayOf(0, 250, 200, 250))
+                .setLights(0xFF1E88E5.toInt(), 500, 500)
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
-                .addAction(R.drawable.ic_launcher_foreground, "✓ Mark Paid", markCompletePendingIntent)
+                .addAction(R.drawable.ic_launcher_foreground, "✓ Mark Paid", directMarkPaidPendingIntent)
+                .addAction(R.drawable.ic_launcher_foreground, "🔍 View Details", markCompletePendingIntent)
                 .build()
 
             notificationManager.notify(billId, notification)
@@ -249,3 +303,4 @@ class BillReminderReceiver : BroadcastReceiver() {
         }
     }
 }
+

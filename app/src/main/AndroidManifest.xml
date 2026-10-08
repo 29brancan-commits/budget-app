@@ -8,10 +8,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
+        android:name=".PayCycleApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -20,121 +23,35 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="com.example.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
-            android:theme="@style/Theme.MyApplication" />
-
-        <activity-alias
-            android:name=".MainActivityAliasDefault"
-            android:enabled="true"
-            android:exported="true"
             android:icon="@mipmap/ic_launcher"
-            android:label="@string/app_name"
             android:roundIcon="@mipmap/ic_launcher_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityAliasSapphire"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_sapphire"
             android:label="@string/app_name"
-            android:roundIcon="@mipmap/ic_launcher_sapphire_round"
-            android:targetActivity=".MainActivity">
+            android:theme="@style/Theme.MyApplication">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity-alias>
+        </activity>
 
-        <activity-alias
-            android:name=".MainActivityAliasOnyx"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_onyx"
-            android:label="@string/app_name"
-            android:roundIcon="@mipmap/ic_launcher_onyx_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
 
-        <activity-alias
-            android:name=".MainActivityAliasSunset"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_sunset"
-            android:label="@string/app_name"
-            android:roundIcon="@mipmap/ic_launcher_sunset_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityAliasAmethyst"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_amethyst"
-            android:label="@string/app_name"
-            android:roundIcon="@mipmap/ic_launcher_amethyst_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".MainActivityAliasRetro"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@mipmap/ic_launcher_retro"
-            android:label="@string/app_name"
-            android:roundIcon="@mipmap/ic_launcher_retro_round"
-            android:targetActivity=".MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
 
         <activity
             android:name=".widget.WidgetAccountSelectionActivity"
-            android:exported="true"
-            android:label="Choose Widget Account"
+            android:exported="false"
             android:theme="@style/Theme.MyApplication" />
 
         <receiver
             android:name=".widget.CurrentPayCycleWidgetProvider"
-            android:exported="true"
-            android:label="Current Pay Cycle">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="com.example.widget.ACTION_REFRESH_CYCLE_WIDGET" />
                 <action android:name="com.example.widget.ACTION_PREV_ACCOUNT" />
                 <action android:name="com.example.widget.ACTION_NEXT_ACCOUNT" />
+                <action android:name="com.example.widget.ACTION_WIDGET_ITEM_CLICK" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -148,14 +65,20 @@
 
         <receiver
             android:name=".notification.BillReminderReceiver"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
-                <action android:name="com.example.notification.ACTION_BILL_REMINDER" />
-                <action android:name="com.example.notification.ACTION_MARK_COMPLETE" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.example.notification.ACTION_BILL_REMINDER" />
+                <action android:name="com.example.notification.ACTION_MARK_COMPLETE" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".notification.BillReminderForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

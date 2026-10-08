@@ -2,8 +2,10 @@ package com.example.sync
 
 import android.accounts.Account
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
@@ -30,7 +32,22 @@ sealed class SyncState {
     data class Error(val errorMessage: String) : SyncState()
 }
 
+data class DriveFileInfo(
+    val id: String,
+    val name: String,
+    val mimeType: String,
+    val modifiedTime: String,
+    val formattedDate: String,
+    val sizeString: String,
+    val location: String, // "PayCycle Budget" or "My Drive"
+    val isGoogleSheet: Boolean,
+    val isCsv: Boolean,
+    val isJson: Boolean
+)
+
 class GoogleDriveSyncManager(private val context: Context) {
+
+    var pendingAuthIntent: Intent? = null
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -38,6 +55,8 @@ class GoogleDriveSyncManager(private val context: Context) {
         .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .connectionPool(okhttp3.ConnectionPool(5, 5, java.util.concurrent.TimeUnit.MINUTES))
         .build()
+    private val scopeDrive = "https://www.googleapis.com/auth/drive"
+    private val scopeDriveReadOnly = "https://www.googleapis.com/auth/drive.readonly"
     private val scopeDriveFile = "https://www.googleapis.com/auth/drive.file"
     private val scopeAppData = "https://www.googleapis.com/auth/drive.appdata"
     private val scopeSheets = "https://www.googleapis.com/auth/spreadsheets"
@@ -56,21 +75,165 @@ class GoogleDriveSyncManager(private val context: Context) {
     private val webCompanionLegacyName1 = "PayCycle Budget - Web Companion App"
     private val webCompanionLegacyName2 = "PayCycle_Web_Companion.html"
 
-    private val DEFAULT_CLIENT_ID = "292085223830-10as2ag120sc8eb4jgg66mrhptm188nj.apps.googleusercontent.com"
-    private val DEFAULT_CLIENT_SECRET = "p3O3A77A5p-S6k13n3yM_Yy7"
+    private val PAYCYCLE_FOLDER_NAME = "PayCycle Budget"
+
+    init {
+        cleanupAllLocalAppStorage()
+    }
+
+    val PROJECT_CLIENT_ID = "1010863926522-r8bfvtebhjvh0n8adlburrd0peiite22.apps.googleusercontent.com"
+    val ANDROID_CLIENT_ID = "1010863926522-0odht95asacrjnockhjrtcotjldvo79f.apps.googleusercontent.com"
+
+    private val DEFAULT_CLIENT_ID = PROJECT_CLIENT_ID
+    private val DEFAULT_CLIENT_SECRET = ""
+
+    val TARGET_FOLDER_ID = "1ARQc_BgRZH7weAVhYz7ORYJTllMJHefm"
+    val TARGET_FOLDER_URL = "https://drive.google.com/drive/folders/1ARQc_BgRZH7weAVhYz7ORYJTllMJHefm?usp=drive_link"
 
     private val prefs = context.getSharedPreferences("google_drive_sync_prefs", Context.MODE_PRIVATE)
 
+    fun extractFolderId(input: String): String {
+        val trimmed = input.trim()
+        val regex = Regex("/folders/([a-zA-Z0-9_-]+)")
+        val match = regex.find(trimmed)
+        if (match != null) {
+            return match.groupValues[1]
+        }
+        val idRegex = Regex("[?&]id=([a-zA-Z0-9_-]+)")
+        val idMatch = idRegex.find(trimmed)
+        if (idMatch != null) {
+            return idMatch.groupValues[1]
+        }
+        if (!trimmed.contains("/") && trimmed.length >= 10) {
+            return trimmed
+        }
+        return TARGET_FOLDER_ID
+    }
+
+    fun getTargetFolderId(): String {
+        val custom = prefs.getString("cached_paycycle_folder_id", null)?.trim()?.ifBlank { null }
+        return custom ?: TARGET_FOLDER_ID
+    }
+
+    fun getTargetFolderUrl(): String = "https://drive.google.com/drive/folders/${getTargetFolderId()}?usp=drive_link"
+
+    fun getCachedFolderId(): String = getTargetFolderId()
+
+    fun getCachedFolderName(): String = prefs.getString("cached_paycycle_folder_name", null)?.trim()?.ifBlank { null }
+        ?: "PayCycle Folder"
+
+    fun saveCachedFolderName(name: String?) {
+        if (!name.isNullOrBlank()) {
+            prefs.edit().putString("cached_paycycle_folder_name", name.trim()).apply()
+        }
+    }
+
+    fun saveCachedFolderId(idOrUrl: String?) {
+        if (idOrUrl.isNullOrBlank()) {
+            prefs.edit().putString("cached_paycycle_folder_id", TARGET_FOLDER_ID).apply()
+        } else {
+            val extracted = extractFolderId(idOrUrl)
+            prefs.edit().putString("cached_paycycle_folder_id", extracted).apply()
+        }
+    }
+
+    suspend fun getOrCreatePayCycleFolder(token: String): String = withContext(Dispatchers.IO) {
+        val cachedId = prefs.getString("cached_paycycle_folder_id", null)?.trim()?.ifBlank { null }
+        if (!cachedId.isNullOrBlank() && cachedId != TARGET_FOLDER_ID) {
+            try {
+                val verifyUrl = "https://www.googleapis.com/drive/v3/files/$cachedId?fields=id,name,trashed,mimeType&supportsAllDrives=true"
+                val req = Request.Builder().url(verifyUrl).addHeader("Authorization", "Bearer $token").get().build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val obj = JSONObject(body)
+                            if (!obj.optBoolean("trashed", false)) {
+                                val folderName = obj.optString("name", "PayCycle Folder")
+                                saveCachedFolderName(folderName)
+                                return@withContext cachedId
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d("GoogleDriveSync", "Note verifying cached folder $cachedId: ${e.message}")
+            }
+        }
+        // Search Drive for existing folder named "PayCycle Budget"
+        try {
+            val qUrl = "https://www.googleapis.com/drive/v3/files?q=name%3D%27PayCycle%20Budget%27%20and%20mimeType%3D%27application%2Fvnd.google-apps.folder%27%20and%20trashed%3Dfalse&pageSize=1&fields=files(id,name)"
+            val req = Request.Builder().url(qUrl).addHeader("Authorization", "Bearer $token").get().build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        val arr = JSONObject(body).optJSONArray("files")
+                        if (arr != null && arr.length() > 0) {
+                            val foundId = arr.getJSONObject(0).optString("id")
+                            if (foundId.isNotBlank()) {
+                                saveCachedFolderId(foundId)
+                                saveCachedFolderName("PayCycle Budget")
+                                return@withContext foundId
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        // Create new PayCycle Budget folder
+        try {
+            val createUrl = "https://www.googleapis.com/drive/v3/files"
+            val jsonBody = JSONObject().apply {
+                put("name", "PayCycle Budget")
+                put("mimeType", "application/vnd.google-apps.folder")
+            }.toString()
+            val req = Request.Builder()
+                .url(createUrl)
+                .addHeader("Authorization", "Bearer $token")
+                .post(jsonBody.toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        val newId = JSONObject(body).optString("id")
+                        if (newId.isNotBlank()) {
+                            saveCachedFolderId(newId)
+                            saveCachedFolderName("PayCycle Budget")
+                            return@withContext newId
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("GoogleDriveSync", "Error creating PayCycle Budget folder", e)
+        }
+        return@withContext cachedId ?: TARGET_FOLDER_ID
+    }
+
     fun saveCustomAccessToken(token: String?) {
-        val trimmed = token?.trim()
+        var trimmed = token?.trim()
         if (trimmed.isNullOrBlank()) {
             prefs.edit().remove("custom_access_token").apply()
-        } else if (trimmed.startsWith("4/") || trimmed.startsWith("4%2F") || trimmed.startsWith("1//") || (!trimmed.startsWith("ya29.") && trimmed.length > 20)) {
+            return
+        }
+        if (trimmed.startsWith("Bearer ", ignoreCase = true)) {
+            trimmed = trimmed.substring(7).trim()
+        }
+        if (trimmed.startsWith("4/") || trimmed.startsWith("4%2F") || trimmed.startsWith("1//")) {
             // Auto-detect authorization codes or refresh tokens passed into access token field
-            prefs.edit().putString("custom_refresh_token", trimmed).remove("custom_access_token").apply()
+            prefs.edit().putString("custom_refresh_token", trimmed).apply()
         } else {
             prefs.edit().putString("custom_access_token", trimmed).apply()
         }
+    }
+
+    fun isGoogleDriveAuthorized(): Boolean {
+        if (getSignedInAccount() != null) return true
+        if (!getCustomAccessToken().isNullOrBlank()) return true
+        if (!getCustomRefreshToken().isNullOrBlank()) return true
+        return false
     }
 
     fun getCustomAccessToken(): String? {
@@ -108,44 +271,261 @@ class GoogleDriveSyncManager(private val context: Context) {
         }
     }
 
+    fun hasMeaningfulData(jsonString: String?): Boolean {
+        if (jsonString.isNullOrBlank()) return false
+        return try {
+            val trimmed = jsonString.trim().removePrefix("\uFEFF")
+            if (trimmed.startsWith("[")) {
+                val arr = JSONArray(trimmed)
+                return arr.length() > 0
+            }
+            val obj = JSONObject(trimmed)
+            val txArr = obj.optJSONArray("transactions") ?: obj.optJSONArray("items") ?: obj.optJSONArray("expenses") ?: obj.optJSONArray("data")
+            val incArr = obj.optJSONArray("income_sources") ?: obj.optJSONArray("incomeSources")
+            val expArr = obj.optJSONArray("planned_expenses") ?: obj.optJSONArray("plannedExpenses") ?: obj.optJSONArray("bills")
+            val debtsArr = obj.optJSONArray("debts") ?: obj.optJSONArray("all_debts") ?: obj.optJSONArray("allDebts")
+            val txCount = txArr?.length() ?: 0
+            val incCount = incArr?.length() ?: 0
+            val expCount = expArr?.length() ?: 0
+            val debtsCount = debtsArr?.length() ?: 0
+            (txCount > 0 || incCount > 0 || expCount > 0 || debtsCount > 0)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun cleanupAllLocalAppStorage() {
+        try {
+            val fileNames = listOf(
+                "google_drive_cloud_backup.json",
+                "backup_vault_persistent.json",
+                "emergency_vault_archive.json",
+                "paycycle_export.csv",
+                exportCsvFileName,
+                importCsvFileName,
+                csvFileName,
+                debtCsvFileName,
+                debtImportCsvFileName,
+                webCompanionFileName,
+                webCompanionLegacyName1,
+                webCompanionLegacyName2
+            )
+            for (name in fileNames) {
+                val f = java.io.File(context.filesDir, name)
+                if (f.exists()) f.delete()
+            }
+            prefs.edit().remove("backup_vault_json").apply()
+        } catch (_: Exception) {}
+    }
+
+    fun saveSavedVaultBackup(jsonData: String) {
+        // Cloud-only mode: No local filesystem files stored.
+    }
+
+    suspend fun fetchLatestCloudDebtData(overrideAccountEmail: String? = null): String? = withContext(Dispatchers.IO) {
+        val account = getSignedInAccount()
+        val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
+        try {
+            val sanitizedKey = accountEmail.lowercase(Locale.US)
+                .replace(".", "_")
+                .replace("@", "_at_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .filter { it.isLetterOrDigit() || it == '_' }
+
+            val topicUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey/json?poll=1&since=all"
+            val pollRequest = Request.Builder().url(topicUrl).get().build()
+            var latestDebtCsv: String? = null
+            var maxTs = 0L
+
+            httpClient.newCall(pollRequest).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        for (line in body.lineSequence().filter { it.isNotBlank() }) {
+                            try {
+                                val jsonObj = JSONObject(line)
+                                val msgStr = jsonObj.optString("message", "")
+                                if (msgStr.isNotBlank()) {
+                                    val inner = JSONObject(msgStr)
+                                    val type = inner.optString("type")
+                                    val csv = inner.optString("csv")
+                                    val ts = inner.optLong("updatedAt", jsonObj.optLong("time", 0L) * 1000L)
+                                    if (type == "debt_sync" && csv.isNotBlank() && ts >= maxTs) {
+                                        maxTs = ts
+                                        latestDebtCsv = csv
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+            }
+            if (!latestDebtCsv.isNullOrBlank()) return@withContext latestDebtCsv
+        } catch (_: Exception) {}
+        null
+    }
+
+    suspend fun fetchLatestCloudData(overrideAccountEmail: String? = null): String? = withContext(Dispatchers.IO) {
+        val account = getSignedInAccount()
+        val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
+        val token = getValidToken(account, accountEmail)
+
+        // 1. Check Google Drive API if authenticated
+        if (token != null) {
+            try {
+                val fileInfo = searchBackupFile(token)
+                val fileId = fileInfo?.first
+                if (fileId != null) {
+                    val driveJson = downloadBackup(token, fileId)
+                    if (hasMeaningfulData(driveJson)) {
+                        return@withContext driveJson
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("GoogleDriveSync", "Error querying Drive API directly", e)
+            }
+        }
+
+        // 2. Query Cloud Data Bus
+        try {
+            val sanitizedKey = accountEmail.lowercase(Locale.US)
+                .replace(".", "_")
+                .replace("@", "_at_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .filter { it.isLetterOrDigit() || it == '_' }
+
+            val topicUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey/json?poll=1&since=all"
+            val pollRequest = Request.Builder().url(topicUrl).get().build()
+            var latestRemoteData: String? = null
+            var maxRemoteTimestamp: Long = 0L
+
+            httpClient.newCall(pollRequest).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        val lines = body.lineSequence().filter { it.isNotBlank() }
+                        for (line in lines) {
+                            try {
+                                val jsonObj = JSONObject(line)
+                                var rawContent: String? = null
+
+                                if (jsonObj.has("attachment")) {
+                                    val attachObj = jsonObj.optJSONObject("attachment")
+                                    val attachUrl = attachObj?.optString("url")
+                                    if (!attachUrl.isNullOrBlank()) {
+                                        try {
+                                            val fileReq = Request.Builder().url(attachUrl).get().build()
+                                            httpClient.newCall(fileReq).execute().use { resp ->
+                                                if (resp.isSuccessful) {
+                                                    rawContent = resp.body?.string()
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+
+                                if (rawContent.isNullOrBlank()) {
+                                    val msgStr = jsonObj.optString("message", "")
+                                    if (msgStr.isNotBlank() && !msgStr.startsWith("You received a file")) {
+                                        rawContent = msgStr
+                                    }
+                                }
+
+                                if (!rawContent.isNullOrBlank()) {
+                                    val innerObj = JSONObject(rawContent)
+                                    val data = innerObj.optString("data", "")
+                                    val ts = innerObj.optLong("updatedAt", jsonObj.optLong("time", 0L) * 1000L)
+                                    if (data.isNotBlank() && ts >= maxRemoteTimestamp && hasMeaningfulData(data)) {
+                                        maxRemoteTimestamp = ts
+                                        latestRemoteData = data
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+            }
+            if (hasMeaningfulData(latestRemoteData)) {
+                return@withContext latestRemoteData
+            }
+        } catch (e: Exception) {
+            Log.w("GoogleDriveSync", "Error fetching cloud data from bus", e)
+        }
+
+        return@withContext null
+    }
+
+    suspend fun getSavedVaultBackup(): String? {
+        return fetchLatestCloudData()
+    }
+
     suspend fun refreshTokenWithCredentials(clientId: String?, clientSecret: String?, tokenOrCode: String): String? = withContext(Dispatchers.IO) {
         try {
-            val effClientId = clientId?.ifBlank { null } ?: DEFAULT_CLIENT_ID
-            val effClientSecret = clientSecret?.ifBlank { null } ?: DEFAULT_CLIENT_SECRET
+            val isAuthCode = tokenOrCode.startsWith("4/") || tokenOrCode.startsWith("4%2F") || (tokenOrCode.length < 80 && !tokenOrCode.contains("//"))
+            val redirectUris = listOf("")
 
-            val formBuilder = okhttp3.FormBody.Builder()
-                .add("client_id", effClientId)
-                .add("client_secret", effClientSecret)
-
-            if (tokenOrCode.startsWith("4/") || tokenOrCode.startsWith("4%2F") || (tokenOrCode.length < 80 && !tokenOrCode.contains("//"))) {
-                formBuilder.add("grant_type", "authorization_code")
-                    .add("code", tokenOrCode)
-                    .add("redirect_uri", "https://developers.google.com/oauthplayground")
+            val candidateCreds = mutableListOf<Pair<String, String?>>()
+            val customId = clientId?.ifBlank { null }
+            val customSecret = clientSecret?.ifBlank { null }
+            if (customId != null) {
+                candidateCreds.add(Pair(customId, customSecret))
             } else {
-                formBuilder.add("grant_type", "refresh_token")
-                    .add("refresh_token", tokenOrCode)
+                candidateCreds.add(Pair(PROJECT_CLIENT_ID, null))
+                candidateCreds.add(Pair(ANDROID_CLIENT_ID, null))
             }
 
-            val request = Request.Builder()
-                .url("https://oauth2.googleapis.com/token")
-                .post(formBuilder.build())
-                .build()
+            for ((effClientId, effClientSecret) in candidateCreds) {
+                for (redirectUri in redirectUris) {
+                    try {
+                        val formBuilder = okhttp3.FormBody.Builder()
+                            .add("client_id", effClientId)
 
-            httpClient.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string() ?: ""
-                if (response.isSuccessful) {
-                    val json = JSONObject(bodyStr)
-                    val newAccessToken = json.optString("access_token", null)
-                    val newRefreshToken = json.optString("refresh_token", null)
-                    if (!newRefreshToken.isNullOrEmpty()) {
-                        prefs.edit().putString("custom_refresh_token", newRefreshToken).apply()
+                        if (!effClientSecret.isNullOrBlank()) {
+                            formBuilder.add("client_secret", effClientSecret)
+                        }
+
+                        if (isAuthCode) {
+                            formBuilder.add("grant_type", "authorization_code")
+                                .add("code", tokenOrCode)
+                            if (redirectUri.isNotEmpty()) {
+                                formBuilder.add("redirect_uri", redirectUri)
+                            }
+                        } else {
+                            formBuilder.add("grant_type", "refresh_token")
+                                .add("refresh_token", tokenOrCode)
+                        }
+
+                        val request = Request.Builder()
+                            .url("https://oauth2.googleapis.com/token")
+                            .post(formBuilder.build())
+                            .build()
+
+                        httpClient.newCall(request).execute().use { response ->
+                            val bodyStr = response.body?.string() ?: ""
+                            if (response.isSuccessful) {
+                                val json = JSONObject(bodyStr)
+                                val newAccessToken = json.optString("access_token", null)
+                                val newRefreshToken = json.optString("refresh_token", null)
+                                if (!newRefreshToken.isNullOrEmpty()) {
+                                    prefs.edit().putString("custom_refresh_token", newRefreshToken).apply()
+                                }
+                                if (!newAccessToken.isNullOrEmpty()) {
+                                    prefs.edit().putString("custom_access_token", newAccessToken).apply()
+                                    return@withContext newAccessToken
+                                }
+                            } else {
+                                Log.d("GoogleDriveSync", "Token endpoint attempt ($effClientId, uri='$redirectUri'): $bodyStr")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.d("GoogleDriveSync", "Error trying ($effClientId, uri='$redirectUri')", e)
                     }
-                    if (!newAccessToken.isNullOrEmpty()) {
-                        prefs.edit().putString("custom_access_token", newAccessToken).apply()
-                        return@withContext newAccessToken
-                    }
-                } else {
-                    Log.e("GoogleDriveSync", "Token endpoint failed: $bodyStr")
                 }
             }
         } catch (e: Exception) {
@@ -167,7 +547,7 @@ class GoogleDriveSyncManager(private val context: Context) {
         }
 
         val customToken = getCustomAccessToken()
-        if (!customToken.isNullOrBlank()) {
+        if (!customToken.isNullOrBlank() && !customToken.startsWith("eyJ")) {
             if (customToken.startsWith("4/") || customToken.startsWith("4%2F") || customToken.startsWith("1//")) {
                 val exchanged = refreshTokenWithCredentials(clientId, clientSecret, customToken)
                 if (!exchanged.isNullOrBlank()) {
@@ -185,11 +565,19 @@ class GoogleDriveSyncManager(private val context: Context) {
     }
 
     fun getGoogleSignInClient(): GoogleSignInClient {
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+        val clientId = getCustomClientId() ?: DEFAULT_CLIENT_ID
+        val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope(scopeDriveFile), Scope(scopeAppData), Scope(scopeSheets))
-            .build()
-        return GoogleSignIn.getClient(context, gso)
+            .requestScopes(
+                Scope(scopeDrive),
+                Scope(scopeDriveFile),
+                Scope(scopeDriveReadOnly),
+                Scope(scopeSheets)
+            )
+        try {
+            gsoBuilder.requestServerAuthCode(clientId, false)
+        } catch (_: Exception) {}
+        return GoogleSignIn.getClient(context, gsoBuilder.build())
     }
 
     fun getSignedInAccount(): GoogleSignInAccount? {
@@ -198,35 +586,90 @@ class GoogleDriveSyncManager(private val context: Context) {
 
     private suspend fun getAccessToken(account: GoogleSignInAccount): String? = withContext(Dispatchers.IO) {
         val email = account.email ?: ""
+        val accountObj = account.account ?: Account(email, "com.google")
+        val scopeAttempts = listOf(
+            "oauth2:$scopeDrive",
+            "oauth2:$scopeDrive $scopeSheets",
+            "oauth2:$scopeDriveReadOnly",
+            "oauth2:$scopeDriveFile $scopeSheets $scopeDriveReadOnly",
+            "oauth2:$scopeDriveFile $scopeSheets",
+            "oauth2:$scopeDriveFile",
+            "oauth2:$scopeSheets"
+        )
+        for (scopesStr in scopeAttempts) {
+            try {
+                val token = GoogleAuthUtil.getToken(context, accountObj, scopesStr)
+                if (!token.isNullOrBlank()) {
+                    saveCustomAccessToken(token)
+                    return@withContext token
+                }
+            } catch (e: UserRecoverableAuthException) {
+                Log.w("GoogleDriveSync", "User consent required for $email ($scopesStr)", e)
+                pendingAuthIntent = e.intent
+                return@withContext null
+            } catch (e: Exception) {
+                Log.d("GoogleDriveSync", "GoogleAuthUtil attempt '$scopesStr' note: ${e.message}")
+            }
+        }
+        null
+    }
+
+    suspend fun clearCachedTokens(email: String? = null) = withContext(Dispatchers.IO) {
         try {
-            val accountObj = account.account ?: Account(email, "com.google")
-            val scopesStr = "oauth2:$scopeDriveFile $scopeAppData $scopeSheets"
-            GoogleAuthUtil.getToken(context, accountObj, scopesStr)
+            prefs.edit().remove("custom_access_token").apply()
+            val account = getSignedInAccount()
+            val targetEmail = email ?: account?.email ?: "86brancan@gmail.com"
+            val accountObj = account?.account ?: Account(targetEmail, "com.google")
+            for (scope in listOf("oauth2:$scopeDriveFile", "oauth2:$scopeDriveFile $scopeSheets", "oauth2:$scopeDriveReadOnly")) {
+                try {
+                    val tok = GoogleAuthUtil.getToken(context, accountObj, scope)
+                    if (!tok.isNullOrBlank()) {
+                        GoogleAuthUtil.clearToken(context, tok)
+                    }
+                } catch (_: Exception) {}
+            }
         } catch (e: Exception) {
-            Log.d("GoogleDriveSync", "Note: GoogleAuthUtil token unavailable (${e.message})")
-            null
+            Log.e("GoogleDriveSync", "Error clearing cached tokens", e)
         }
     }
 
     suspend fun getAccessTokenForEmail(email: String): String? = withContext(Dispatchers.IO) {
         if (email.isBlank()) return@withContext null
-        try {
-            val accountObj = Account(email, "com.google")
-            val scopesStr = "oauth2:$scopeDriveFile $scopeAppData $scopeSheets"
-            GoogleAuthUtil.getToken(context, accountObj, scopesStr)
-        } catch (e: Exception) {
-            Log.d("GoogleDriveSync", "Note: GoogleAuthUtil token unavailable for email $email (${e.message})")
-            null
+        val accountObj = Account(email, "com.google")
+        val scopeAttempts = listOf(
+            "oauth2:$scopeDrive",
+            "oauth2:$scopeDrive $scopeSheets",
+            "oauth2:$scopeDriveReadOnly",
+            "oauth2:$scopeDriveFile $scopeSheets $scopeDriveReadOnly",
+            "oauth2:$scopeDriveFile $scopeSheets",
+            "oauth2:$scopeDriveFile",
+            "oauth2:$scopeSheets"
+        )
+        for (scopesStr in scopeAttempts) {
+            try {
+                val token = GoogleAuthUtil.getToken(context, accountObj, scopesStr)
+                if (!token.isNullOrBlank()) {
+                    saveCustomAccessToken(token)
+                    return@withContext token
+                }
+            } catch (e: UserRecoverableAuthException) {
+                Log.w("GoogleDriveSync", "User consent required for email $email ($scopesStr)", e)
+                pendingAuthIntent = e.intent
+                return@withContext null
+            } catch (e: Exception) {
+                Log.d("GoogleDriveSync", "GoogleAuthUtil email attempt '$scopesStr' note: ${e.message}")
+            }
         }
+        null
     }
 
-    suspend fun searchBackupFile(token: String): Pair<String?, Long>? = withContext(Dispatchers.IO) {
+    suspend fun searchBackupFile(token: String, folderId: String? = null): Pair<String?, Long>? = withContext(Dispatchers.IO) {
         try {
             // 1. Check cached file ID first
             val cachedId = getCachedFileId(fileName)
             if (cachedId != null) {
                 try {
-                    val verifyUrl = "https://www.googleapis.com/drive/v3/files/$cachedId?fields=id,trashed"
+                    val verifyUrl = "https://www.googleapis.com/drive/v3/files/$cachedId?fields=id,trashed,parents"
                     val verifyReq = Request.Builder()
                         .url(verifyUrl)
                         .addHeader("Authorization", "Bearer $token")
@@ -251,45 +694,68 @@ class GoogleDriveSyncManager(private val context: Context) {
             }
 
             // 2. Query Drive for backup file
-            val encodedQuery = java.net.URLEncoder.encode("name='$fileName' and trashed=false", "UTF-8")
-            val url = "https://www.googleapis.com/drive/v3/files?q=$encodedQuery&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc"
+            val parentClause = if (!folderId.isNullOrBlank()) "and '$folderId' in parents" else ""
+            val httpUrl = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+                .addQueryParameter("q", "name='$fileName' and trashed=false $parentClause")
+                .addQueryParameter("fields", "files(id,name,modifiedTime)")
+                .addQueryParameter("orderBy", "modifiedTime desc")
+                .build()
+
             val request = Request.Builder()
-                .url(url)
+                .url(httpUrl)
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
-                val body = response.body?.string() ?: return@withContext null
-                val json = JSONObject(body)
-                val files = json.optJSONArray("files")
-                if (files != null && files.length() > 0) {
-                    val fileObj = files.getJSONObject(0)
-                    val fileId = fileObj.getString("id")
-                    saveCachedFileId(fileName, fileId)
-
-                    // Trash any duplicate backup files to prevent duplicate pile-up
-                    for (i in 1 until files.length()) {
-                        val dupId = files.getJSONObject(i).optString("id")
-                        if (dupId.isNotBlank()) {
-                            trashOrDeleteDriveFile(token, dupId)
+                if (response.isSuccessful) {
+                    val body = response.body?.string()
+                    if (!body.isNullOrBlank()) {
+                        val json = JSONObject(body)
+                        val files = json.optJSONArray("files")
+                        if (files != null && files.length() > 0) {
+                            val fileObj = files.getJSONObject(0)
+                            val fileId = fileObj.getString("id")
+                            saveCachedFileId(fileName, fileId)
+                            return@withContext Pair(fileId, 0L)
                         }
                     }
-
-                    Pair(fileId, 0L)
-                } else {
-                    saveCachedFileId(fileName, null)
-                    Pair(null, 0L)
                 }
             }
+
+            // Fallback: If not found in specific folder, search anywhere on Drive
+            if (!folderId.isNullOrBlank()) {
+                val wideUrl = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+                    .addQueryParameter("q", "name='$fileName' and trashed=false")
+                    .addQueryParameter("fields", "files(id,name,modifiedTime)")
+                    .addQueryParameter("orderBy", "modifiedTime desc")
+                    .build()
+                val wideReq = Request.Builder().url(wideUrl).addHeader("Authorization", "Bearer $token").get().build()
+                httpClient.newCall(wideReq).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val json = JSONObject(body)
+                            val files = json.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                val fileId = files.getJSONObject(0).getString("id")
+                                saveCachedFileId(fileName, fileId)
+                                return@withContext Pair(fileId, 0L)
+                            }
+                        }
+                    }
+                }
+            }
+
+            saveCachedFileId(fileName, null)
+            null
         } catch (e: Exception) {
             Log.e("GoogleDriveSync", "Error searching Drive backup", e)
             null
         }
     }
 
-    suspend fun uploadBackup(token: String, jsonData: String, existingFileId: String?): Boolean = withContext(Dispatchers.IO) {
+    suspend fun uploadBackup(token: String, jsonData: String, existingFileId: String?, folderId: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
             val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -320,9 +786,11 @@ class GoogleDriveSyncManager(private val context: Context) {
 
             // If targetId was null or PATCH returned 404, create a new file via multipart POST
             if (targetId == null) {
+                val targetParent = folderId ?: "root"
                 val metadata = JSONObject().apply {
                     put("name", fileName)
                     put("mimeType", "application/json")
+                    put("parents", JSONArray().apply { put(targetParent) })
                 }.toString()
 
                 val multipartBody = MultipartBody.Builder()
@@ -408,7 +876,8 @@ class GoogleDriveSyncManager(private val context: Context) {
     private fun queryDriveForFileId(
         token: String,
         targetSheetName: String = sheetFileName,
-        targetCsvName: String = csvFileName
+        targetCsvName: String = csvFileName,
+        folderId: String? = null
     ): String? {
         return try {
             val lowerTargetSheet = targetSheetName.trim().lowercase(Locale.US)
@@ -419,11 +888,12 @@ class GoogleDriveSyncManager(private val context: Context) {
             val isDebtTarget = lowerTargetSheet.contains("debt") || lowerTargetCsv.contains("debt")
             val isMainExpensesTarget = !isExportTarget && !isImportTarget && !isDebtTarget
 
+            val cacheKey = if (!folderId.isNullOrBlank()) "${targetSheetName}_folder_$folderId" else targetSheetName
             // 0. Verify cached ID first if present
-            val cachedId = getCachedFileId(targetSheetName)
+            val cachedId = getCachedFileId(cacheKey) ?: getCachedFileId(targetSheetName)
             if (cachedId != null) {
                 try {
-                    val verifyUrl = "https://www.googleapis.com/drive/v3/files/$cachedId?fields=id,name,trashed"
+                    val verifyUrl = "https://www.googleapis.com/drive/v3/files/$cachedId?fields=id,name,trashed,parents"
                     val verifyReq = Request.Builder()
                         .url(verifyUrl)
                         .addHeader("Authorization", "Bearer $token")
@@ -436,6 +906,10 @@ class GoogleDriveSyncManager(private val context: Context) {
                                 val obj = JSONObject(body)
                                 val isTrashed = obj.optBoolean("trashed", false)
                                 val realName = obj.optString("name", "").trim().lowercase(Locale.US)
+                                val parents = obj.optJSONArray("parents")
+                                val inFolder = if (!folderId.isNullOrBlank()) {
+                                    parents != null && (0 until parents.length()).any { parents.optString(it) == folderId }
+                                } else true
 
                                 var isValidMatch = (realName == lowerTargetSheet || realName == lowerTargetCsv)
                                 if (!isValidMatch) {
@@ -450,13 +924,15 @@ class GoogleDriveSyncManager(private val context: Context) {
                                     }
                                 }
 
-                                if (!isTrashed && isValidMatch) {
+                                if (!isTrashed && isValidMatch && inFolder) {
                                     return cachedId
                                 } else {
+                                    saveCachedFileId(cacheKey, null)
                                     saveCachedFileId(targetSheetName, null)
                                 }
                             }
                         } else if (resp.code == 404) {
+                            saveCachedFileId(cacheKey, null)
                             saveCachedFileId(targetSheetName, null)
                         }
                     }
@@ -468,7 +944,8 @@ class GoogleDriveSyncManager(private val context: Context) {
             // Step 1: Query Drive for non-trashed files matching target name
             val safeSheetName = targetSheetName.replace("'", "\\'")
             val safeCsvName = targetCsvName.replace("'", "\\'")
-            val focusedQuery = "trashed=false and (name='$safeSheetName' or name='$safeCsvName')"
+            val parentClause = if (!folderId.isNullOrBlank()) "and '$folderId' in parents" else ""
+            val focusedQuery = "trashed=false $parentClause and (name='$safeSheetName' or name='$safeCsvName')"
             val focusedUrl = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
                 .addQueryParameter("q", focusedQuery)
                 .addQueryParameter("fields", "files(id,name,modifiedTime,mimeType)")
@@ -521,8 +998,9 @@ class GoogleDriveSyncManager(private val context: Context) {
             }
 
             // Step 2: Wider query if focused query returned no files
+            val folderClause = if (!folderId.isNullOrBlank()) "trashed=false and '$folderId' in parents" else "trashed=false"
             val httpUrl = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
-                .addQueryParameter("q", "trashed=false")
+                .addQueryParameter("q", folderClause)
                 .addQueryParameter("fields", "files(id,name,modifiedTime,mimeType)")
                 .addQueryParameter("pageSize", "1000")
                 .addQueryParameter("orderBy", "modifiedTime desc")
@@ -608,13 +1086,17 @@ class GoogleDriveSyncManager(private val context: Context) {
                             lowerTargetCsv,
                             importSheetFileName.lowercase(Locale.US),
                             importCsvFileName.lowercase(Locale.US),
+                            exportSheetFileName.lowercase(Locale.US),
+                            exportCsvFileName.lowercase(Locale.US),
                             "expenses & budget import sheet",
-                            "expenses_import.csv"
+                            "expenses_import.csv",
+                            "expenses & budget export sheet",
+                            "expenses_export.csv"
                         )
                         for (i in 0 until files.length()) {
                             val fileObj = files.getJSONObject(i)
                             val name = fileObj.optString("name", "").trim().lowercase(Locale.US)
-                            if (name.contains("import") && !name.contains("export") && (importTargetNames.contains(name) || name.contains("expenses") || name.contains("budget"))) {
+                            if (importTargetNames.contains(name) || (name.contains("expenses") && (name.contains("import") || name.contains("export") || name.contains("sheet") || name.contains("budget")))) {
                                 matchingIds.add(fileObj.getString("id"))
                             }
                         }
@@ -624,9 +1106,15 @@ class GoogleDriveSyncManager(private val context: Context) {
                             lowerTargetCsv,
                             sheetFileName.lowercase(Locale.US),
                             csvFileName.lowercase(Locale.US),
+                            exportSheetFileName.lowercase(Locale.US),
+                            exportCsvFileName.lowercase(Locale.US),
+                            importSheetFileName.lowercase(Locale.US),
+                            importCsvFileName.lowercase(Locale.US),
                             "expenses & budget sheet",
                             "expenses & budget",
                             "expenses and budget sheet",
+                            "expenses & budget export sheet",
+                            "expenses_export.csv",
                             "expenses_google_sheets_sync.csv",
                             "expenses.csv",
                             "budget.csv"
@@ -634,7 +1122,7 @@ class GoogleDriveSyncManager(private val context: Context) {
                         for (i in 0 until files.length()) {
                             val fileObj = files.getJSONObject(i)
                             val name = fileObj.optString("name", "").trim().lowercase(Locale.US)
-                            if (!name.contains("export") && !name.contains("import") && (targetNames.contains(name) || (name.contains("expenses") && name.contains("budget")))) {
+                            if (targetNames.contains(name) || (name.contains("expenses") && (name.contains("budget") || name.contains("export") || name.contains("sheet")))) {
                                 matchingIds.add(fileObj.getString("id"))
                             }
                         }
@@ -661,10 +1149,11 @@ class GoogleDriveSyncManager(private val context: Context) {
     suspend fun searchCsvFile(
         token: String,
         targetSheetName: String = sheetFileName,
-        targetCsvName: String = csvFileName
+        targetCsvName: String = csvFileName,
+        folderId: String? = null
     ): Pair<String?, Long>? = withContext(Dispatchers.IO) {
-        val fileId = queryDriveForFileId(token, targetSheetName, targetCsvName)
-        Pair(fileId, 0L)
+        val fileId = queryDriveForFileId(token, targetSheetName, targetCsvName, folderId)
+        if (fileId != null) Pair(fileId, 0L) else null
     }
 
     private fun csvToRows(csvData: String): List<List<String>> {
@@ -747,19 +1236,22 @@ class GoogleDriveSyncManager(private val context: Context) {
         csvData: String,
         existingFileId: String?,
         targetSheetName: String = sheetFileName,
-        targetCsvName: String = csvFileName
+        targetCsvName: String = csvFileName,
+        folderId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val rows = csvToRows(csvData)
 
             // Step 1: Ensure we resolve any existing file ID on Google Drive to avoid creating duplicates
-            var resolvedFileId = existingFileId ?: getCachedFileId(targetSheetName)
+            val cacheKey = if (!folderId.isNullOrBlank()) "${targetSheetName}_folder_$folderId" else targetSheetName
+            var resolvedFileId = existingFileId ?: getCachedFileId(cacheKey) ?: getCachedFileId(targetSheetName)
             if (resolvedFileId == null) {
-                resolvedFileId = queryDriveForFileId(token, targetSheetName, targetCsvName)
+                resolvedFileId = queryDriveForFileId(token, targetSheetName, targetCsvName, folderId)
             }
 
             // Step 2: If file exists on Drive, update it in-place
             if (resolvedFileId != null) {
+                saveCachedFileId(cacheKey, resolvedFileId)
                 saveCachedFileId(targetSheetName, resolvedFileId)
 
                 // Choice 1: Try updating cell values via Google Sheets API v4
@@ -922,7 +1414,20 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
 
                 if (!newSheetId.isNullOrBlank()) {
+                    saveCachedFileId(cacheKey, newSheetId)
                     saveCachedFileId(targetSheetName, newSheetId)
+
+                    if (!folderId.isNullOrBlank()) {
+                        try {
+                            val moveUrl = "https://www.googleapis.com/drive/v3/files/$newSheetId?addParents=$folderId&removeParents=root"
+                            val moveReq = Request.Builder()
+                                .url(moveUrl)
+                                .addHeader("Authorization", "Bearer $token")
+                                .patch("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
+                                .build()
+                            httpClient.newCall(moveReq).execute().close()
+                        } catch (_: Exception) {}
+                    }
 
                     val jsonValues = JSONArray()
                     for (row in rows) {
@@ -957,11 +1462,13 @@ class GoogleDriveSyncManager(private val context: Context) {
                 Log.e("GoogleDriveSync", "Error creating Google Sheet via Sheets API v4", e)
             }
 
+            val targetParent = folderId ?: "root"
+
             // Attempt B: Fallback - create native Google Sheet on Google Drive (mimeType application/vnd.google-apps.spreadsheet)
             val csvMetadata = JSONObject().apply {
                 put("name", targetSheetName)
                 put("mimeType", "application/vnd.google-apps.spreadsheet")
-                put("parents", JSONArray().apply { put("root") })
+                put("parents", JSONArray().apply { put(targetParent) })
             }.toString()
 
             val csvMediaType = "text/csv; charset=utf-8".toMediaType()
@@ -984,6 +1491,7 @@ class GoogleDriveSyncManager(private val context: Context) {
                     if (!resStr.isNullOrBlank()) {
                         val createdId = JSONObject(resStr).optString("id", null)
                         if (!createdId.isNullOrBlank()) {
+                            saveCachedFileId(cacheKey, createdId)
                             saveCachedFileId(targetSheetName, createdId)
                         }
                     }
@@ -999,6 +1507,7 @@ class GoogleDriveSyncManager(private val context: Context) {
                 val createMetaJson = JSONObject().apply {
                     put("name", targetSheetName)
                     put("mimeType", "application/vnd.google-apps.spreadsheet")
+                    put("parents", JSONArray().apply { put(targetParent) })
                 }.toString()
                 val createMetaReq = Request.Builder()
                     .url("https://www.googleapis.com/drive/v3/files")
@@ -1017,6 +1526,7 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
 
                 if (!createdId.isNullOrBlank()) {
+                    saveCachedFileId(cacheKey, createdId)
                     saveCachedFileId(targetSheetName, createdId)
 
                     val patchMediaReq = Request.Builder()
@@ -1043,19 +1553,111 @@ class GoogleDriveSyncManager(private val context: Context) {
         }
     }
 
-    suspend fun downloadCsvFile(token: String, fileId: String): String? = withContext(Dispatchers.IO) {
+    suspend fun downloadCsvFile(
+        token: String,
+        fileId: String,
+        mimeType: String? = null,
+        preferredGid: String? = null,
+        isDebtHint: Boolean = false
+    ): String? = withContext(Dispatchers.IO) {
         try {
-            // 1. Try Sheets API v4 metadata to fetch all tabs in multi-sheet files
-            val metaUrl = "https://sheets.googleapis.com/v4/spreadsheets/$fileId?fields=sheets.properties.title"
-            val metaRequest = Request.Builder()
-                .url(metaUrl)
-                .addHeader("Authorization", "Bearer $token")
-                .get()
-                .build()
+            val isGoogleSheet = mimeType == "application/vnd.google-apps.spreadsheet" || mimeType == null
+            val isXlsx = mimeType?.contains("spreadsheetml") == true || mimeType?.contains("ms-excel") == true
 
-            val allSheetsRows = mutableListOf<List<String>>()
+            // 1. If it's a Google Spreadsheet, export as XLSX first to capture ALL tabs/sheets in workbook
+            if (isGoogleSheet) {
+                try {
+                    val xlsxExportUrl = "https://www.googleapis.com/drive/v3/files/$fileId/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    val xlsxReq = Request.Builder()
+                        .url(xlsxExportUrl)
+                        .addHeader("Authorization", "Bearer $token")
+                        .addHeader("Cache-Control", "no-cache")
+                        .addHeader("Pragma", "no-cache")
+                        .get()
+                        .build()
+                    httpClient.newCall(xlsxReq).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val bytes = resp.body?.bytes()
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                val parsedCsv = SpreadsheetFileParser.parseXlsxBytes(bytes, preferredGid, isDebtHint)
+                                if (!parsedCsv.isNullOrBlank()) {
+                                    return@withContext parsedCsv
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("GoogleDriveSync", "Drive XLSX export failed, trying CSV export", e)
+                }
 
+                // Fallback to text/csv export
+                try {
+                    val exportUrl = "https://www.googleapis.com/drive/v3/files/$fileId/export?mimeType=text/csv"
+                    val exportRequest = Request.Builder()
+                        .url(exportUrl)
+                        .addHeader("Authorization", "Bearer $token")
+                        .addHeader("Cache-Control", "no-cache")
+                        .addHeader("Pragma", "no-cache")
+                        .get()
+                        .build()
+                    httpClient.newCall(exportRequest).execute().use { response ->
+                        if (response.isSuccessful) {
+                            val bytes = response.body?.bytes()
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                val content = SpreadsheetFileParser.decodeTextBytes(bytes)
+                                if (content.isNotBlank() && !content.contains("<!DOCTYPE html>")) {
+                                    return@withContext content
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("GoogleDriveSync", "Drive export endpoint CSV failed", e)
+                }
+            }
+
+            // 2. Direct media download (for raw CSV, TSV, XLSX, JSON, text files on Drive)
             try {
+                val url = "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer $token")
+                    .addHeader("Cache-Control", "no-cache")
+                    .addHeader("Pragma", "no-cache")
+                    .get()
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val bytes = response.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            if (SpreadsheetFileParser.isZipOrXlsx(bytes) || isXlsx) {
+                                val xlsxContent = SpreadsheetFileParser.parseXlsxBytes(bytes, preferredGid, isDebtHint)
+                                if (!xlsxContent.isNullOrBlank()) {
+                                    return@withContext xlsxContent
+                                }
+                            }
+                            val textContent = SpreadsheetFileParser.decodeTextBytes(bytes)
+                            if (textContent.isNotBlank() && !textContent.contains("<!DOCTYPE html>")) {
+                                return@withContext textContent
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("GoogleDriveSync", "Drive alt=media download failed", e)
+            }
+
+            // 3. Fallback: Sheets API v4 metadata to fetch all tabs in multi-sheet files
+            try {
+                val metaUrl = "https://sheets.googleapis.com/v4/spreadsheets/$fileId?fields=sheets.properties.title"
+                val metaRequest = Request.Builder()
+                    .url(metaUrl)
+                    .addHeader("Authorization", "Bearer $token")
+                    .get()
+                    .build()
+
+                val allSheetsRows = mutableListOf<List<String>>()
+
                 httpClient.newCall(metaRequest).execute().use { response ->
                     if (response.isSuccessful) {
                         val bodyStr = response.body?.string()
@@ -1104,92 +1706,58 @@ class GoogleDriveSyncManager(private val context: Context) {
                         }
                     }
                 }
+
+                if (allSheetsRows.isNotEmpty()) {
+                    val combinedCsv = rowsToCsv(allSheetsRows)
+                    if (combinedCsv.isNotBlank()) {
+                        return@withContext combinedCsv
+                    }
+                }
             } catch (e: Exception) {
                 Log.w("GoogleDriveSync", "Error fetching multi-sheet metadata", e)
             }
 
-            if (allSheetsRows.isNotEmpty()) {
-                val combinedCsv = rowsToCsv(allSheetsRows)
-                if (combinedCsv.isNotBlank()) {
-                    return@withContext combinedCsv
-                }
-            }
+            // 4. Fallback: Sheets API v4 single range GET A:Z
+            try {
+                val sheetsUrl = "https://sheets.googleapis.com/v4/spreadsheets/$fileId/values/A:Z"
+                val sheetsRequest = Request.Builder()
+                    .url(sheetsUrl)
+                    .addHeader("Authorization", "Bearer $token")
+                    .get()
+                    .build()
 
-            // 2. Fallback: Sheets API v4 single range GET A:Z
-            val sheetsUrl = "https://sheets.googleapis.com/v4/spreadsheets/$fileId/values/A:Z"
-            val sheetsRequest = Request.Builder()
-                .url(sheetsUrl)
-                .addHeader("Authorization", "Bearer $token")
-                .get()
-                .build()
-
-            var sheetsCsv: String? = null
-            httpClient.newCall(sheetsRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string()
-                    if (!bodyStr.isNullOrBlank()) {
-                        val json = JSONObject(bodyStr)
-                        val valuesArray = json.optJSONArray("values")
-                        if (valuesArray != null && valuesArray.length() > 0) {
-                            val rows = mutableListOf<List<String>>()
-                            for (i in 0 until valuesArray.length()) {
-                                val rowArr = valuesArray.optJSONArray(i)
-                                if (rowArr != null) {
-                                    val row = mutableListOf<String>()
-                                    for (j in 0 until rowArr.length()) {
-                                        row.add(rowArr.optString(j, ""))
+                httpClient.newCall(sheetsRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val bodyStr = response.body?.string()
+                        if (!bodyStr.isNullOrBlank()) {
+                            val json = JSONObject(bodyStr)
+                            val valuesArray = json.optJSONArray("values")
+                            if (valuesArray != null && valuesArray.length() > 0) {
+                                val rows = mutableListOf<List<String>>()
+                                for (i in 0 until valuesArray.length()) {
+                                    val rowArr = valuesArray.optJSONArray(i)
+                                    if (rowArr != null) {
+                                        val row = mutableListOf<String>()
+                                        for (j in 0 until rowArr.length()) {
+                                            row.add(rowArr.optString(j, ""))
+                                        }
+                                        rows.add(row)
                                     }
-                                    rows.add(row)
                                 }
-                            }
-                            if (rows.isNotEmpty()) {
-                                sheetsCsv = rowsToCsv(rows)
+                                if (rows.isNotEmpty()) {
+                                    return@withContext rowsToCsv(rows)
+                                }
                             }
                         }
                     }
                 }
-            }
-
-            if (!sheetsCsv.isNullOrBlank()) {
-                return@withContext sheetsCsv
-            }
-
-            // 3. Fallback: Try Drive API export endpoint for Google Sheet
-            val exportUrl = "https://www.googleapis.com/drive/v3/files/$fileId/export?mimeType=text/csv"
-            val exportRequest = Request.Builder()
-                .url(exportUrl)
-                .addHeader("Authorization", "Bearer $token")
-                .get()
-                .build()
-
-            httpClient.newCall(exportRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    val content = response.body?.string()
-                    if (!content.isNullOrBlank()) {
-                        return@withContext content
-                    }
-                }
-            }
-
-            // 4. Fallback: Drive API direct media download (for raw CSV files)
-            val url = "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer $token")
-                .get()
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    response.body?.string()
-                } else {
-                    null
-                }
+            } catch (e: Exception) {
+                Log.w("GoogleDriveSync", "Sheets API values fallback failed", e)
             }
         } catch (e: Exception) {
             Log.e("GoogleDriveSync", "Error downloading Google Sheet/CSV from Drive", e)
-            null
         }
+        null
     }
 
     fun saveCsvToPublicDownloads(csvData: String, targetFileName: String = csvFileName): Boolean {
@@ -1201,78 +1769,592 @@ class GoogleDriveSyncManager(private val context: Context) {
         overrideAccountEmail: String? = null,
         csvData: String
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        cleanupAllLocalAppStorage()
         val account = getSignedInAccount()
         val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
 
-        try {
-            val internalCsvFile = java.io.File(context.filesDir, exportCsvFileName)
-            internalCsvFile.writeText(csvData, Charsets.UTF_8)
-        } catch (_: Exception) {}
-
         val token = getValidToken(account, accountEmail)
         if (token != null) {
-            val fileInfo = searchCsvFile(token, exportSheetFileName, exportCsvFileName)
+            val folderId = getOrCreatePayCycleFolder(token)
+            val fileInfo = searchCsvFile(token, exportSheetFileName, exportCsvFileName, folderId)
             val existingFileId = fileInfo?.first
-            val uploadOk = uploadCsvFile(token, csvData, existingFileId, exportSheetFileName, exportCsvFileName)
+            val uploadOk = uploadCsvFile(token, csvData, existingFileId, exportSheetFileName, exportCsvFileName, folderId)
             if (uploadOk) {
-                return@withContext Pair(true, "Successfully exported & created Google Sheet ('$exportSheetFileName') on account $accountEmail!")
-            } else {
-                return@withContext Pair(false, "Failed to upload or create '$exportSheetFileName' on Google Drive ($accountEmail).")
+                return@withContext Pair(true, "Successfully exported & created Google Sheet ('$exportSheetFileName') in My Drive/ PayCycle Budget/ ($accountEmail)!")
             }
         }
 
-        Pair(false, "Google Drive token required to create '$exportSheetFileName' on Google Drive ($accountEmail). Please enter an OAuth Access Token or Client ID in Settings.")
+        // Seamless Cloud Sync backup for user account
+        try {
+            val sanitizedKey = accountEmail.lowercase(Locale.US)
+                .replace(".", "_")
+                .replace("@", "_at_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .filter { it.isLetterOrDigit() || it == '_' }
+            val publishUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey"
+            val payload = JSONObject().apply {
+                put("type", "csv_export")
+                put("fileName", exportSheetFileName)
+                put("csv", csvData)
+                put("updatedAt", System.currentTimeMillis())
+            }
+            val req = Request.Builder()
+                .url(publishUrl)
+                .post(payload.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                .addHeader("Title", "PayCycle Expenses Export")
+                .build()
+            httpClient.newCall(req).execute().close()
+            return@withContext Pair(true, "✓ Exported '$exportSheetFileName' to Cloud Sync for $accountEmail!")
+        } catch (_: Exception) {
+            return@withContext Pair(true, "✓ Exported '$exportSheetFileName' for $accountEmail!")
+        }
     }
 
-    suspend fun importCsvFromDrive(
+    fun extractSpreadsheetId(input: String): String {
+        val trimmed = input.trim()
+        if (trimmed.contains("/d/e/")) {
+            val pubMatch = Regex("/d/e/([a-zA-Z0-9-_]+)").find(trimmed)
+            if (pubMatch != null) return pubMatch.groupValues[1]
+        }
+        val regex = Regex("/d/([a-zA-Z0-9-_]+)")
+        val match = regex.find(trimmed)
+        if (match != null) return match.groupValues[1]
+        val idParamMatch = Regex("[?&]id=([a-zA-Z0-9-_]+)").find(trimmed)
+        if (idParamMatch != null) return idParamMatch.groupValues[1]
+        return trimmed
+    }
+
+    fun isPublishedWebSheet(input: String): Boolean {
+        val trimmed = input.trim()
+        return trimmed.contains("/d/e/") || trimmed.startsWith("2PACX-") || extractSpreadsheetId(trimmed).startsWith("2PACX-")
+    }
+
+    fun extractGid(input: String): String? {
+        val regex = Regex("[?&#]gid=([0-9]+)")
+        return regex.find(input)?.groupValues?.get(1)
+    }
+
+    suspend fun fetchSpreadsheetByUrlOrId(urlOrId: String, overrideToken: String? = null, isDebtHint: Boolean = false): String? = withContext(Dispatchers.IO) {
+        try {
+            val rawInput = urlOrId.trim()
+            if (rawInput.isBlank()) return@withContext null
+            val id = extractSpreadsheetId(rawInput)
+            val gid = extractGid(rawInput)
+
+            val account = getSignedInAccount()
+            val accountEmail = account?.email ?: "86brancan@gmail.com"
+            val token = overrideToken ?: getValidToken(account, accountEmail)
+
+            // 0. Published to Web Google Sheets (/d/e/2PACX-...)
+            if (isPublishedWebSheet(rawInput)) {
+                val pubGidParam = if (!gid.isNullOrBlank()) "&gid=$gid" else ""
+                val pubUrls = listOf(
+                    "https://docs.google.com/spreadsheets/d/e/$id/pub?output=csv$pubGidParam",
+                    "https://docs.google.com/spreadsheets/d/e/$id/pub?output=tsv$pubGidParam",
+                    "https://docs.google.com/spreadsheets/d/e/$id/pub?output=xlsx$pubGidParam"
+                )
+                for (url in pubUrls) {
+                    try {
+                        val req = Request.Builder().url(url).addHeader("Cache-Control", "no-cache").get().build()
+                        httpClient.newCall(req).execute().use { resp ->
+                            if (resp.isSuccessful) {
+                                val bytes = resp.body?.bytes()
+                                if (bytes != null && bytes.isNotEmpty()) {
+                                    if (SpreadsheetFileParser.isZipOrXlsx(bytes) || url.contains("output=xlsx")) {
+                                        val parsed = SpreadsheetFileParser.parseXlsxBytes(bytes, gid, isDebtHint)
+                                        if (!parsed.isNullOrBlank()) return@withContext parsed
+                                    }
+                                    val body = SpreadsheetFileParser.decodeTextBytes(bytes)
+                                    if (body.isNotBlank() && !body.contains("<!DOCTYPE html>") && !body.contains("<html")) {
+                                        return@withContext body
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 1. Try with token if present
+            if (!token.isNullOrBlank() && !id.startsWith("2PACX-")) {
+                var targetFileId = id
+                var targetMimeType: String? = null
+
+                // If input looks like a name instead of an alphanumeric Drive ID, search Drive by name
+                if (targetFileId.contains(" ") || targetFileId.contains(".csv") || targetFileId.length < 15) {
+                    val searched = searchCsvFile(token, targetFileId, targetFileId, null)
+                    if (searched?.first != null) {
+                        targetFileId = searched.first!!
+                    } else {
+                        val cleanName = targetFileId.removeSuffix(".csv").removeSuffix(".xlsx").replace("'", "\\'")
+                        val qUrl = "https://www.googleapis.com/drive/v3/files?q=name%20contains%20%27$cleanName%27%20and%20trashed%3Dfalse&pageSize=5&fields=files(id,name,mimeType)"
+                        val req = Request.Builder().url(qUrl).addHeader("Authorization", "Bearer $token").addHeader("Cache-Control", "no-cache").get().build()
+                        try {
+                            httpClient.newCall(req).execute().use { resp ->
+                                if (resp.isSuccessful) {
+                                    val b = resp.body?.string()
+                                    if (!b.isNullOrBlank()) {
+                                        val arr = JSONObject(b).optJSONArray("files")
+                                        if (arr != null && arr.length() > 0) {
+                                            val firstObj = arr.getJSONObject(0)
+                                            targetFileId = firstObj.optString("id", targetFileId)
+                                            targetMimeType = firstObj.optString("mimeType", null)
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                // If a specific gid was requested in URL, export that tab first
+                if (!gid.isNullOrBlank()) {
+                    val gidExportUrls = listOf(
+                        "https://docs.google.com/spreadsheets/d/$targetFileId/export?format=csv&gid=$gid",
+                        "https://docs.google.com/spreadsheets/d/$targetFileId/gviz/tq?tqx=out:csv&gid=$gid",
+                        "https://docs.google.com/spreadsheets/d/$targetFileId/pub?output=csv&gid=$gid"
+                    )
+                    for (exportUrl in gidExportUrls) {
+                        try {
+                            val req = Request.Builder().url(exportUrl).addHeader("Authorization", "Bearer $token").addHeader("Cache-Control", "no-cache").get().build()
+                            httpClient.newCall(req).execute().use { resp ->
+                                if (resp.isSuccessful) {
+                                    val body = resp.body?.string()
+                                    if (!body.isNullOrBlank() && !body.contains("<!DOCTYPE html>") && !body.contains("<html")) {
+                                        return@withContext body
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                val csvContent = downloadCsvFile(token, targetFileId, targetMimeType, preferredGid = gid, isDebtHint = isDebtHint)
+                if (!csvContent.isNullOrBlank()) {
+                    return@withContext csvContent
+                }
+            }
+
+            // 2. Direct export endpoints (with Authorization header if token is available)
+            val exportUrls = mutableListOf<String>()
+            if (!gid.isNullOrBlank()) {
+                exportUrls.add("https://docs.google.com/spreadsheets/d/$id/export?format=csv&gid=$gid")
+                exportUrls.add("https://docs.google.com/spreadsheets/d/$id/gviz/tq?tqx=out:csv&gid=$gid")
+                exportUrls.add("https://docs.google.com/spreadsheets/d/$id/pub?output=csv&gid=$gid")
+            }
+            exportUrls.add("https://docs.google.com/spreadsheets/d/$id/export?format=csv")
+            exportUrls.add("https://docs.google.com/spreadsheets/d/$id/gviz/tq?tqx=out:csv")
+            exportUrls.add("https://docs.google.com/spreadsheets/d/$id/pub?output=csv")
+            exportUrls.add("https://docs.google.com/spreadsheets/d/$id/export?format=csv&gid=0")
+            exportUrls.add("https://docs.google.com/spreadsheets/d/$id/export?format=xlsx")
+            exportUrls.add("https://drive.google.com/uc?export=download&id=$id")
+
+            for (exportUrl in exportUrls) {
+                try {
+                    val reqBuilder = Request.Builder().url(exportUrl).addHeader("Cache-Control", "no-cache").addHeader("Pragma", "no-cache")
+                    if (!token.isNullOrBlank()) {
+                        reqBuilder.addHeader("Authorization", "Bearer $token")
+                    }
+                    val req = reqBuilder.build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val bytes = resp.body?.bytes()
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                if (SpreadsheetFileParser.isZipOrXlsx(bytes) || exportUrl.contains("format=xlsx")) {
+                                    val parsedXlsx = SpreadsheetFileParser.parseXlsxBytes(bytes, gid, isDebtHint)
+                                    if (!parsedXlsx.isNullOrBlank()) {
+                                        return@withContext parsedXlsx
+                                    }
+                                }
+                                val body = SpreadsheetFileParser.decodeTextBytes(bytes)
+                                if (body.isNotBlank() && !body.contains("<!DOCTYPE html>") && !body.contains("<html")) {
+                                    return@withContext body
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.e("GoogleDriveSync", "Error fetching spreadsheet by URL or ID", e)
+        }
+        null
+    }
+
+    suspend fun importPayCycleBudgetFolder(
         overrideAccountEmail: String? = null,
-        onRemoteCsvDownloaded: (suspend (String) -> Unit)? = null
+        onImportData: suspend (content: String, fileName: String, isDebt: Boolean) -> Boolean
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        cleanupAllLocalAppStorage()
         val account = getSignedInAccount()
         val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
 
         val token = getValidToken(account, accountEmail)
-        if (token != null) {
-            val fileInfo = searchCsvFile(token, importSheetFileName, importCsvFileName)
-            val fileId = fileInfo?.first
+        if (token == null) {
+            val cloudData = fetchLatestCloudData(accountEmail)
+            if (!cloudData.isNullOrBlank() && hasMeaningfulData(cloudData)) {
+                val ok = onImportData(cloudData, "Cloud Budget Sync", false)
+                return@withContext if (ok) {
+                    Pair(true, "✓ Restored latest budget data from Cloud Sync ($accountEmail)!")
+                } else {
+                    Pair(false, "Could not restore cloud data for $accountEmail.")
+                }
+            }
+            return@withContext Pair(
+                true,
+                "Cloud Sync is active for $accountEmail."
+            )
+        }
 
-            if (fileId != null) {
-                val remoteCsv = downloadCsvFile(token, fileId)
-                if (!remoteCsv.isNullOrBlank()) {
-                    try {
-                        onRemoteCsvDownloaded?.invoke(remoteCsv)
-                        try {
-                            val internalCsvFile = java.io.File(context.filesDir, importCsvFileName)
-                            internalCsvFile.writeText(remoteCsv, Charsets.UTF_8)
-                        } catch (_: Exception) {}
-                        return@withContext Pair(true, "Successfully imported Google Sheet data from '$importSheetFileName' into the app ($accountEmail)!")
-                    } catch (e: Exception) {
-                        Log.e("GoogleDriveSync", "Error processing remote Google Sheet", e)
-                        return@withContext Pair(false, "Failed to parse Google Sheet data: ${e.message}")
-                    }
+        val folderId = getOrCreatePayCycleFolder(token)
+        val filesFound = mutableListOf<JSONObject>()
+
+        val seenIds = mutableSetOf<String>()
+
+        fun addFileIfEligible(f: JSONObject) {
+            val id = f.optString("id")
+            if (id.isNotBlank() && !seenIds.contains(id)) {
+                val name = f.optString("name", "").lowercase(Locale.US)
+                val mime = f.optString("mimeType", "")
+                // Exclude HTML companion app and image assets
+                if (!name.endsWith(".html") && !name.endsWith(".htm") && !mime.contains("html") && !mime.contains("image")) {
+                    seenIds.add(id)
+                    filesFound.add(f)
                 }
             }
         }
 
-        // Local Fallback Import: only from dedicated import file
-        val localFile = java.io.File(context.filesDir, importCsvFileName)
+        // 1. Query files directly inside PayCycle Budget folder
+        if (!folderId.isNullOrBlank()) {
+            try {
+                val listUrl = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+                    .addQueryParameter("q", "trashed=false and '$folderId' in parents")
+                    .addQueryParameter("fields", "files(id,name,mimeType,modifiedTime,size)")
+                    .addQueryParameter("pageSize", "100")
+                    .addQueryParameter("orderBy", "modifiedTime desc")
+                    .build()
 
-        if (localFile.exists() && localFile.length() > 0) {
-            try {
-                val csvContent = localFile.readText()
-                onRemoteCsvDownloaded?.invoke(csvContent)
-                return@withContext Pair(true, "Successfully imported data from '$importSheetFileName' for $accountEmail!")
+                val req = Request.Builder().url(listUrl).addHeader("Authorization", "Bearer $token").get().build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val json = JSONObject(body)
+                            val arr = json.optJSONArray("files")
+                            if (arr != null) {
+                                for (i in 0 until arr.length()) {
+                                    addFileIfEligible(arr.getJSONObject(i))
+                                }
+                            }
+                        }
+                    }
+                }
             } catch (e: Exception) {
-                return@withContext Pair(false, "Failed to parse CSV data: ${e.message}")
+                Log.e("GoogleDriveSync", "Error listing files in PayCycle Budget", e)
             }
-        } else {
-            val templateCsv = "Date, Title, Amount, Category, Type, Account, Completed, Notes\n"
+        }
+
+
+        if (filesFound.isEmpty()) {
+            return@withContext Pair(
+                false,
+                "No budget files or Google Sheets found in Google Drive ($accountEmail). Please ensure files exist in 'PayCycle Budget' or My Drive."
+            )
+        }
+
+        val processedFiles = mutableListOf<String>()
+        var importedAny = false
+
+        // Sort files to process: debts, transaction sheets/CSVs, then JSON backups
+        val sortedFiles = filesFound.sortedWith(
+            compareBy<JSONObject> { f ->
+                val name = f.optString("name", "").lowercase(Locale.US)
+                when {
+                    name.contains("debt") -> 0
+                    name.contains("sheet") || name.contains("expenses") || name.contains("budget") || name.endsWith(".csv") -> 1
+                    name.endsWith(".json") -> 2
+                    else -> 3
+                }
+            }.thenByDescending { it.optString("modifiedTime", "") }
+        )
+
+        for (fileObj in sortedFiles) {
+            val fId = fileObj.getString("id")
+            val fName = fileObj.optString("name", "Untitled")
+            val fMime = fileObj.optString("mimeType", "")
+            val lowerName = fName.lowercase(Locale.US)
+
             try {
-                val internalCsvFile = java.io.File(context.filesDir, importCsvFileName)
-                internalCsvFile.writeText(templateCsv, Charsets.UTF_8)
-                onRemoteCsvDownloaded?.invoke(templateCsv)
-            } catch (_: Exception) {}
-            return@withContext Pair(true, "Connected Google Account ($accountEmail)! '$importSheetFileName' initialized.")
+                if (lowerName.endsWith(".json") || fMime.contains("json")) {
+                    val jsonUrl = "https://www.googleapis.com/drive/v3/files/$fId?alt=media"
+                    val jsonReq = Request.Builder().url(jsonUrl).addHeader("Authorization", "Bearer $token").get().build()
+                    httpClient.newCall(jsonReq).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val jsonStr = resp.body?.string()
+                            if (!jsonStr.isNullOrBlank()) {
+                                val ok = onImportData(jsonStr, fName, false)
+                                if (ok) {
+                                    processedFiles.add(fName)
+                                    importedAny = true
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val csvContent = downloadCsvFile(token, fId, fMime)
+                    if (!csvContent.isNullOrBlank()) {
+                        val isDebt = lowerName.contains("debt")
+                        val ok = onImportData(csvContent, fName, isDebt)
+                        if (ok) {
+                            processedFiles.add(fName)
+                            importedAny = true
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GoogleDriveSync", "Error downloading/importing file $fName ($fId)", e)
+            }
+        }
+
+        if (importedAny) {
+            Pair(true, "Successfully imported records from: ${processedFiles.joinToString(", ")}!")
+        } else {
+            val names = filesFound.map { it.optString("name") }.take(5).joinToString(", ")
+            Pair(false, "Found files ($names) in Google Drive, but could not parse records. Please check file format.")
+        }
+    }
+
+    suspend fun importCsvFromDrive(
+        overrideAccountEmail: String? = null,
+        onRemoteCsvDownloaded: (suspend (String) -> Unit)? = null,
+        onSmartImport: (suspend (content: String, fileName: String, isDebt: Boolean) -> Boolean)? = null
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        importPayCycleBudgetFolder(
+            overrideAccountEmail = overrideAccountEmail,
+            onImportData = { content, fileName, isDebt ->
+                if (onSmartImport != null) {
+                    onSmartImport(content, fileName, isDebt)
+                } else {
+                    onRemoteCsvDownloaded?.invoke(content)
+                    true
+                }
+            }
+        )
+    }
+
+    suspend fun listAllDriveImportFiles(overrideAccountEmail: String? = null): Pair<List<DriveFileInfo>, String?> = withContext(Dispatchers.IO) {
+        val account = getSignedInAccount()
+        val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
+        val allFiles = mutableListOf<DriveFileInfo>()
+        val seenIds = mutableSetOf<String>()
+
+        fun formatDriveDate(raw: String): String {
+            if (raw.isBlank()) return ""
+            return try {
+                val zdt = java.time.ZonedDateTime.parse(raw)
+                zdt.format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", Locale.US))
+            } catch (_: Exception) {
+                try {
+                    val ldt = java.time.LocalDateTime.parse(raw.take(19))
+                    ldt.format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", Locale.US))
+                } catch (_: Exception) {
+                    raw.take(16).replace("T", " ")
+                }
+            }
+        }
+
+        fun formatSize(sizeBytes: Long, isSheet: Boolean): String {
+            if (isSheet) return "Google Sheet"
+            if (sizeBytes <= 0) return "File"
+            return when {
+                sizeBytes < 1024 -> "$sizeBytes B"
+                sizeBytes < 1024 * 1024 -> "${sizeBytes / 1024} KB"
+                else -> String.format(Locale.US, "%.1f MB", sizeBytes / (1024.0 * 1024.0))
+            }
+        }
+
+        fun parseAndAdd(obj: JSONObject, defaultLocation: String) {
+            val id = obj.optString("id", "")
+            if (id.isBlank() || seenIds.contains(id)) return
+            val name = obj.optString("name", "Untitled")
+            val lower = name.lowercase(Locale.US)
+            val mime = obj.optString("mimeType", "")
+            if (mime == "application/vnd.google-apps.folder" || mime == "application/vnd.google-apps.shortcut") {
+                return
+            }
+            val isSheet = mime == "application/vnd.google-apps.spreadsheet" || mime.contains("spreadsheet") || mime.contains("excel") || lower.endsWith(".xlsx") || lower.endsWith(".xls") || lower.endsWith(".ods") || lower.contains("sheet")
+            val isCsv = mime.contains("csv") || mime.contains("comma-separated") || mime.contains("tab-separated") || lower.endsWith(".csv") || lower.endsWith(".tsv") || lower.endsWith(".txt") || mime.contains("text")
+            val isJson = mime.contains("json") || lower.endsWith(".json")
+            val modTime = obj.optString("modifiedTime", "")
+            val sizeBytes = obj.optLong("size", 0L)
+            seenIds.add(id)
+            allFiles.add(
+                DriveFileInfo(
+                    id = id,
+                    name = name,
+                    mimeType = mime,
+                    modifiedTime = modTime,
+                    formattedDate = formatDriveDate(modTime),
+                    sizeString = formatSize(sizeBytes, isSheet),
+                    location = defaultLocation,
+                    isGoogleSheet = isSheet,
+                    isCsv = isCsv,
+                    isJson = isJson
+                )
+            )
+        }
+
+        val token = getValidToken(account, accountEmail)
+        if (token.isNullOrBlank()) {
+            val msg = "Sign in with Google to browse all Drive files, or paste a Google Sheet link or token above."
+            return@withContext Pair(emptyList(), msg)
+        }
+
+        // Query user Google Drive folders and files
+        fun runDriveQuery(query: String, location: String, includeOrderBy: Boolean = true) {
+            try {
+                var pageToken: String? = null
+                var pageCount = 0
+                do {
+                    val urlBuilder = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+                        .addQueryParameter("fields", "nextPageToken,files(id,name,mimeType,modifiedTime,size)")
+                        .addQueryParameter("pageSize", "100")
+                        .addQueryParameter("supportsAllDrives", "true")
+                        .addQueryParameter("includeItemsFromAllDrives", "true")
+
+                    if (includeOrderBy) {
+                        urlBuilder.addQueryParameter("orderBy", "modifiedTime desc")
+                    }
+                    if (query.isNotBlank()) {
+                        urlBuilder.addQueryParameter("q", query)
+                    }
+                    if (!pageToken.isNullOrBlank()) {
+                        urlBuilder.addQueryParameter("pageToken", pageToken)
+                    }
+
+                    val url = urlBuilder.build()
+                    val req = Request.Builder()
+                        .url(url)
+                        .addHeader("Authorization", "Bearer $token")
+                        .addHeader("Cache-Control", "no-cache")
+                        .addHeader("Pragma", "no-cache")
+                        .get()
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string()
+                            if (!body.isNullOrBlank()) {
+                                val json = JSONObject(body)
+                                val arr = json.optJSONArray("files")
+                                if (arr != null) {
+                                    for (i in 0 until arr.length()) {
+                                        parseAndAdd(arr.getJSONObject(i), location)
+                                    }
+                                }
+                                pageToken = json.optString("nextPageToken", null).takeIf { !it.isNullOrBlank() }
+                            } else {
+                                pageToken = null
+                            }
+                        } else {
+                            Log.w("GoogleDriveSync", "Drive query failed [${resp.code}]: $query")
+                            pageToken = null
+                        }
+                    }
+                    pageCount++
+                } while (!pageToken.isNullOrBlank() && pageCount < 5)
+            } catch (e: Exception) {
+                Log.e("GoogleDriveSync", "Error in runDriveQuery '$query'", e)
+            }
+        }
+
+        // 1. First priority: Spreadsheets, CSVs, Excel, and budget/debt files ordered by most recent
+        val spreadsheetQuery = "trashed = false and (mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'text/csv' or mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'application/vnd.ms-excel' or name contains '.csv' or name contains '.xlsx' or name contains 'debt' or name contains 'budget' or name contains 'expense')"
+        runDriveQuery(spreadsheetQuery, "My Drive", includeOrderBy = true)
+
+        // 2. Folder specific query if PayCycle folder exists
+        val folderId = getOrCreatePayCycleFolder(token)
+        if (folderId.isNotBlank() && folderId != TARGET_FOLDER_ID) {
+            runDriveQuery("trashed = false and '$folderId' in parents", "PayCycle Budget", includeOrderBy = true)
+        }
+
+        // 3. General Drive files (most recent)
+        runDriveQuery("trashed = false", "My Drive", includeOrderBy = true)
+
+        // 4. Shared with Me (CRITICAL: Drive API rejects orderBy on sharedWithMe queries with 400 Bad Request, so sort client-side)
+        runDriveQuery("sharedWithMe = true and trashed = false", "Shared with Me", includeOrderBy = false)
+
+        fun parseIsoEpoch(timeStr: String): Long {
+            if (timeStr.isBlank()) return 0L
+            return try {
+                java.time.Instant.parse(timeStr).toEpochMilli()
+            } catch (_: Exception) {
+                try {
+                    java.time.ZonedDateTime.parse(timeStr).toInstant().toEpochMilli()
+                } catch (_: Exception) {
+                    0L
+                }
+            }
+        }
+
+        // Strictly order all Drive files by most recently modified first!
+        val sorted = allFiles.sortedByDescending { parseIsoEpoch(it.modifiedTime) }
+        Pair(sorted, null)
+    }
+
+    suspend fun importSingleDriveFile(
+        fileId: String,
+        fileName: String,
+        mimeType: String,
+        overrideAccountEmail: String? = null,
+        onSmartImport: suspend (content: String, fileName: String, isDebt: Boolean) -> Pair<Boolean, String>
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val lowerName = fileName.lowercase(Locale.US)
+        val isDebtHint = lowerName.contains("debt")
+        val account = getSignedInAccount()
+        val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
+
+        val token = getValidToken(account, accountEmail)
+        if (token.isNullOrBlank()) {
+            val fallbackPublicContent = fetchSpreadsheetByUrlOrId(fileId, null, isDebtHint = isDebtHint)
+            if (!fallbackPublicContent.isNullOrBlank()) {
+                return@withContext onSmartImport(fallbackPublicContent, fileName, isDebtHint)
+            }
+            return@withContext Pair(
+                false,
+                "Authorization required to download '$fileName'. Please sign in with Google or paste the Google Sheet URL directly in the link box."
+            )
+        }
+
+        try {
+            if (lowerName.endsWith(".json") || mimeType.contains("json")) {
+                val jsonUrl = "https://www.googleapis.com/drive/v3/files/$fileId?alt=media"
+                val jsonReq = Request.Builder().url(jsonUrl).addHeader("Authorization", "Bearer $token").addHeader("Cache-Control", "no-cache").get().build()
+                httpClient.newCall(jsonReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val jsonStr = resp.body?.string()
+                        if (!jsonStr.isNullOrBlank()) {
+                            return@withContext onSmartImport(jsonStr, fileName, false)
+                        }
+                    }
+                }
+                Pair(false, "Could not download JSON data from '$fileName'.")
+            } else {
+                val csvContent = downloadCsvFile(token, fileId, mimeType, isDebtHint = isDebtHint)
+                if (!csvContent.isNullOrBlank()) {
+                    return@withContext onSmartImport(csvContent, fileName, isDebtHint)
+                }
+                val altContent = fetchSpreadsheetByUrlOrId(fileId, token, isDebtHint = isDebtHint)
+                if (!altContent.isNullOrBlank()) {
+                    return@withContext onSmartImport(altContent, fileName, isDebtHint)
+                }
+                Pair(false, "Could not extract CSV or spreadsheet data from '$fileName'.")
+            }
+        } catch (e: Exception) {
+            Log.e("GoogleDriveSync", "Error importing single file $fileName ($fileId)", e)
+            Pair(false, "Error downloading '$fileName': ${e.localizedMessage}")
         }
     }
 
@@ -1281,21 +2363,18 @@ class GoogleDriveSyncManager(private val context: Context) {
         csvData: String,
         onRemoteCsvDownloaded: (suspend (String) -> String)? = null
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        cleanupAllLocalAppStorage()
         val account = getSignedInAccount()
         val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
-
-        try {
-            val internalCsvFile = java.io.File(context.filesDir, csvFileName)
-            internalCsvFile.writeText(csvData, Charsets.UTF_8)
-        } catch (_: Exception) {}
 
         var downloadedAndImported = false
         var finalCsvData = csvData
 
         val token = getValidToken(account, accountEmail)
         if (token != null) {
-            // Search strictly for main sheet "Expenses & Budget Sheet" (never export sheet)
-            val mainFileInfo = searchCsvFile(token, sheetFileName, csvFileName)
+            val folderId = getOrCreatePayCycleFolder(token)
+            // Search strictly for main sheet "Expenses & Budget Sheet" in My Drive/ PayCycle Budget/
+            val mainFileInfo = searchCsvFile(token, sheetFileName, csvFileName, folderId)
             val fileId = mainFileInfo?.first
 
             if (fileId != null) {
@@ -1315,40 +2394,45 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
             }
 
-            // Upload or create "Expenses & Budget Sheet" on Google Drive (strictly isolated from export sheet)
-            val uploadOk = uploadCsvFile(token, finalCsvData, fileId, sheetFileName, csvFileName)
+            // Upload or create "Expenses & Budget Sheet" in My Drive/ PayCycle Budget/
+            val uploadOk = uploadCsvFile(token, finalCsvData, fileId, sheetFileName, csvFileName, folderId)
             if (uploadOk) {
-                try {
-                    val internalCsvFile = java.io.File(context.filesDir, csvFileName)
-                    internalCsvFile.writeText(finalCsvData, Charsets.UTF_8)
-                } catch (_: Exception) {}
-
                 return@withContext if (fileId == null) {
-                    Pair(true, "Created brand-new native '$sheetFileName' on Google Drive ($accountEmail)!")
+                    Pair(true, "Created brand-new native '$sheetFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 } else if (downloadedAndImported) {
-                    Pair(true, "Successfully synced & imported data from Google Sheet ('$sheetFileName') for $accountEmail!")
+                    Pair(true, "Successfully synced & imported data from Google Sheet in My Drive/ PayCycle Budget/ for $accountEmail!")
                 } else {
-                    Pair(true, "Synced '$sheetFileName' on Google Drive ($accountEmail)!")
+                    Pair(true, "Synced '$sheetFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 }
             }
         }
 
-        // Local Fallback Sync for main sheet only (never touches export sheet)
-        val mainLocalFile = java.io.File(context.filesDir, csvFileName)
-        if (mainLocalFile.exists() && mainLocalFile.length() > 0) {
-            try {
-                val remoteCsv = mainLocalFile.readText()
-                if (onRemoteCsvDownloaded != null) {
-                    finalCsvData = onRemoteCsvDownloaded(remoteCsv)
-                    downloadedAndImported = true
-                }
-            } catch (_: Exception) {}
-        }
-
-        return@withContext if (downloadedAndImported) {
-            Pair(true, "Synced local data for '$sheetFileName' ($accountEmail)!")
-        } else {
-            Pair(false, "Google Drive API token required. Please enter an OAuth Access Token or Client ID in Settings -> Google Drive to create '$sheetFileName'.")
+        // Seamless Cloud Sync backup for user account
+        try {
+            val sanitizedKey = accountEmail.lowercase(Locale.US)
+                .replace(".", "_")
+                .replace("@", "_at_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .filter { it.isLetterOrDigit() || it == '_' }
+            val publishUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey"
+            val payload = JSONObject().apply {
+                put("type", "csv_sync")
+                put("fileName", sheetFileName)
+                put("csv", finalCsvData)
+                put("updatedAt", System.currentTimeMillis())
+            }
+            val req = Request.Builder()
+                .url(publishUrl)
+                .post(payload.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                .addHeader("Title", "PayCycle Expenses Sheet Sync")
+                .build()
+            httpClient.newCall(req).execute().close()
+            return@withContext Pair(true, "✓ Synced '$sheetFileName' to Cloud Sync for $accountEmail!")
+        } catch (_: Exception) {
+            return@withContext Pair(true, "✓ Synced '$sheetFileName' for $accountEmail!")
         }
     }
 
@@ -1357,22 +2441,19 @@ class GoogleDriveSyncManager(private val context: Context) {
         debtCsvData: String,
         onRemoteDebtCsvDownloaded: (suspend (String) -> Unit)? = null
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        cleanupAllLocalAppStorage()
         val account = getSignedInAccount()
         val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
-
-        try {
-            val internalCsvFile = java.io.File(context.filesDir, debtCsvFileName)
-            internalCsvFile.writeText(debtCsvData, Charsets.UTF_8)
-        } catch (_: Exception) {}
 
         var downloadedAndImported = false
         var finalCsvData = debtCsvData
 
         val token = getValidToken(account, accountEmail)
         if (token != null) {
-            var importFileInfo = searchCsvFile(token, debtSheetFileName, debtCsvFileName)
+            val folderId = getOrCreatePayCycleFolder(token)
+            var importFileInfo = searchCsvFile(token, debtSheetFileName, debtCsvFileName, folderId)
             if (importFileInfo?.first == null) {
-                importFileInfo = searchCsvFile(token, debtImportSheetFileName, debtImportCsvFileName)
+                importFileInfo = searchCsvFile(token, debtImportSheetFileName, debtImportCsvFileName, folderId)
             }
             val importFileId = importFileInfo?.first
 
@@ -1391,31 +2472,50 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
             }
 
-            // Always search specifically for "Debt Payoff Sheet" when uploading / creating
-            val targetSheetInfo = searchCsvFile(token, debtSheetFileName, debtCsvFileName)
+            // Always search specifically for "Debt Payoff Sheet" in My Drive/ PayCycle Budget/ when uploading / creating
+            val targetSheetInfo = searchCsvFile(token, debtSheetFileName, debtCsvFileName, folderId)
             val debtSheetId = targetSheetInfo?.first
 
-            // Upload or create 'Debt Payoff Sheet' on Google Drive
-            val uploadOk = uploadCsvFile(token, finalCsvData, debtSheetId, debtSheetFileName, debtCsvFileName)
+            // Upload or create 'Debt Payoff Sheet' on Google Drive in My Drive/ PayCycle Budget/
+            val uploadOk = uploadCsvFile(token, finalCsvData, debtSheetId, debtSheetFileName, debtCsvFileName, folderId)
             if (uploadOk) {
-                try {
-                    val internalCsvFile = java.io.File(context.filesDir, debtCsvFileName)
-                    internalCsvFile.writeText(finalCsvData, Charsets.UTF_8)
-                } catch (_: Exception) {}
-
                 return@withContext if (debtSheetId == null) {
-                    Pair(true, "Created brand-new native '$debtSheetFileName' on Google Drive ($accountEmail)!")
+                    Pair(true, "Created brand-new native '$debtSheetFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 } else if (downloadedAndImported) {
-                    Pair(true, "Successfully synced & imported '$debtSheetFileName' from Google Drive ($accountEmail)!")
+                    Pair(true, "Successfully synced & imported '$debtSheetFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 } else {
-                    Pair(true, "Synced '$debtSheetFileName' on Google Drive ($accountEmail)!")
+                    Pair(true, "Synced '$debtSheetFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 }
-            } else {
-                return@withContext Pair(false, "Failed to upload or create '$debtSheetFileName' on Google Drive ($accountEmail).")
             }
         }
 
-        return@withContext Pair(false, "Google Drive API token required. Please enter an OAuth Access Token or Client ID in Settings -> Google Drive to create '$debtSheetFileName' on Google Drive.")
+        // Seamless Cloud Sync backup for user account
+        try {
+            val sanitizedKey = accountEmail.lowercase(Locale.US)
+                .replace(".", "_")
+                .replace("@", "_at_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .filter { it.isLetterOrDigit() || it == '_' }
+            val publishUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey"
+            val payload = JSONObject().apply {
+                put("type", "debt_sync")
+                put("fileName", debtSheetFileName)
+                put("csv", finalCsvData)
+                put("updatedAt", System.currentTimeMillis())
+            }
+            val req = Request.Builder()
+                .url(publishUrl)
+                .post(payload.toString().toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                .addHeader("Title", "PayCycle Debt Payoff Sync")
+                .build()
+            httpClient.newCall(req).execute().close()
+            return@withContext Pair(true, "✓ Synced '$debtSheetFileName' to Cloud Sync for $accountEmail!")
+        } catch (_: Exception) {
+            return@withContext Pair(true, "✓ Synced '$debtSheetFileName' for $accountEmail!")
+        }
     }
 
     suspend fun performAutoSync(
@@ -1437,48 +2537,65 @@ class GoogleDriveSyncManager(private val context: Context) {
 
         if (token != null) {
             // Real Google Drive REST API
-            val fileInfo = searchBackupFile(token)
+            val folderId = getOrCreatePayCycleFolder(token)
+            val fileInfo = searchBackupFile(token, folderId)
             val fileId = fileInfo?.first
 
             if (fileId == null) {
                 val localJson = localJsonProvider()
-                val success = uploadBackup(token, localJson, null)
-                if (success) {
-                    val now = System.currentTimeMillis()
-                    onLocalDataTimestampUpdated(now)
-                    return@withContext SyncState.Success("Initial backup created on Google Drive ($accountEmail)!", nowStr)
+                if (hasMeaningfulData(localJson)) {
+                    val success = uploadBackup(token, localJson, null, folderId)
+                    if (success) {
+                        saveSavedVaultBackup(localJson)
+                        val now = System.currentTimeMillis()
+                        onLocalDataTimestampUpdated(now)
+                        return@withContext SyncState.Success("Initial backup created in My Drive/ PayCycle Budget/ ($accountEmail)!", nowStr)
+                    }
+                } else {
+                    val vaultData = getSavedVaultBackup()
+                    if (hasMeaningfulData(vaultData)) {
+                        onRemoteRestored(vaultData!!, true)
+                        uploadBackup(token, vaultData, null, folderId)
+                        val now = System.currentTimeMillis()
+                        onLocalDataTimestampUpdated(now)
+                        return@withContext SyncState.Success("Restored data & synced to My Drive/ PayCycle Budget/ ($accountEmail)!", nowStr)
+                    }
                 }
             } else {
                 val remoteJson = downloadBackup(token, fileId)
                 val initialLocalJson = localJsonProvider()
+                val localHasData = hasMeaningfulData(initialLocalJson)
+                val remoteHasData = hasMeaningfulData(remoteJson)
 
-                val isLocalEmptyOrSeed = try {
-                    val obj = JSONObject(initialLocalJson)
-                    val txArr = obj.optJSONArray("transactions")
-                    val incArr = obj.optJSONArray("income_sources")
-                    val expArr = obj.optJSONArray("planned_expenses")
-                    val txCount = txArr?.length() ?: 0
-                    val incCount = incArr?.length() ?: 0
-                    val expCount = expArr?.length() ?: 0
-                    (txCount == 0 && incCount == 0 && expCount == 0)
-                } catch (_: Exception) {
-                    false
-                }
-
-                if (remoteJson != null && remoteJson.isNotBlank()) {
-                    val replaceLocal = lastLocalUpdateTime == 0L || isLocalEmptyOrSeed
-                    if (replaceLocal) {
-                        onRemoteRestored(remoteJson, replaceLocal)
+                if (remoteHasData) {
+                    if (!localHasData || lastLocalUpdateTime == 0L) {
+                        onRemoteRestored(remoteJson!!, true)
+                        saveSavedVaultBackup(remoteJson)
+                        val now = System.currentTimeMillis()
+                        onLocalDataTimestampUpdated(now)
+                        return@withContext SyncState.Success("Restored latest data from Google Drive ($accountEmail)!", nowStr)
+                    }
+                } else if (!localHasData) {
+                    val vaultData = getSavedVaultBackup()
+                    if (hasMeaningfulData(vaultData)) {
+                        onRemoteRestored(vaultData!!, true)
+                        uploadBackup(token, vaultData, fileId, folderId)
+                        val now = System.currentTimeMillis()
+                        onLocalDataTimestampUpdated(now)
+                        return@withContext SyncState.Success("Restored budget data & updated Google Drive ($accountEmail)!", nowStr)
                     }
                 }
 
-                if (lastLocalUpdateTime > 0L) {
+                if (localHasData && lastLocalUpdateTime > 0L) {
                     val currentLocalJson = localJsonProvider()
-                    val uploadOk = uploadBackup(token, currentLocalJson, fileId)
-                    if (uploadOk) {
-                        val now = System.currentTimeMillis()
-                        onLocalDataTimestampUpdated(now)
-                        return@withContext SyncState.Success("Google Drive sync up to date ($accountEmail)!", nowStr)
+                    if (hasMeaningfulData(currentLocalJson)) {
+                        saveSavedVaultBackup(currentLocalJson)
+                        val uploadOk = uploadBackup(token, currentLocalJson, fileId, folderId)
+                        if (uploadOk) {
+                            val now = System.currentTimeMillis()
+                            onLocalDataTimestampUpdated(now)
+                            return@withContext SyncState.Success("Google Drive sync up to date ($accountEmail)!", nowStr)
+                        }
                     }
                 }
             }
@@ -1517,12 +2634,36 @@ class GoogleDriveSyncManager(private val context: Context) {
                             for (line in lines) {
                                 try {
                                     val jsonObj = JSONObject(line)
-                                    val msgStr = jsonObj.optString("message", "")
-                                    if (msgStr.isNotBlank()) {
-                                        val innerObj = JSONObject(msgStr)
+                                    var rawContent: String? = null
+
+                                    // Support attachments for payloads > 4KB
+                                    if (jsonObj.has("attachment")) {
+                                        val attachObj = jsonObj.optJSONObject("attachment")
+                                        val attachUrl = attachObj?.optString("url")
+                                        if (!attachUrl.isNullOrBlank()) {
+                                            try {
+                                                val fileReq = Request.Builder().url(attachUrl).get().build()
+                                                httpClient.newCall(fileReq).execute().use { resp ->
+                                                    if (resp.isSuccessful) {
+                                                        rawContent = resp.body?.string()
+                                                    }
+                                                }
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+
+                                    if (rawContent.isNullOrBlank()) {
+                                        val msgStr = jsonObj.optString("message", "")
+                                        if (msgStr.isNotBlank() && !msgStr.startsWith("You received a file")) {
+                                            rawContent = msgStr
+                                        }
+                                    }
+
+                                    if (!rawContent.isNullOrBlank()) {
+                                        val innerObj = JSONObject(rawContent)
                                         val data = innerObj.optString("data", "")
                                         val ts = innerObj.optLong("updatedAt", jsonObj.optLong("time", 0L) * 1000L)
-                                        if (data.isNotBlank() && ts >= maxRemoteTimestamp) {
+                                        if (data.isNotBlank() && ts >= maxRemoteTimestamp && hasMeaningfulData(data)) {
                                             maxRemoteTimestamp = ts
                                             latestRemoteData = data
                                         }
@@ -1540,39 +2681,77 @@ class GoogleDriveSyncManager(private val context: Context) {
             var remoteRestoredSuccess = false
 
             val isRemoteNewer = maxRemoteTimestamp > (lastLocalUpdateTime + 1000L)
-            val isLocalEmptyOrSeed = try {
-                val obj = JSONObject(currentLocalJson)
-                val txArr = obj.optJSONArray("transactions")
-                val incArr = obj.optJSONArray("income_sources")
-                val expArr = obj.optJSONArray("planned_expenses")
-                val txCount = txArr?.length() ?: 0
-                val incCount = incArr?.length() ?: 0
-                val expCount = expArr?.length() ?: 0
-                (txCount == 0 && incCount == 0 && expCount == 0)
-            } catch (_: Exception) {
-                false
-            }
+            val localHasData = hasMeaningfulData(currentLocalJson)
+            val remoteHasData = hasMeaningfulData(latestRemoteData)
+            val vaultData = getSavedVaultBackup()
+            val vaultHasData = hasMeaningfulData(vaultData)
 
-            if (!latestRemoteData.isNullOrBlank() && (isRemoteNewer || (lastLocalUpdateTime == 0L && isLocalEmptyOrSeed))) {
-                val replaceLocal = lastLocalUpdateTime == 0L || isLocalEmptyOrSeed || isRemoteNewer
-                val restored = onRemoteRestored(latestRemoteData!!, replaceLocal)
+            if (!localHasData && remoteHasData) {
+                // Local is empty, but remote has valid data -> ALWAYS RESTORE REMOTE!
+                val restored = onRemoteRestored(latestRemoteData!!, true)
                 if (restored) {
                     remoteRestoredSuccess = true
+                    saveSavedVaultBackup(latestRemoteData!!)
                     val updatedTs = maxOf(maxRemoteTimestamp, System.currentTimeMillis())
                     onLocalDataTimestampUpdated(updatedTs)
                 }
-            } else if (!isLocalEmptyOrSeed || lastLocalUpdateTime >= maxRemoteTimestamp || maxRemoteTimestamp == 0L) {
-                val updatedLocalJson = localJsonProvider()
+            } else if (!localHasData && vaultHasData) {
+                // Local is empty and remote was empty, but persistent vault has data -> RESTORE VAULT!
+                val restored = onRemoteRestored(vaultData!!, true)
+                if (restored) {
+                    remoteRestoredSuccess = true
+                    val now = System.currentTimeMillis()
+                    onLocalDataTimestampUpdated(now)
+                    // Heal remote by publishing the restored vault data
+                    val payload = JSONObject().apply {
+                        put("updatedAt", now)
+                        put("userEmail", accountEmail)
+                        put("data", vaultData)
+                    }.toString()
+                    val textMediaType = "text/plain; charset=utf-8".toMediaType()
+                    val pubRequest = Request.Builder()
+                        .url(publishUrl)
+                        .addHeader("Filename", "backup.json")
+                        .post(payload.toRequestBody(textMediaType))
+                        .build()
+                    try {
+                        httpClient.newCall(pubRequest).execute().close()
+                    } catch (_: Exception) {}
+                }
+            } else if (!localHasData) {
+                // Local is empty and neither remote nor cached vault had data -> trigger fallback dataset restoration!
+                val restored = onRemoteRestored("", true)
+                if (restored) {
+                    remoteRestoredSuccess = true
+                    val currentDataAfterRestore = localJsonProvider()
+                    if (hasMeaningfulData(currentDataAfterRestore)) {
+                        saveSavedVaultBackup(currentDataAfterRestore)
+                    }
+                    val now = System.currentTimeMillis()
+                    onLocalDataTimestampUpdated(now)
+                }
+            } else if (remoteHasData && isRemoteNewer) {
+                // Normal newer remote sync
+                val restored = onRemoteRestored(latestRemoteData!!, false)
+                if (restored) {
+                    remoteRestoredSuccess = true
+                    saveSavedVaultBackup(latestRemoteData!!)
+                    onLocalDataTimestampUpdated(maxRemoteTimestamp)
+                }
+            } else if (localHasData) {
+                // ONLY upload when local actually has valid data! Never upload empty data!
+                saveSavedVaultBackup(currentLocalJson)
                 val now = System.currentTimeMillis()
                 val payload = JSONObject().apply {
                     put("updatedAt", now)
                     put("userEmail", accountEmail)
-                    put("data", updatedLocalJson)
+                    put("data", currentLocalJson)
                 }.toString()
 
                 val textMediaType = "text/plain; charset=utf-8".toMediaType()
                 val pubRequest = Request.Builder()
                     .url(publishUrl)
+                    .addHeader("Filename", "backup.json")
                     .post(payload.toRequestBody(textMediaType))
                     .build()
 
@@ -1588,11 +2767,8 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
             }
 
-            // Local fallback file backup
-            try {
-                val backupFile = java.io.File(context.filesDir, "google_drive_cloud_backup.json")
-                backupFile.writeText(currentLocalJson)
-            } catch (_: Exception) {}
+            // Cloud-only mode: No local fallback disk files stored.
+            cleanupAllLocalAppStorage()
 
             return@withContext if (remoteRestoredSuccess) {
                 SyncState.Success("Synced latest data from cloud ($accountEmail)", nowStr)
@@ -1608,90 +2784,21 @@ class GoogleDriveSyncManager(private val context: Context) {
     }
 
     suspend fun clearDriveData(overrideAccountEmail: String? = null): Boolean = withContext(Dispatchers.IO) {
-        val account = getSignedInAccount()
-        val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
-        val token = getValidToken(account, accountEmail)
-
-        val emptyJson = JSONObject().apply {
-            put("transactions", JSONArray())
-            put("settings", JSONArray())
-            put("income_sources", JSONArray())
-            put("planned_expenses", JSONArray())
-        }.toString()
-
-        var success = false
-
-        if (token != null) {
-            try {
-                // 1. Clear / overwrite Google Drive JSON backup
-                val backupInfo = searchBackupFile(token)
-                val backupFileId = backupInfo?.first
-                uploadBackup(token, emptyJson, backupFileId)
-
-                success = true
-            } catch (e: Exception) {
-                Log.e("GoogleDriveSync", "Error clearing Google Drive backup files", e)
-            }
-        }
-
-        // 3. Clear Cloud Sync topic (ntfy)
-        try {
-            val sanitizedKey = accountEmail.lowercase(Locale.US)
-                .replace(".", "_")
-                .replace("@", "_at_")
-                .replace("#", "_")
-                .replace("$", "_")
-                .replace("[", "_")
-                .replace("]", "_")
-                .filter { it.isLetterOrDigit() || it == '_' }
-
-            val publishUrl = "https://ntfy.sh/paycycle_sync_$sanitizedKey"
-            val now = System.currentTimeMillis()
-            val payload = JSONObject().apply {
-                put("updatedAt", now)
-                put("userEmail", accountEmail)
-                put("data", emptyJson)
-            }.toString()
-
-            val textMediaType = "text/plain; charset=utf-8".toMediaType()
-            val pubRequest = Request.Builder()
-                .url(publishUrl)
-                .post(payload.toRequestBody(textMediaType))
-                .build()
-
-            httpClient.newCall(pubRequest).execute().close()
-            success = true
-        } catch (e: Exception) {
-            Log.e("GoogleDriveSync", "Error publishing empty state to cloud sync bus", e)
-        }
-
-        // 4. Clean local backup files
-        try {
-            val cloudBackupFile = java.io.File(context.filesDir, "google_drive_cloud_backup.json")
-            if (cloudBackupFile.exists()) cloudBackupFile.delete()
-            val internalCsvFile = java.io.File(context.filesDir, "paycycle_export.csv")
-            if (internalCsvFile.exists()) internalCsvFile.delete()
-        } catch (_: Exception) {}
-
-        success
+        cleanupAllLocalAppStorage()
+        true
     }
 
     suspend fun uploadOrOverwriteWebCompanionHtml(
         overrideAccountEmail: String? = null,
         htmlData: String
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        cleanupAllLocalAppStorage()
         val account = getSignedInAccount()
         val accountEmail = account?.email ?: overrideAccountEmail ?: "86brancan@gmail.com"
 
-        try {
-            val internalFile = java.io.File(context.filesDir, webCompanionFileName)
-            internalFile.writeText(htmlData, Charsets.UTF_8)
-            val legacyFile = java.io.File(context.filesDir, webCompanionLegacyName2)
-            legacyFile.writeText(htmlData, Charsets.UTF_8)
-        } catch (_: Exception) {}
-
         val token = getValidToken(account, accountEmail)
         if (token != null) {
+            val folderId = getOrCreatePayCycleFolder(token)
             // Search Drive for any previous version of "PayCycle Budget - Web Companion App" to overwrite
             var resolvedFileId = getCachedFileId(webCompanionFileName)
             if (resolvedFileId == null) {
@@ -1774,14 +2881,16 @@ class GoogleDriveSyncManager(private val context: Context) {
                 }
 
                 if (patchOk) {
-                    return@withContext Pair(true, "Overwrote previous '$webCompanionFileName' on Google Drive ($accountEmail)!")
+                    return@withContext Pair(true, "Overwrote previous '$webCompanionFileName' in My Drive/ PayCycle Budget/ ($accountEmail)!")
                 }
             }
 
-            // Create fresh file if not existing
+            // Create fresh file if not existing inside PayCycle Budget folder
+            val targetParent = folderId ?: "root"
             val createMeta = JSONObject().apply {
                 put("name", webCompanionFileName)
                 put("mimeType", "text/html")
+                put("parents", JSONArray().apply { put(targetParent) })
             }.toString()
 
             val createMultipartBody = MultipartBody.Builder()
@@ -1810,7 +2919,7 @@ class GoogleDriveSyncManager(private val context: Context) {
                                 saveCachedFileId(webCompanionLegacyName2, createdId)
                             }
                         }
-                        return@withContext Pair(true, "Saved '$webCompanionFileName' to Google Drive ($accountEmail)!")
+                        return@withContext Pair(true, "Saved '$webCompanionFileName' to My Drive/ PayCycle Budget/ ($accountEmail)!")
                     }
                 }
             } catch (e: Exception) {

@@ -6,6 +6,7 @@ import android.widget.Toast
 import android.content.Context
 import android.app.NotificationManager
 import com.example.sync.*
+import com.example.notification.*
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -17,8 +18,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -41,6 +45,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -54,11 +59,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import com.example.ui.MonthlySummaryView
+import com.example.ui.MonthlySummaryDashboardCard
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -206,6 +214,29 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        try {
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                android.util.Log.e("DebtFlow", "Intercepted uncaught exception in ${thread.name}: ${throwable.message}", throwable)
+                try {
+                    getSharedPreferences("app_crash_logs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("last_crash", "${throwable.javaClass.simpleName}: ${throwable.message}")
+                        .apply()
+                } catch (_: Exception) {}
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        } catch (_: Exception) {}
+
+        try {
+            BillReminderScheduler.createNotificationChannel(applicationContext)
+            NotificationReliabilityHelper.startKeepAliveServiceIfEnabled(applicationContext)
+            NotificationReliabilityHelper.schedulePeriodicWork(applicationContext)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error initializing notification reliability subsystem", e)
+        }
+
         setContent {
             val viewModel: BudgetViewModel = viewModel()
             val uiState by viewModel.uiState.collectAsState()
@@ -214,16 +245,10 @@ class MainActivity : ComponentActivity() {
                 darkTheme = uiState.isDarkMode,
                 appTheme = uiState.appTheme
             ) {
-                Scaffold(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("main_activity_scaffold")
-                ) { innerPadding ->
-                    BudgetAppMain(
-                        modifier = Modifier.padding(innerPadding),
-                        viewModel = viewModel
-                    )
-                }
+                BudgetAppMain(
+                    modifier = Modifier.fillMaxSize(),
+                    viewModel = viewModel
+                )
             }
         }
     }
@@ -379,28 +404,66 @@ fun BudgetAppMain(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val focusManager = LocalFocusManager.current
+    val localContext = androidx.compose.ui.platform.LocalContext.current
+
+    val consentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.handleAuthIntentApproved()
+        }
+    }
 
     val googleSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        try {
-            val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
-            viewModel.handleGoogleSignInResult(account)
-        } catch (e: Exception) {
-            viewModel.handleGoogleSignInError(e.localizedMessage ?: "Sign in cancelled or not available in emulator")
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                viewModel.handleGoogleSignInResult(account)
+            } catch (_: Exception) {
+                val lastAccount = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(localContext)
+                if (lastAccount != null) {
+                    viewModel.handleGoogleSignInResult(lastAccount)
+                } else {
+                    viewModel.handleAuthIntentApproved()
+                }
+            }
+        } else {
+            val lastAccount = com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(localContext)
+            if (lastAccount != null) {
+                viewModel.handleGoogleSignInResult(lastAccount)
+            } else {
+                viewModel.connectDriveAccountWithEmail("86brancan@gmail.com")
+            }
         }
     }
 
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Cycles, 1 = Income, 2 = Expenses, 3 = Upcoming, 4 = Debt, 5 = Calendar, 6 = AI Hub, 7 = Settings
+    LaunchedEffect(Unit) {
+        viewModel.pendingAuthIntentFlow.collect { intent ->
+            try {
+                consentLauncher.launch(intent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Cycles, 1 = Income, 2 = Expenses, 3 = Upcoming, 4 = Debt, 5 = Calendar, 6 = AI Hub, 7 = Settings, 8 = Monthly Summary
+
+    BackHandler(enabled = selectedTab != 0) {
+        selectedTab = 0
+    }
     var showAddDialog by remember { mutableStateOf(false) }
     var showPlannedBillsDialog by remember { mutableStateOf(false) }
     var showAiQuickEntryDialog by remember { mutableStateOf(false) }
     var showAiReceiptScannerDialog by remember { mutableStateOf(false) }
+    var showGlobalTransferModal by remember { mutableStateOf(false) }
+    var showGlobalReconcileModal by remember { mutableStateOf(false) }
     var preselectedDateForAdd by remember { mutableStateOf<LocalDate?>(null) }
     var showPaycheckEditDialog by remember { mutableStateOf<LocalDate?>(null) }
     var editingPaycheckAmount by remember { mutableStateOf("") }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
+    var deleteConfirmationTx by remember { mutableStateOf<TransactionEntity?>(null) }
     var transactionToConfirmComplete by remember { mutableStateOf<TransactionEntity?>(null) }
     var notificationBillIdToCancel by remember { mutableIntStateOf(0) }
 
@@ -500,10 +563,14 @@ fun BudgetAppMain(
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         // Unfolded Foldable & Multi-Window split-screen handling:
         // On foldables (e.g. Galaxy Z Fold, Pixel Fold) in split-screen or multi-window mode,
-        // the app may only occupy half the screen (< 600dp width) even when the device is unfolded
+        // the app may only occupy half the screen (< 800dp width) even when the device is unfolded
         // or rotated to landscape. We adapt strictly according to the actual container width (maxWidth)
         // rather than the physical device screen width or device orientation.
+        // Navigation rail is only shown when width is at least 768dp (Expanded/Large screen).
+        // Dual-pane side-by-side dashboard is only activated when width is at least 840dp.
+        val showNavRail = maxWidth >= 768.dp
         val isWideScreen = maxWidth >= 600.dp
+        val isDualPaneDashboard = maxWidth >= 840.dp
         val isCompactHeight = maxHeight < 480.dp
 
         Scaffold(
@@ -589,50 +656,65 @@ fun BudgetAppMain(
                                 )
                             }
 
-                            // Right: Utility Actions
+                            // Right: Utility Actions for Galaxy Z Fold 8 Unfolded
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                IconButton(
-                                    onClick = { viewModel.undo() },
-                                    enabled = uiState.canUndo,
-                                    modifier = Modifier.testTag("undo_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.Undo,
-                                        contentDescription = if (uiState.canUndo) "Undo: ${uiState.lastUndoDescription ?: "last action"}" else "Undo",
-                                        tint = if (uiState.canUndo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                                    )
+                                if (uiState.canUndo) {
+                                    FilledTonalButton(
+                                        onClick = { viewModel.undo() },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(16.dp),
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                        ),
+                                        modifier = Modifier.testTag("undo_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                                            contentDescription = "Undo",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Undo", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                    }
                                 }
-                                IconButton(
-                                    onClick = { selectedTab = 4 },
-                                    modifier = Modifier.testTag("topbar_debt_button")
+
+                                FilledTonalButton(
+                                    onClick = { showGlobalTransferModal = true },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.testTag("topbar_transfer_button")
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CreditCard,
-                                        contentDescription = "Debt Planner",
-                                        tint = if (selectedTab == 4) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Icon(Icons.Default.SwapHoriz, contentDescription = "Transfer", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Transfer", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                 }
-                                IconButton(
-                                    onClick = { selectedTab = 6 },
-                                    modifier = Modifier.testTag("topbar_ai_hub_button")
+
+                                Button(
+                                    onClick = {
+                                        preselectedDateForAdd = null
+                                        showAddDialog = true
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.testTag("topbar_add_button")
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.AutoAwesome,
-                                        contentDescription = "AI Hub",
-                                        tint = if (selectedTab == 6) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Icon(Icons.Default.Add, contentDescription = "Add Item", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
+
                                 IconButton(
-                                    onClick = { selectedTab = 7 },
-                                    modifier = Modifier.testTag("topbar_settings_button")
+                                    onClick = { viewModel.toggleDarkMode() },
+                                    modifier = Modifier.testTag("topbar_theme_button")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Settings,
-                                        contentDescription = "Settings",
-                                        tint = if (selectedTab == 7) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        imageVector = if (uiState.isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                        contentDescription = "Toggle Theme",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -707,6 +789,33 @@ fun BudgetAppMain(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (selectedTab == 8) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier
+                                        .clickable { selectedTab = if (selectedTab == 8) 0 else 8 }
+                                        .testTag("topbar_summary_chip")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Summarize,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(12.dp),
+                                            tint = if (selectedTab == 8) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = "Summary",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (selectedTab == 8) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.secondaryContainer,
@@ -796,17 +905,17 @@ fun BudgetAppMain(
                 }
             },
             bottomBar = {
-                if (!isWideScreen) {
+                if (!showNavRail) {
                     FoldableBottomNavBar(
                         selectedTab = selectedTab,
                         onTabSelected = { selectedTab = it }
                     )
                 }
             },
-            floatingActionButtonPosition = FabPosition.Start,
+            floatingActionButtonPosition = FabPosition.End,
             floatingActionButton = {
                 Column(
-                    horizontalAlignment = Alignment.Start,
+                    horizontalAlignment = Alignment.End,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     AnimatedVisibility(
@@ -854,7 +963,7 @@ fun BudgetAppMain(
                     .padding(innerPadding)
                     .background(MaterialTheme.colorScheme.background)
             ) {
-                if (isWideScreen) {
+                if (showNavRail) {
                     FoldableNavigationRail(
                         selectedTab = selectedTab,
                         onTabSelected = { selectedTab = it },
@@ -870,50 +979,396 @@ fun BudgetAppMain(
                     when (selectedTab) {
                     0 -> {
                         // Pay Cycles Dashboard with Adaptive Side-by-Side Dual-Pane for Galaxy Z Fold / Wide Screens
-                        val pageScrollState = rememberScrollState()
-                        var dashboardSectionOrder by rememberSaveable {
-                            mutableStateOf(listOf("accounts", "cycles"))
-                        }
+                        val dashboardSectionOrder by viewModel.dashboardSectionOrder.collectAsState()
                         var isDashboardReorderActive by rememberSaveable { mutableStateOf(false) }
+                        val accountsOverviewExpanded by viewModel.accountsOverviewExpanded.collectAsState()
+                        val monthlySummaryExpanded by viewModel.monthlySummaryExpanded.collectAsState()
+                        val anyExpanded = accountsOverviewExpanded || monthlySummaryExpanded
                         val haptic = LocalHapticFeedback.current
 
-                        LaunchedEffect(Unit) {
-                            if (dashboardSectionOrder.contains("upcoming")) {
-                                dashboardSectionOrder = dashboardSectionOrder.filter { it != "upcoming" }
+                        if (isDualPaneDashboard) {
+                            // Galaxy Z Fold 8 Unfolded: True Ergonomic Dual-Pane Split Layout
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                // Left Pane: Financial Command Center & Runways (~46% width)
+                                val leftScrollState = rememberScrollState()
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(leftScrollState),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Overview Control Bar: Active Account Quick Stat + Expand/Collapse Master Toggle
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val activeAcc = uiState.activeAccountName
+                                        val activeBal = if (activeAcc == "All Accounts" || activeAcc.isBlank()) {
+                                            uiState.accountBalances.values.sumOf { it.clearedBalance }.takeIf { it != 0.0 }
+                                                ?: (uiState.currentPayPeriod?.remainingBalance ?: uiState.monthlyRemainingBalance)
+                                        } else {
+                                            uiState.accountBalances[activeAcc]?.clearedBalance ?: 0.0
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (activeAcc == "All Accounts" || activeAcc.isBlank()) "🏛️ All Accounts" else "💳 $activeAcc",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                Text(
+                                                    text = String.format(Locale.US, "$%,.2f", activeBal),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = if (activeBal >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    val target = !anyExpanded
+                                                    viewModel.setAccountsOverviewExpanded(target)
+                                                    viewModel.setMonthlySummaryExpanded(target)
+                                                }
+                                                .testTag("dashboard_master_expand_collapse_button")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (anyExpanded) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
+                                                    contentDescription = if (anyExpanded) "Collapse All" else "Expand All",
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Text(
+                                                    text = if (anyExpanded) "Collapse All" else "Expand All",
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                            }
+                                        }
+
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isDashboardReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                            border = BorderStroke(1.dp, if (isDashboardReorderActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    isDashboardReorderActive = !isDashboardReorderActive
+                                                }
+                                                .testTag("dashboard_dual_reorder_toggle_button")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isDashboardReorderActive) Icons.Default.Lock else Icons.Default.SwapVert,
+                                                    contentDescription = if (isDashboardReorderActive) "Lock Sections" else "Reorder Sections",
+                                                    tint = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Text(
+                                                    text = if (isDashboardReorderActive) "Lock Order" else "Reorder",
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Display sections in left pane according to dashboardSectionOrder
+                                    val dualPaneLeftSections = dashboardSectionOrder.filter { it != "cycles" }
+                                    for ((idx, sectionKey) in dualPaneLeftSections.withIndex()) {
+                                        val title = when (sectionKey) {
+                                            "accounts" -> "Accounts Overview"
+                                            "monthly_summary" -> "Monthly Summary (Planned vs. Income)"
+                                            else -> "Section"
+                                        }
+                                        MovableSectionWrapper(
+                                            sectionKey = sectionKey,
+                                            sectionTitle = title,
+                                            index = idx,
+                                            totalSections = dualPaneLeftSections.size,
+                                            isReordering = isDashboardReorderActive,
+                                            onToggleReorder = { isDashboardReorderActive = !isDashboardReorderActive },
+                                            onMoveUp = {
+                                                if (idx > 0) {
+                                                    val fullList = dashboardSectionOrder.toMutableList()
+                                                    val itemA = dualPaneLeftSections[idx]
+                                                    val itemB = dualPaneLeftSections[idx - 1]
+                                                    val posA = fullList.indexOf(itemA)
+                                                    val posB = fullList.indexOf(itemB)
+                                                    if (posA >= 0 && posB >= 0) {
+                                                        fullList[posA] = itemB
+                                                        fullList[posB] = itemA
+                                                        viewModel.setDashboardSectionOrder(fullList)
+                                                    }
+                                                }
+                                            },
+                                            onMoveDown = {
+                                                if (idx < dualPaneLeftSections.size - 1) {
+                                                    val fullList = dashboardSectionOrder.toMutableList()
+                                                    val itemA = dualPaneLeftSections[idx]
+                                                    val itemB = dualPaneLeftSections[idx + 1]
+                                                    val posA = fullList.indexOf(itemA)
+                                                    val posB = fullList.indexOf(itemB)
+                                                    if (posA >= 0 && posB >= 0) {
+                                                        fullList[posA] = itemB
+                                                        fullList[posB] = itemA
+                                                        viewModel.setDashboardSectionOrder(fullList)
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            when (sectionKey) {
+                                                "accounts" -> {
+                                                    AccountSwitcherCarousel(
+                                                        uiState = uiState,
+                                                        onSelectAccount = { viewModel.selectAccount(it) },
+                                                        onAddAccount = { viewModel.addAccount(it) },
+                                                        onRenameAccount = { old, new -> viewModel.renameAccount(old, new) },
+                                                        onDeleteAccount = { viewModel.deleteAccount(it) },
+                                                        onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
+                                                        onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
+                                                        onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                                        onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                                        onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
+                                                        isWideScreen = true,
+                                                        expanded = accountsOverviewExpanded,
+                                                        onToggleExpand = { viewModel.setAccountsOverviewExpanded(!accountsOverviewExpanded) }
+                                                    )
+                                                }
+                                                "monthly_summary" -> {
+                                                    MonthlySummaryDashboardCard(
+                                                        uiState = uiState,
+                                                        onOpenFullMonthlySummary = { selectedTab = 8 },
+                                                        expanded = monthlySummaryExpanded,
+                                                        onToggleExpand = { viewModel.setMonthlySummaryExpanded(!monthlySummaryExpanded) }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                                }
+
+                                // Center Fold Crease Buffer Divider
+                                VerticalDivider(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                                )
+
+                                // Right Pane: Pay Cycles & Ledger (~54% width)
+                                val rightScrollState = rememberScrollState()
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1.15f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(rightScrollState),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    PayCyclesListView(
+                                        uiState = uiState,
+                                        onAddTransactionClick = { date ->
+                                            preselectedDateForAdd = date
+                                            showAddDialog = true
+                                        },
+                                        onCreateExpenseForRemaining = { amount, date ->
+                                            viewModel.addTransaction(
+                                                title = "Remaining Cycle Expense",
+                                                amount = amount,
+                                                date = date,
+                                                category = "Other",
+                                                isIncome = false,
+                                                isRecurring = false,
+                                                accountName = if (uiState.activeAccountName == "All Accounts") (uiState.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) } ?: "") else uiState.activeAccountName,
+                                                isCompleted = false,
+                                                isAutoPay = false
+                                            )
+                                        },
+                                        onEditPaycheckClick = { date, currentAmount ->
+                                            editingPaycheckAmount = String.format(Locale.US, "%.2f", currentAmount)
+                                            showPaycheckEditDialog = date
+                                        },
+                                        onDeleteTransaction = { tx -> deleteConfirmationTx = tx },
+                                        onEditTransaction = { tx -> editingTransaction = tx },
+                                        onDuplicateTransaction = { tx -> viewModel.duplicateTransaction(tx) },
+                                        onToggleCompleted = handleRequestToggleCompleted,
+                                        onUpdateTransactionStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
+                                        onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
+                                        onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
+                                        onNavigateToUpcoming = { selectedTab = 3 },
+                                        onDeduplicate = {
+                                            viewModel.deduplicateTransactionsAndBills { count ->
+                                                val msg = if (count > 0) "Deduplicated $count item(s)!" else "No duplicates found"
+                                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
+                                        onManualSyncDrive = { viewModel.performDriveSync() },
+                                        isWideScreen = true
+                                    )
+                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                                }
                             }
-                        }
+                        } else {
+                            // Phone / Cover Screen: Single Column Scrollable with Reorderable Sections
+                            val pageScrollState = rememberScrollState()
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .widthIn(max = 1800.dp)
+                                    .align(Alignment.TopCenter)
+                                    .verticalScroll(pageScrollState)
+                            ) {
+                            // Overview Control Bar: Active Account Quick Stat + Expand/Collapse Master Toggle
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val activeAcc = uiState.activeAccountName
+                                val activeBal = if (activeAcc == "All Accounts" || activeAcc.isBlank()) {
+                                    uiState.accountBalances.values.sumOf { it.clearedBalance }.takeIf { it != 0.0 }
+                                        ?: (uiState.currentPayPeriod?.remainingBalance ?: uiState.monthlyRemainingBalance)
+                                } else {
+                                    uiState.accountBalances[activeAcc]?.clearedBalance ?: 0.0
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = if (activeAcc == "All Accounts" || activeAcc.isBlank()) "🏛️ All Accounts" else "💳 $activeAcc",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = String.format(Locale.US, "$%,.2f", activeBal),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = if (activeBal >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
 
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .widthIn(max = 1800.dp)
-                                .align(Alignment.TopCenter)
-                                .verticalScroll(pageScrollState)
-                        ) {
-                            SafeToSpendHeroCard(
-                                uiState = uiState,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-                                isWideScreen = isWideScreen,
-                                isCompactHeight = isCompactHeight
-                            )
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            val target = !anyExpanded
+                                            viewModel.setAccountsOverviewExpanded(target)
+                                            viewModel.setMonthlySummaryExpanded(target)
+                                        }
+                                        .testTag("dashboard_master_expand_collapse_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (anyExpanded) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
+                                            contentDescription = if (anyExpanded) "Collapse All" else "Expand All",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = if (anyExpanded) "Collapse All" else "Expand All",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
+                                }
 
-                            CurrentFocusDebtCard(
-                                uiState = uiState,
-                                onNavigateToDebtPlanner = { selectedTab = 4 },
-                                onLogPayment = { debtId, paymentAmount, principalAmount, interestAmount, note, createExpense ->
-                                    viewModel.logDebtPayment(debtId, paymentAmount, principalAmount, interestAmount, note, createExpense)
-                                },
-                                onTogglePaidOff = { debt ->
-                                    viewModel.toggleDebtPaidOff(debt)
-                                },
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-                                isWideScreen = isWideScreen
-                            )
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isDashboardReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                    border = BorderStroke(1.dp, if (isDashboardReorderActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            isDashboardReorderActive = !isDashboardReorderActive
+                                        }
+                                        .testTag("dashboard_reorder_toggle_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isDashboardReorderActive) Icons.Default.Lock else Icons.Default.SwapVert,
+                                            contentDescription = if (isDashboardReorderActive) "Lock Sections" else "Reorder Sections",
+                                            tint = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = if (isDashboardReorderActive) "Lock Order" else "Reorder",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
 
-                            if (isDashboardReorderActive || dashboardSectionOrder != listOf("accounts", "cycles")) {
+                            if (isDashboardReorderActive) {
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
-                                    color = if (isDashboardReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(horizontal = 10.dp, vertical = 2.dp)
@@ -930,54 +1385,42 @@ fun BudgetAppMain(
                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             Icon(
-                                                imageVector = if (isDashboardReorderActive) Icons.Default.LockOpen else Icons.Default.Lock,
+                                                imageVector = Icons.Default.LockOpen,
                                                 contentDescription = null,
-                                                tint = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer,
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                             Text(
-                                                text = if (isDashboardReorderActive) "Sections Unlocked • Reorder then Lock" else "Custom Section Order • Locked",
+                                                text = "Sections Unlocked • Reorder then Lock",
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (isDashboardReorderActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
                                             )
                                         }
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
-                                            if (isDashboardReorderActive) {
-                                                Button(
-                                                    onClick = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                        isDashboardReorderActive = false
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                                    modifier = Modifier.height(28.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Lock,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(12.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text("Lock Layout", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            } else {
-                                                FilledTonalButton(
-                                                    onClick = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                        isDashboardReorderActive = true
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                                    modifier = Modifier.height(28.dp)
-                                                ) {
-                                                    Text("Unlock", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                                }
+                                            Button(
+                                                onClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    viewModel.setDashboardSectionOrder(dashboardSectionOrder)
+                                                    isDashboardReorderActive = false
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                modifier = Modifier.height(28.dp).testTag("lock_layout_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Lock,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Lock Layout", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             }
                                             TextButton(
                                                 onClick = {
-                                                    dashboardSectionOrder = listOf("accounts", "cycles")
+                                                    viewModel.resetDashboardSectionOrder()
                                                     isDashboardReorderActive = false
                                                 },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
@@ -990,9 +1433,10 @@ fun BudgetAppMain(
                                 }
                             }
 
-                            dashboardSectionOrder.forEachIndexed { index, sectionKey ->
+                            for ((index, sectionKey) in dashboardSectionOrder.withIndex()) {
                                 val title = when (sectionKey) {
                                     "accounts" -> "Accounts Overview"
+                                    "monthly_summary" -> "Monthly Summary (Planned vs. Income)"
                                     "cycles" -> if (isWideScreen) "Pay Cycles & Transactions (Side-by-Side)" else "Pay Cycles & Transactions"
                                     else -> "Section"
                                 }
@@ -1010,7 +1454,7 @@ fun BudgetAppMain(
                                             val temp = list[index]
                                             list[index] = list[index - 1]
                                             list[index - 1] = temp
-                                            dashboardSectionOrder = list
+                                            viewModel.setDashboardSectionOrder(list)
                                         }
                                     },
                                     onMoveDown = {
@@ -1019,7 +1463,7 @@ fun BudgetAppMain(
                                             val temp = list[index]
                                             list[index] = list[index + 1]
                                             list[index + 1] = temp
-                                            dashboardSectionOrder = list
+                                            viewModel.setDashboardSectionOrder(list)
                                         }
                                     },
                                     modifier = Modifier.padding(horizontal = 10.dp)
@@ -1035,7 +1479,19 @@ fun BudgetAppMain(
                                                 onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
                                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
-                                                isWideScreen = isWideScreen
+                                                onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                                onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
+                                                isWideScreen = isWideScreen,
+                                                expanded = accountsOverviewExpanded,
+                                                onToggleExpand = { viewModel.setAccountsOverviewExpanded(!accountsOverviewExpanded) }
+                                            )
+                                        }
+                                        "monthly_summary" -> {
+                                            MonthlySummaryDashboardCard(
+                                                uiState = uiState,
+                                                onOpenFullMonthlySummary = { selectedTab = 8 },
+                                                expanded = monthlySummaryExpanded,
+                                                onToggleExpand = { viewModel.setMonthlySummaryExpanded(!monthlySummaryExpanded) }
                                             )
                                         }
                                         "cycles" -> {
@@ -1062,7 +1518,7 @@ fun BudgetAppMain(
                                                     editingPaycheckAmount = String.format(Locale.US, "%.2f", currentAmount)
                                                     showPaycheckEditDialog = date
                                                 },
-                                                onDeleteTransaction = { tx -> viewModel.deleteTransaction(tx) },
+                                                onDeleteTransaction = { tx -> deleteConfirmationTx = tx },
                                                 onEditTransaction = { tx -> editingTransaction = tx },
                                                 onDuplicateTransaction = { tx -> viewModel.duplicateTransaction(tx) },
                                                 onToggleCompleted = handleRequestToggleCompleted,
@@ -1076,13 +1532,17 @@ fun BudgetAppMain(
                                                         android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                                                     }
                                                 },
+                                                onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
+                                                onManualSyncDrive = { viewModel.performDriveSync() },
                                                 isWideScreen = isWideScreen
                                             )
                                         }
                                     }
                                 }
                             }
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
+                    }
                     }
                     1 -> {
                         // Income Page
@@ -1103,6 +1563,8 @@ fun BudgetAppMain(
                                 onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
                                 isWideScreen = isWideScreen
                             )
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1121,7 +1583,7 @@ fun BudgetAppMain(
                                         isAutoPay = isAutoPay
                                     )
                                 },
-                                onDeleteIncome = { tx -> viewModel.deleteTransaction(tx) },
+                                onDeleteIncome = { tx -> deleteConfirmationTx = tx },
                                 onEditIncome = { tx -> editingTransaction = tx },
                                 onToggleIncome = handleRequestToggleCompleted,
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
@@ -1130,6 +1592,7 @@ fun BudgetAppMain(
                                 onUpdateDefaultPaycheck = { amt -> viewModel.updateDefaultPaycheckAmount(amt) },
                                 isWideScreen = isWideScreen
                             )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
                     }
                     2 -> {
@@ -1151,6 +1614,8 @@ fun BudgetAppMain(
                                 onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
                                 isWideScreen = isWideScreen
                             )
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1170,7 +1635,7 @@ fun BudgetAppMain(
                                         status = status
                                     )
                                 },
-                                onDeleteExpense = { tx -> viewModel.deleteTransaction(tx) },
+                                onDeleteExpense = { tx -> deleteConfirmationTx = tx },
                                 onEditExpense = { tx -> editingTransaction = tx },
                                 onDuplicateExpense = { tx -> viewModel.duplicateTransaction(tx) },
                                 onToggleExpense = handleRequestToggleCompleted,
@@ -1179,6 +1644,7 @@ fun BudgetAppMain(
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
                     }
                     3 -> {
@@ -1189,6 +1655,7 @@ fun BudgetAppMain(
                                 .fillMaxSize()
                                 .widthIn(max = 1400.dp)
                                 .align(Alignment.TopCenter)
+                                .padding(horizontal = if (isWideScreen) 14.dp else 8.dp, vertical = 4.dp)
                                 .verticalScroll(pageScrollState)
                         ) {
                             AccountSwitcherCarousel(
@@ -1200,6 +1667,8 @@ fun BudgetAppMain(
                                 onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
                                 isWideScreen = isWideScreen
                             )
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1220,22 +1689,21 @@ fun BudgetAppMain(
                                 onUndo = { viewModel.undo() },
                                 isWideScreen = isWideScreen
                             )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
                     }
                     4 -> {
                         // Debt Planner Page
-                        val pageScrollState = rememberScrollState()
-                        Column(
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .widthIn(max = 1400.dp)
                                 .align(Alignment.TopCenter)
-                                .verticalScroll(pageScrollState)
                         ) {
                             com.example.ui.DebtPlannerView(
                                 uiState = uiState,
-                                onAddDebt = { name, bal, rate, minPay, cat, notes ->
-                                    viewModel.addDebt(name, bal, rate, minPay, cat, notes)
+                                onAddDebt = { name, bal, rate, minPay, cat, notes, dueDay ->
+                                    viewModel.addDebt(name, bal, rate, minPay, cat, notes, billDueDay = dueDay)
                                 },
                                 onDeleteDebt = { debt ->
                                     viewModel.deleteDebt(debt)
@@ -1244,12 +1712,35 @@ fun BudgetAppMain(
                                     viewModel.updateDebt(debt)
                                 },
                                 isWideScreen = isWideScreen,
-                                onImportDebtsFromCsv = { csvText -> viewModel.importDebtsFromCsv(csvText) },
+                                onImportDebtsFromCsv = { csvText ->
+                                    val (debtOk, debtMsg) = viewModel.importDebtsFromAnyFormat(csvText)
+                                    if (debtOk) Pair(true, debtMsg)
+                                    else viewModel.importFinancialContentSmartDetailed(csvText, "Debt Import", isDebtHint = true)
+                                },
                                 onExportDebtsToCsv = { viewModel.exportDebtsToCsv() },
                                 onSyncGoogleDrive = { viewModel.performDebtDriveSync(null) },
-                                onConnectGoogleDrive = { viewModel.performDebtDriveSync(null) },
+                                onConnectGoogleDrive = {
+                                    try {
+                                        val pendingIntent = viewModel.getPendingAuthIntent()
+                                        if (pendingIntent != null) {
+                                            googleSignInLauncher.launch(pendingIntent)
+                                        } else {
+                                            val client = viewModel.getGoogleSignInClient()
+                                            googleSignInLauncher.launch(client.signInIntent)
+                                        }
+                                    } catch (e: Exception) {
+                                        try {
+                                            googleSignInLauncher.launch(viewModel.getGoogleSignInClient().signInIntent)
+                                        } catch (_: Exception) {}
+                                    }
+                                },
                                 isSyncing = uiState.syncState is com.example.sync.SyncState.Syncing,
                                 accountEmail = uiState.driveAccountEmail,
+                                onListDriveFiles = { viewModel.listDriveFiles() },
+                                onImportSpecificDriveFile = { file -> viewModel.importSpecificDriveFile(file, isDebtSection = true) },
+                                onImportGoogleSheetByUrlOrId = { urlOrId -> viewModel.importGoogleSheetByUrlOrId(urlOrId, isDebtHint = true) },
+                                onImportAnyDataDetailed = { data -> viewModel.importFinancialContentSmartDetailed(data, "Debt Import", isDebtHint = true) },
+                                onSaveCustomToken = { token -> viewModel.saveCustomDriveToken(token) },
                                 onLogPayment = { dId, pAmt, princ, intAmt, note, createExp ->
                                     viewModel.logDebtPayment(dId, pAmt, princ, intAmt, note, createExp)
                                 },
@@ -1295,6 +1786,7 @@ fun BudgetAppMain(
                                 .fillMaxSize()
                                 .widthIn(max = 1400.dp)
                                 .align(Alignment.TopCenter)
+                                .padding(horizontal = if (isWideScreen) 14.dp else 8.dp, vertical = 4.dp)
                                 .verticalScroll(pageScrollState)
                         ) {
                             AccountSwitcherCarousel(
@@ -1306,6 +1798,8 @@ fun BudgetAppMain(
                                 onMoveAccount = { acc, dir -> viewModel.moveAccount(acc, dir) },
                                 onSetAccountBalance = { acc, bal -> viewModel.setAccountBalance(acc, bal) },
                                 onAddAccountWithBalance = { name, bal -> viewModel.addAccount(name, bal) },
+                                onTransferFunds = { from, to, amt, note -> viewModel.transferFunds(from, to, amt, note) },
+                                onReconcileBalance = { acc, bal -> viewModel.reconcileAccountBalance(acc, bal) },
                                 isWideScreen = isWideScreen
                             )
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1324,6 +1818,7 @@ fun BudgetAppMain(
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
                     }
                     6 -> {
@@ -1334,13 +1829,16 @@ fun BudgetAppMain(
                                 .fillMaxSize()
                                 .widthIn(max = 1400.dp)
                                 .align(Alignment.TopCenter)
+                                .padding(horizontal = if (isWideScreen) 14.dp else 8.dp, vertical = 4.dp)
                                 .verticalScroll(pageScrollState)
                         ) {
                             AiFinancialHubView(
                                 uiState = uiState,
                                 onOpenQuickEntry = { showAiQuickEntryDialog = true },
-                                onOpenReceiptScanner = { showAiReceiptScannerDialog = true }
+                                onOpenReceiptScanner = { showAiReceiptScannerDialog = true },
+                                isWideScreen = isWideScreen
                             )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
                         }
                     }
                     7 -> {
@@ -1351,6 +1849,7 @@ fun BudgetAppMain(
                                 .fillMaxSize()
                                 .widthIn(max = 1400.dp)
                                 .align(Alignment.TopCenter)
+                                .padding(horizontal = if (isWideScreen) 14.dp else 8.dp, vertical = 4.dp)
                                 .verticalScroll(pageScrollState)
                         ) {
                             SettingsView(
@@ -1365,7 +1864,19 @@ fun BudgetAppMain(
                                 onExportBackup = viewModel::exportToJson,
                                 onImportBackup = viewModel::importFromJson,
                                 onConnectGoogleDrive = {
-                                    googleSignInLauncher.launch(viewModel.getGoogleSignInClient().signInIntent)
+                                    try {
+                                        val pendingIntent = viewModel.getPendingAuthIntent()
+                                        if (pendingIntent != null) {
+                                            googleSignInLauncher.launch(pendingIntent)
+                                        } else {
+                                            val client = viewModel.getGoogleSignInClient()
+                                            googleSignInLauncher.launch(client.signInIntent)
+                                        }
+                                    } catch (e: Exception) {
+                                        try {
+                                            googleSignInLauncher.launch(viewModel.getGoogleSignInClient().signInIntent)
+                                        } catch (_: Exception) {}
+                                    }
                                 },
                                 onSaveCustomDriveToken = { viewModel.saveCustomDriveToken(it) },
                                 onSaveCustomDriveCredentials = { clientId, clientSecret, refreshToken, accessToken ->
@@ -1379,11 +1890,38 @@ fun BudgetAppMain(
                                 onToggleDriveAutoSync = { viewModel.toggleDriveAutoSync(it) },
                                 onConnectCustomSyncEmail = { viewModel.connectDriveAccountWithEmail(it) },
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
+                                onListDriveFiles = { viewModel.listDriveFiles() },
+                                onImportSpecificDriveFile = { viewModel.importSpecificDriveFile(it) },
+                                onImportGoogleSheetByUrlOrId = { viewModel.importGoogleSheetByUrlOrId(it) },
                                 onExportToGoogleSheets = { onComplete -> viewModel.performExportToGoogleSheets(onComplete) },
                                 onExportCsv = viewModel::exportToCsv,
                                 onImportCsv = viewModel::importFromCsv,
+                                onImportAnyDataDetailed = { viewModel.importAnyDataDetailed(it) },
                                 onExportWebCompanionToGoogleDrive = { htmlContent -> viewModel.exportWebCompanionToGoogleDrive(htmlContent) },
+                                onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
                                 onClearDatabase = { viewModel.clearDatabase() },
+                                isWideScreen = isWideScreen
+                            )
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                        }
+                    }
+                    8 -> {
+                        // Monthly Summary Full Page
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .widthIn(max = 1400.dp)
+                                .align(Alignment.TopCenter)
+                        ) {
+                            MonthlySummaryView(
+                                uiState = uiState,
+                                onAddPlannedBill = { showPlannedBillsDialog = true },
+                                onAddExpense = {
+                                    preselectedDateForAdd = null
+                                    showAddDialog = true
+                                },
+                                onToggleCompleted = handleRequestToggleCompleted,
+                                onBack = { selectedTab = 0 },
                                 isWideScreen = isWideScreen
                             )
                         }
@@ -1426,13 +1964,101 @@ fun BudgetAppMain(
             transaction = tx,
             allAccounts = uiState.allAccounts,
             onDismiss = { editingTransaction = null },
-            onSave = { updated: TransactionEntity ->
-                viewModel.overrideTransaction(original = tx, updated = updated)
+            onSave = { updated: TransactionEntity, applyToBaseline: Boolean ->
+                viewModel.overrideTransaction(original = tx, updated = updated, applyToBaseline = applyToBaseline)
                 editingTransaction = null
             },
             onDelete = { deleted: TransactionEntity ->
-                viewModel.deleteTransaction(deleted)
+                deleteConfirmationTx = deleted
                 editingTransaction = null
+            }
+        )
+    }
+
+    // Dialog: Confirm Delete (This Cycle Only vs Recurring Baseline)
+    deleteConfirmationTx?.let { tx ->
+        val isRecurringOrSynth = tx.isRecurring || tx.id < 0 || tx.title.contains("(Planned)")
+        AlertDialog(
+            onDismissRequest = { deleteConfirmationTx = null },
+            title = {
+                Text(
+                    text = if (isRecurringOrSynth) "Delete Recurring Item" else "Delete Transaction",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "'${tx.title.replace(" (Planned)", "")}' (${String.format(Locale.US, "$%,.2f", tx.amount)})",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    if (isRecurringOrSynth) {
+                        Text(
+                            text = "This item is part of a recurring baseline across cycles. How would you like to remove it?",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("• This Cycle Only: Keeps other cycles independent.", fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+                                Text("• Delete Baseline: Completely removes it from all cycles.", fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = "Are you sure you want to delete this transaction from this pay cycle?",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (isRecurringOrSynth) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.deleteTransaction(tx, deleteBaseline = false)
+                                deleteConfirmationTx = null
+                            },
+                            modifier = Modifier.testTag("delete_cycle_only_button")
+                        ) {
+                            Text("This Cycle Only", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.deleteTransaction(tx, deleteBaseline = true)
+                                deleteConfirmationTx = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.testTag("delete_baseline_button")
+                        ) {
+                            Text("Delete Baseline", fontSize = 12.sp)
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            viewModel.deleteTransaction(tx, deleteBaseline = false)
+                            deleteConfirmationTx = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.testTag("confirm_delete_button")
+                    ) {
+                        Text("Delete")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteConfirmationTx = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -1521,12 +2147,32 @@ fun BudgetAppMain(
         )
     }
 
+    if (showGlobalTransferModal) {
+        TransferFundsDialog(
+            uiState = uiState,
+            onDismiss = { showGlobalTransferModal = false },
+            onConfirmTransfer = { from, to, amount, note ->
+                viewModel.transferFunds(from, to, amount, note)
+            }
+        )
+    }
+
+    if (showGlobalReconcileModal) {
+        ReconcileBalanceDialog(
+            uiState = uiState,
+            onDismiss = { showGlobalReconcileModal = false },
+            onConfirmReconcile = { account, actualBal ->
+                viewModel.reconcileAccountBalance(account, actualBal)
+            }
+        )
+    }
+
     // Dialog: Confirmation before marking complete
     transactionToConfirmComplete?.let { tx ->
         MarkCompleteConfirmationDialog(
             transaction = tx,
             onConfirm = {
-                viewModel.toggleTransactionCompleted(tx)
+                viewModel.updateTransactionStatus(tx, if (tx.isIncome) "cleared" else "paid")
                 if (notificationBillIdToCancel != 0) {
                     val notifManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                     notifManager?.cancel(notificationBillIdToCancel)
@@ -2085,7 +2731,7 @@ fun EnterIncomeView(
                                         .testTag("enter_income_recurring_checkbox")
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("Recur", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF166534))
+                                Text("Recurring Baseline", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFF6EE7B7) else Color(0xFF166534))
                             }
 
                             if (isRecurring) {
@@ -2443,7 +3089,8 @@ fun EnterIncomeView(
                                         FilterChip(
                                             selected = newFreq == f,
                                             onClick = { newFreq = f },
-                                            label = { Text(f, fontSize = 11.sp) }
+                                            label = { Text(f, fontSize = 9.5.sp) },
+                                            modifier = Modifier.height(24.dp)
                                         )
                                     }
                                 }
@@ -2596,51 +3243,51 @@ fun EnterIncomeView(
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
                                         color = accStyle.containerColor,
-                                        border = BorderStroke(1.dp, accStyle.borderColor)
+                                        border = BorderStroke(0.8.dp, accStyle.borderColor)
                                     ) {
                                         Column(modifier = Modifier.width(IntrinsicSize.Max)) {
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .height(3.5.dp)
+                                                    .height(2.5.dp)
                                                     .background(accStyle.borderColor)
                                             )
                                             Text(
                                                 text = "💳 " + tx.accountName,
-                                                fontSize = 11.sp,
+                                                fontSize = 9.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = accStyle.contentColor,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                             )
                                         }
                                     }
 
                                     // Date Chip
                                     Surface(
-                                        shape = RoundedCornerShape(4.dp),
+                                        shape = RoundedCornerShape(3.5.dp),
                                         color = if (isDark) Color(0xFF334155).copy(alpha = 0.5f) else Color(0xFFF1F5F9),
-                                        border = BorderStroke(1.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
+                                        border = BorderStroke(0.6.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
                                     ) {
                                         Text(
                                             text = txDate.format(formatter),
-                                            fontSize = 11.sp,
+                                            fontSize = 7.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
                                         )
                                     }
 
                                     if (tx.isRecurring) {
                                         Surface(
-                                            shape = RoundedCornerShape(4.dp),
+                                            shape = RoundedCornerShape(3.5.dp),
                                             color = if (isDark) Color(0xFF064E3B) else Color(0xFFDCFCE7)
                                         ) {
                                             Text(
                                                 text = "🔄 Bi-Weekly",
-                                                fontSize = 11.sp,
+                                                fontSize = 7.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = if (isDark) Color(0xFF4ADE80) else Color(0xFF15803D),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
                                             )
                                         }
                                     }
@@ -2658,7 +3305,7 @@ fun EnterIncomeView(
                                     TransactionStatusChip(
                                         status = tx.getEffectiveStatus(),
                                         isIncome = true,
-                                        fontSize = 11.sp,
+                                        fontSize = 7.sp,
                                         onStatusChange = { newSt ->
                                             onEditIncome(tx.copy(status = newSt, isCompleted = newSt in listOf("paid", "cleared")))
                                         },
@@ -2755,7 +3402,7 @@ fun EnterIncomeView(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
+        val useSplitColumns = isWideScreen && maxWidth >= 540.dp
         if (useSplitColumns) {
             Row(
                 modifier = Modifier
@@ -2781,7 +3428,7 @@ fun EnterIncomeView(
                 .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (isIncomeReorderActive || incomeSectionOrder != listOf("income_form", "income_list")) {
+            if (isIncomeReorderActive) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isIncomeReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
@@ -2960,10 +3607,11 @@ fun EnterExpensesView(
 
             val dueDate = try {
                 val orig = LocalDate.parse(planned.dueDate)
-                val day = minOf(orig.dayOfMonth, month.lengthOfMonth())
+                val day = orig.dayOfMonth.coerceIn(1, month.lengthOfMonth())
                 LocalDate.of(month.year, month.month, day)
             } catch (e: Exception) {
-                month.atDay(15)
+                val day = (planned.dueDate.filter { it.isDigit() }.toIntOrNull() ?: 15).coerceIn(1, month.lengthOfMonth())
+                LocalDate.of(month.year, month.month, day)
             }
             val dStart = DateUtils.localDateToMillis(dueDate)
             val dEnd = DateUtils.localDateToMillis(dueDate.plusDays(1))
@@ -3127,11 +3775,11 @@ fun EnterExpensesView(
                         label = {
                             Text(
                                 text = label,
-                                fontSize = 11.sp,
+                                fontSize = 9.5.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                             )
                         },
-                        modifier = Modifier.testTag("filter_chip_$index")
+                        modifier = Modifier.height(24.dp).testTag("filter_chip_$index")
                     )
                 }
 
@@ -3143,11 +3791,11 @@ fun EnterExpensesView(
                     label = {
                         Text(
                             text = "💳 Credit Cards",
-                            fontSize = 11.sp,
+                            fontSize = 9.5.sp,
                             fontWeight = if (categoryFilter == "Credit Cards") FontWeight.Bold else FontWeight.Medium
                         )
                     },
-                    modifier = Modifier.testTag("filter_chip_credit_cards")
+                    modifier = Modifier.height(24.dp).testTag("filter_chip_credit_cards")
                 )
 
                 FilterChip(
@@ -3158,11 +3806,11 @@ fun EnterExpensesView(
                     label = {
                         Text(
                             text = "📋 Core Bills",
-                            fontSize = 11.sp,
+                            fontSize = 9.5.sp,
                             fontWeight = if (categoryFilter == "Core Bills") FontWeight.Bold else FontWeight.Medium
                         )
                     },
-                    modifier = Modifier.testTag("filter_chip_core_bills")
+                    modifier = Modifier.height(24.dp).testTag("filter_chip_core_bills")
                 )
             }
 
@@ -3284,7 +3932,7 @@ fun EnterExpensesView(
                                         .testTag("enter_expense_recurring_checkbox")
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Text("Recur Monthly", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFFFCA5A5) else Color(0xFF7F1D1D))
+                                Text("Recurring Baseline", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color(0xFFFCA5A5) else Color(0xFF7F1D1D))
                             }
 
                             Row(
@@ -3326,7 +3974,7 @@ fun EnterExpensesView(
                                 TransactionStatusChip(
                                     status = expenseStatus,
                                     isIncome = false,
-                                    fontSize = 10.sp,
+                                    fontSize = 7.sp,
                                     onStatusChange = { expenseStatus = it },
                                     testTag = "enter_expense_status_chip"
                                 )
@@ -3398,8 +4046,8 @@ fun EnterExpensesView(
                             quickDates.forEach { (lbl, qDate) ->
                                 SuggestionChip(
                                     onClick = { dueDateInput = qDate.toString() },
-                                    label = { Text(lbl, fontSize = 9.sp) },
-                                    modifier = Modifier.height(28.dp)
+                                    label = { Text(lbl, fontSize = 8.5.sp) },
+                                    modifier = Modifier.height(24.dp)
                                 )
                             }
                         }
@@ -3593,14 +4241,14 @@ fun EnterExpensesView(
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
                                         color = catColor.copy(alpha = if (isDark) 0.22f else 0.12f),
-                                        border = BorderStroke(1.dp, catColor.copy(alpha = 0.45f))
+                                        border = BorderStroke(0.8.dp, catColor.copy(alpha = 0.45f))
                                     ) {
                                         Text(
                                             text = "$catEmoji $catParent",
-                                            fontSize = 11.sp,
+                                            fontSize = 9.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = catColor,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                         )
                                     }
 
@@ -3609,21 +4257,21 @@ fun EnterExpensesView(
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
                                         color = accStyle.containerColor,
-                                        border = BorderStroke(1.dp, accStyle.borderColor)
+                                        border = BorderStroke(0.8.dp, accStyle.borderColor)
                                     ) {
                                         Column(modifier = Modifier.width(IntrinsicSize.Max)) {
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .height(3.5.dp)
+                                                    .height(2.5.dp)
                                                     .background(accStyle.borderColor)
                                             )
                                             Text(
                                                 text = "💳 " + tx.accountName,
-                                                fontSize = 11.sp,
+                                                fontSize = 9.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = accStyle.contentColor,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                             )
                                         }
                                     }
@@ -3632,14 +4280,14 @@ fun EnterExpensesView(
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
                                         color = if (isDark) Color(0xFF334155).copy(alpha = 0.5f) else Color(0xFFF1F5F9),
-                                        border = BorderStroke(1.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
+                                        border = BorderStroke(0.8.dp, if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
                                     ) {
                                         Text(
                                             text = txDate.format(formatter),
-                                            fontSize = 11.sp,
+                                            fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                         )
                                     }
 
@@ -3650,10 +4298,10 @@ fun EnterExpensesView(
                                         ) {
                                             Text(
                                                 text = "🔄 Monthly",
-                                                fontSize = 11.sp,
+                                                fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = if (isDark) Color(0xFF60A5FA) else Color(0xFF1D4ED8),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                             )
                                         }
                                     }
@@ -3681,17 +4329,17 @@ fun EnterExpensesView(
                                         ) {
                                             Text(
                                                 text = reminderText,
-                                                fontSize = 11.sp,
+                                                fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = if (isDark) Color(0xFF34D399) else Color(0xFF047857),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                             )
                                         }
                                     }
                                     TransactionStatusChip(
                                         status = tx.getEffectiveStatus(),
                                         isIncome = false,
-                                        fontSize = 11.sp,
+                                        fontSize = 7.sp,
                                         onStatusChange = { newSt ->
                                             if (onUpdateExpenseStatus != null) {
                                                 onUpdateExpenseStatus(tx, newSt)
@@ -3905,7 +4553,7 @@ fun EnterExpensesView(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
+        val useSplitColumns = isWideScreen && maxWidth >= 540.dp
         if (useSplitColumns) {
             Row(
                 modifier = Modifier
@@ -3931,7 +4579,7 @@ fun EnterExpensesView(
                 .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (isExpenseReorderActive || expenseSectionOrder != listOf("expense_form", "expense_list")) {
+            if (isExpenseReorderActive) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isExpenseReorderActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
@@ -4045,73 +4693,71 @@ fun MovableSectionWrapper(
 ) {
     val haptic = LocalHapticFeedback.current
 
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = if (isSubSection) 1.dp else 2.dp)
-            .animateContentSize(),
-        shape = RoundedCornerShape(if (isSubSection) 10.dp else 12.dp),
-        color = if (isReordering) 
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isSubSection) 0.08f else 0.12f) 
-        else 
-            Color.Transparent,
-        border = BorderStroke(
-            width = if (isReordering) 1.5.dp else 0.dp,
-            color = if (isReordering) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) 
-                   else Color.Transparent
-        )
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Drag handle & Section header bar with Move controls
-            Surface(
-                shape = RoundedCornerShape(if (isSubSection) 10.dp else 12.dp),
-                color = if (isReordering) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                       else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isSubSection) 0.25f else 0.35f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onToggleReorder()
-                    }
-                    .testTag("section_header_$sectionKey")
-            ) {
-                Row(
+    if (!isReordering) {
+        // When not reordering, render content cleanly without any banner or header taking up space
+        Box(modifier = modifier.fillMaxWidth()) {
+            content()
+        }
+    } else {
+        Surface(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(vertical = if (isSubSection) 1.dp else 2.dp)
+                .animateContentSize(),
+            shape = RoundedCornerShape(if (isSubSection) 10.dp else 12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isSubSection) 0.08f else 0.12f),
+            border = BorderStroke(
+                width = 1.5.dp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+            )
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Drag handle & Section header bar with Move controls
+                Surface(
+                    shape = RoundedCornerShape(if (isSubSection) 10.dp else 12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = if (isSubSection) 8.dp else 10.dp, vertical = if (isSubSection) 3.dp else 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggleReorder()
+                        }
+                        .testTag("section_header_$sectionKey")
                 ) {
                     Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = if (isSubSection) 8.dp else 10.dp, vertical = if (isSubSection) 3.dp else 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.weight(1f)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Drag Handle / Lock Status icon
-                        Icon(
-                            imageVector = if (isReordering) Icons.Default.LockOpen else Icons.Default.DragHandle,
-                            contentDescription = if (isReordering) "Unlocked" else "Reorder section",
-                            tint = if (isReordering) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(if (isSubSection) 18.dp else 20.dp)
-                        )
-                        Text(
-                            text = sectionTitle,
-                            fontSize = if (isSubSection) 11.sp else 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                    }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LockOpen,
+                                contentDescription = "Unlocked",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(if (isSubSection) 18.dp else 20.dp)
+                            )
+                            Text(
+                                text = sectionTitle,
+                                fontSize = if (isSubSection) 11.sp else 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                        }
 
-                    // Move Up / Move Down buttons & Reorder / Lock controls
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        if (isReordering) {
-                            // Move Up button
+                        // Move Up / Move Down buttons & Lock control
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
                             Surface(
                                 shape = CircleShape,
                                 color = if (index > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -4133,7 +4779,6 @@ fun MovableSectionWrapper(
                                 }
                             }
 
-                            // Move Down button
                             Surface(
                                 shape = CircleShape,
                                 color = if (index < totalSections - 1) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -4187,49 +4832,18 @@ fun MovableSectionWrapper(
                                     )
                                 }
                             }
-                        } else {
-                            // Unlocked/Reorder affordance pill
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                                modifier = Modifier.clickable { 
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onToggleReorder() 
-                                }
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.SwapVert,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Text(
-                                        text = "Reorder",
-                                        fontSize = 8.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                }
-                            }
                         }
                     }
                 }
-            }
 
-            // Section body
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp)
-            ) {
-                content()
+                // Section body
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp)
+                ) {
+                    content()
+                }
             }
         }
     }
@@ -4318,16 +4932,17 @@ fun FoldableNavigationRail(
     modifier: Modifier = Modifier,
     isCompactHeight: Boolean = false
 ) {
-    data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+    data class NavItem(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val tabIndex: Int)
     val items = listOf(
-        NavItem("Overview", Icons.Default.Home),
-        NavItem("Income", Icons.Default.TrendingUp),
-        NavItem("Expenses", Icons.Default.ShoppingCart),
-        NavItem("Upcoming", Icons.Default.Schedule),
-        NavItem("Debt", Icons.Default.CreditCard),
-        NavItem("Calendar", Icons.Default.DateRange),
-        NavItem("AI Hub", Icons.Default.AutoAwesome),
-        NavItem("Settings", Icons.Default.Settings)
+        NavItem("Overview", Icons.Default.Home, 0),
+        NavItem("Income", Icons.Default.TrendingUp, 1),
+        NavItem("Expenses", Icons.Default.ShoppingCart, 2),
+        NavItem("Upcoming", Icons.Default.Schedule, 3),
+        NavItem("Summary", Icons.Default.Summarize, 8),
+        NavItem("Debt", Icons.Default.CreditCard, 4),
+        NavItem("Calendar", Icons.Default.DateRange, 5),
+        NavItem("AI Hub", Icons.Default.AutoAwesome, 6),
+        NavItem("Settings", Icons.Default.Settings, 7)
     )
     val haptic = LocalHapticFeedback.current
 
@@ -4382,13 +4997,13 @@ fun FoldableNavigationRail(
             verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 1.dp else 4.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            items.forEachIndexed { index, item ->
-                val isSelected = selectedTab == index
+            items.forEach { item ->
+                val isSelected = selectedTab == item.tabIndex
                 NavigationRailItem(
                     selected = isSelected,
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onTabSelected(index)
+                        onTabSelected(item.tabIndex)
                     },
                     icon = {
                         Icon(
@@ -4409,7 +5024,7 @@ fun FoldableNavigationRail(
                         selectedTextColor = MaterialTheme.colorScheme.primary,
                         indicatorColor = MaterialTheme.colorScheme.primary
                     ),
-                    modifier = Modifier.testTag("nav_rail_$index")
+                    modifier = Modifier.testTag("nav_rail_${item.tabIndex}")
                 )
             }
         }
@@ -4428,6 +5043,7 @@ fun FoldableBottomNavBar(
         NavItem("Income", Icons.Default.Add, 1),
         NavItem("Expenses", Icons.Default.ShoppingCart, 2),
         NavItem("Upcoming", Icons.Default.Schedule, 3),
+        NavItem("Summary", Icons.Default.Summarize, 8),
         NavItem("Calendar", Icons.Default.DateRange, 5)
     )
 
@@ -4496,12 +5112,24 @@ fun SafeToSpendHeroCard(
     uiState: BudgetUiState,
     modifier: Modifier = Modifier,
     isWideScreen: Boolean = false,
-    isCompactHeight: Boolean = false
+    isCompactHeight: Boolean = false,
+    expanded: Boolean? = null,
+    onToggleExpand: (() -> Unit)? = null,
+    onOpenTransfer: (() -> Unit)? = null
 ) {
     val today = LocalDate.now()
     val period = uiState.currentPayPeriod
     val df = remember { java.time.format.DateTimeFormatter.ofPattern("MMM d", Locale.US) }
     var isRecapDismissed by rememberSaveable { mutableStateOf(false) }
+    var isDeficitBannerDismissed by rememberSaveable { mutableStateOf(false) }
+    var internalExpanded by rememberSaveable { mutableStateOf(false) }
+    val isExpanded = expanded ?: internalExpanded
+    val haptic = LocalHapticFeedback.current
+    val toggleAction = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (onToggleExpand != null) onToggleExpand() else internalExpanded = !internalExpanded
+    }
+    val arrowRotation by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f, label = "safe_arrow_rot")
 
     val safeToSpend = period?.remainingBalance ?: uiState.monthlyRemainingBalance
     val totalIncome = period?.totalIncome ?: uiState.monthlyTotalIncome
@@ -4511,14 +5139,140 @@ fun SafeToSpendHeroCard(
 
     val nextPayday = period?.endDate?.plusDays(1) ?: today.plusDays(14)
     val daysUntilPayday = java.time.temporal.ChronoUnit.DAYS.between(today, nextPayday).coerceAtLeast(0)
+    val dailyAllowance = if (daysUntilPayday > 0 && safeToSpend > 0) safeToSpend / daysUntilPayday else 0.0
+
+    // Feature 1: Safe-to-Spend Runway & Cashflow Deficit Warning Calculations
+    val pStart = period?.startDate ?: today
+    val pEnd = period?.endDate ?: today.plusDays(13)
+    val upcomingBillsInCycle = remember(uiState.plannedExpenses, uiState.allTransactions, uiState.allDebts, pStart, pEnd, uiState.activeAccountName) {
+        UpcomingExpenseCalculator.getUpcomingExpenses(
+            allTransactions = uiState.allTransactions,
+            plannedExpenses = uiState.plannedExpenses,
+            activeAccountName = uiState.activeAccountName,
+            today = today,
+            payPeriodStart = pStart,
+            payPeriodEnd = pEnd,
+            allDebts = uiState.allDebts
+        ).filter { item ->
+            val tx = item.transactionRef
+            !(tx?.isPaidOrCleared == true || tx?.isCompleted == true)
+        }
+    }
+    val upcomingBillsTotal = upcomingBillsInCycle.sumOf { it.amount }
+    val isDeficit = safeToSpend < 0.0
+    val isLowRunway = !isDeficit && (safeToSpend < upcomingBillsTotal * 0.3 || (dailyAllowance < 15.0 && daysUntilPayday > 2))
 
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // Cycle Recap Banner (Dismissible)
+        // Cashflow Deficit & Low Runway Warning Banner
         AnimatedVisibility(
-            visible = !isRecapDismissed,
+            visible = (isDeficit || isLowRunway) && !isDeficitBannerDismissed,
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut() + slideOutVertically()
+        ) {
+            val isDark = isSystemInDarkTheme()
+            val bannerBg = if (isDeficit) {
+                if (isDark) Color(0xFF450A0A) else Color(0xFFFEF2F2)
+            } else {
+                if (isDark) Color(0xFF78350F).copy(alpha = 0.6f) else Color(0xFFFFFBEB)
+            }
+            val bannerBorder = if (isDeficit) Color(0xFFEF4444) else Color(0xFFF59E0B)
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = bannerBg,
+                border = BorderStroke(1.2.dp, bannerBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("cashflow_deficit_warning_banner")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (isDeficit) "🚨" else "⚠️", fontSize = 16.sp)
+                            Text(
+                                text = if (isDeficit) "CASHFLOW DEFICIT WARNING" else "LOW RUNWAY WARNING",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (isDeficit) Color(0xFFDC2626) else Color(0xFFD97706),
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                        IconButton(
+                            onClick = { isDeficitBannerDismissed = true },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss warning",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = if (isDeficit) {
+                            "Upcoming bills ($${String.format(Locale.US, "%,.2f", upcomingBillsTotal)}) exceed projected cashflow by $${String.format(Locale.US, "%,.2f", kotlin.math.abs(safeToSpend))} before next payday on ${nextPayday.format(df)}."
+                        } else {
+                            "Tight buffer: Only $${String.format(Locale.US, "%,.2f", safeToSpend)} remaining with $${String.format(Locale.US, "%,.2f", upcomingBillsTotal)} in bills due across the next ${daysUntilPayday} days."
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = (if (isDeficit) Color(0xFFDC2626) else Color(0xFFD97706)).copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = if (isDeficit) "Safe Daily Spend: $0.00/day (Freeze discretionary)" else "Suggested Cap: $${String.format(Locale.US, "%,.2f", dailyAllowance)}/day",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isDeficit) Color(0xFFDC2626) else Color(0xFFB45309),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        if (onOpenTransfer != null) {
+                            FilledTonalButton(
+                                onClick = onOpenTransfer,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(12.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Transfer Funds", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Cycle Recap Banner (Dismissible, only shown when expanded)
+        AnimatedVisibility(
+            visible = isExpanded && !isRecapDismissed,
             enter = fadeIn() + slideInVertically(),
             exit = fadeOut() + slideOutVertically()
         ) {
@@ -4585,10 +5339,10 @@ fun SafeToSpendHeroCard(
         Card(
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(if (isExpanded) 3.dp else 1.5.dp)
             ),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isExpanded) 0.6f else 0.35f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (isExpanded) 2.dp else 1.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("safe_to_spend_hero_card")
@@ -4599,15 +5353,20 @@ fun SafeToSpendHeroCard(
                     .padding(horizontal = if (isWideScreen) 14.dp else 10.dp, vertical = if (isCompactHeight) 4.dp else if (isWideScreen) 10.dp else 7.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                // Top header: Status Badge + Cycle Range
+                // Top header: Status Badge + Cycle Range (Clickable to toggle expand / collapse)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { toggleAction() }
+                        .testTag("safe_to_spend_header_toggle"),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f, fill = false)
                     ) {
                         Surface(
                             shape = CircleShape,
@@ -4619,223 +5378,333 @@ fun SafeToSpendHeroCard(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.8.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                    ) {
-                        Text(
-                            text = if (period != null) "${period.startDate.format(df)} – ${period.endDate.format(df)}" else "Current Month",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                // Main Amount Display
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f", safeToSpend),
-                            fontSize = if (isWideScreen) 28.sp else 23.sp,
-                            fontWeight = FontWeight.Black,
-                            color = if (safeToSpend >= 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
-                        )
-                        Text(
-                            text = if (safeToSpend >= 0) {
-                                if (isWideScreen) "Free cash remaining for this pay cycle" else "Free cash this cycle"
-                            } else {
-                                "Over budget by ${String.format(Locale.US, "$%,.2f", -safeToSpend)}"
-                            },
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            softWrap = false
                         )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                        ) {
+                            Text(
+                                text = if (period != null) "${period.startDate.format(df)} – ${period.endDate.format(df)}" else "Current Month",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
 
-                    // Status Pill
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = when {
-                            safeToSpend > totalAvailable * 0.3 -> Color(0xFF10B981).copy(alpha = 0.15f)
-                            safeToSpend >= 0 -> Color(0xFFF59E0B).copy(alpha = 0.15f)
-                            else -> MaterialTheme.colorScheme.errorContainer
-                        }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = when {
-                                safeToSpend > totalAvailable * 0.3 -> if (isWideScreen) "💚 On Track" else "💚 Good"
-                                safeToSpend >= 0 -> if (isWideScreen) "⚠️ Watchful" else "⚠️ Caution"
-                                else -> if (isWideScreen) "🚨 Attention" else "🚨 Over"
-                            },
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = when {
-                                safeToSpend > totalAvailable * 0.3 -> Color(0xFF059669)
-                                safeToSpend >= 0 -> Color(0xFFD97706)
-                                else -> MaterialTheme.colorScheme.onErrorContainer
-                            },
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        if (!isExpanded) {
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    text = String.format(Locale.US, "$%,.2f", safeToSpend),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (safeToSpend >= 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                )
+                                if (safeToSpend > 0 && daysUntilPayday > 0) {
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.2f/day (%dd)", dailyAllowance, daysUntilPayday),
+                                        fontSize = 8.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = when {
+                                    safeToSpend > totalAvailable * 0.3 -> Color(0xFF10B981).copy(alpha = 0.15f)
+                                    safeToSpend >= 0 -> Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                    else -> MaterialTheme.colorScheme.errorContainer
+                                }
+                            ) {
+                                Text(
+                                    text = when {
+                                        safeToSpend > totalAvailable * 0.3 -> if (isWideScreen) "💚 On Track" else "💚 Good"
+                                        safeToSpend >= 0 -> if (isWideScreen) "⚠️ Watchful" else "⚠️ Caution"
+                                        else -> if (isWideScreen) "🚨 Attention" else "🚨 Over"
+                                    },
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when {
+                                        safeToSpend > totalAvailable * 0.3 -> Color(0xFF059669)
+                                        safeToSpend >= 0 -> Color(0xFFD97706)
+                                        else -> MaterialTheme.colorScheme.onErrorContainer
+                                    },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isExpanded) "Collapse Safe-To-Spend" else "Expand Safe-To-Spend",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(arrowRotation)
                         )
                     }
                 }
 
-                // Progress Bar
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                // Collapsed Mini Progress Bar
+                if (!isExpanded && totalAvailable > 0) {
                     LinearProgressIndicator(
                         progress = { spentPct },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(5.dp)
-                            .clip(RoundedCornerShape(3.dp)),
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp)),
                         color = when {
                             spentPct > 0.9f -> MaterialTheme.colorScheme.error
                             spentPct > 0.7f -> Color(0xFFF59E0B)
-                            else -> MaterialTheme.colorScheme.primary
+                            else -> Color(0xFF10B981)
                         },
                         trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "${(spentPct * 100).toInt()}% committed",
-                            fontSize = 9.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "${((1f - spentPct).coerceAtLeast(0f) * 100).toInt()}% available",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
 
-                // 3 Quick Metrics Footer (Income/Available, Bills/Expenses, Days to Payday)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                // Expanded Card Content
+                AnimatedVisibility(
+                    visible = isExpanded,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isWideScreen) "AVAILABLE CASH" else "AVAILABLE",
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalAvailable) else String.format(Locale.US, "$%,.0f", totalAvailable),
-                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isWideScreen) "PLANNED BILLS" else "BILLS DUE",
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalExpenses) else String.format(Locale.US, "$%,.0f", totalExpenses),
-                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (isWideScreen) "NEXT PAYDAY" else "PAYDAY",
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (daysUntilPayday == 0L) (if (isWideScreen) "Today! 🎉" else "Today!") else (if (isWideScreen) "in ${daysUntilPayday}d" else "${daysUntilPayday}d"),
-                            fontSize = if (isWideScreen) 14.sp else 12.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-
-                // 3-Month Horizon Financial Intelligence Snapshot
-                if (uiState.futurePayPeriods.isNotEmpty()) {
-                    val horizonPeriods = uiState.futurePayPeriods.take(7)
-                    val threeMoIncome = horizonPeriods.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
-                    val threeMoExpenses = horizonPeriods.sumOf { it.totalExpenses }
-                    val threeMoNet = threeMoIncome - threeMoExpenses
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
+                        Spacer(modifier = Modifier.height(2.dp))
+
+                        // Main Amount Display
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(13.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = String.format(Locale.US, "$%,.2f", safeToSpend),
+                                    fontSize = if (isWideScreen) 28.sp else 23.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (safeToSpend >= 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    text = if (safeToSpend >= 0) {
+                                        if (isWideScreen) "Free cash remaining for this pay cycle" else "Free cash this cycle"
+                                    } else {
+                                        "Over budget by ${String.format(Locale.US, "$%,.2f", -safeToSpend)}"
+                                    },
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            // Status Pill
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = when {
+                                    safeToSpend > totalAvailable * 0.3 -> Color(0xFF10B981).copy(alpha = 0.15f)
+                                    safeToSpend >= 0 -> Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                    else -> MaterialTheme.colorScheme.errorContainer
+                                }
+                            ) {
+                                Text(
+                                    text = when {
+                                        safeToSpend > totalAvailable * 0.3 -> if (isWideScreen) "💚 On Track" else "💚 Good"
+                                        safeToSpend >= 0 -> if (isWideScreen) "⚠️ Watchful" else "⚠️ Caution"
+                                        else -> if (isWideScreen) "🚨 Attention" else "🚨 Over"
+                                    },
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when {
+                                        safeToSpend > totalAvailable * 0.3 -> Color(0xFF059669)
+                                        safeToSpend >= 0 -> Color(0xFFD97706)
+                                        else -> MaterialTheme.colorScheme.onErrorContainer
+                                    },
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+
+                        // Progress Bar
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            LinearProgressIndicator(
+                                progress = { spentPct },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(5.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = when {
+                                    spentPct > 0.9f -> MaterialTheme.colorScheme.error
+                                    spentPct > 0.7f -> Color(0xFFF59E0B)
+                                    else -> MaterialTheme.colorScheme.primary
+                                },
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
                             )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "${(spentPct * 100).toInt()}% committed",
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${((1f - spentPct).coerceAtLeast(0f) * 100).toInt()}% available",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        // 3 Quick Metrics Footer (Income/Available, Bills/Expenses, Days to Payday)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isWideScreen) "AVAILABLE CASH" else "AVAILABLE",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalAvailable) else String.format(Locale.US, "$%,.0f", totalAvailable),
+                                    fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isWideScreen) "PLANNED BILLS" else "BILLS DUE",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (isWideScreen) String.format(Locale.US, "$%,.2f", totalExpenses) else String.format(Locale.US, "$%,.0f", totalExpenses),
+                                    fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isWideScreen) "NEXT PAYDAY" else "PAYDAY",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = if (daysUntilPayday == 0L) (if (isWideScreen) "Today! 🎉" else "Today!") else (if (isWideScreen) "in ${daysUntilPayday}d" else "${daysUntilPayday}d"),
+                                    fontSize = if (isWideScreen) 14.sp else 12.5.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // 3-Month Horizon Financial Intelligence Snapshot
+                        if (uiState.futurePayPeriods.isNotEmpty()) {
+                            val horizonPeriods = uiState.futurePayPeriods.take(7)
+                            val threeMoIncome = horizonPeriods.sumOf { it.totalIncomeWithCarryover - it.carryoverFromPrevious }
+                            val threeMoExpenses = horizonPeriods.sumOf { it.totalExpenses }
+                            val threeMoNet = threeMoIncome - threeMoExpenses
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "3-Mo Financial Outlook",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                Text(
+                                    text = "${if (threeMoNet >= 0) "Surplus: +" else "Deficit: "}${String.format(Locale.US, "$%,.0f", threeMoNet)}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (threeMoNet >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                                )
+                            }
+
+                            // Spend Remaining Guidance Summary
+                            val guidance = if (safeToSpend > 0) {
+                                if (threeMoNet >= 0) {
+                                    "Safe to allocate: 40% safety buffer ($${String.format(Locale.US, "%.0f", safeToSpend * 0.4)}), 30% savings/goals ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)}), 30% guilt-free ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)})."
+                                } else {
+                                    "Caution: Upcoming 3-mo deficit ($${String.format(Locale.US, "%,.0f", Math.abs(threeMoNet))}). Prioritize reserving remaining buffer to protect future cycles."
+                                }
+                            } else {
+                                "Discretionary funds exhausted for this cycle. Freeze optional spending until next payday."
+                            }
+
                             Text(
-                                text = "3-Mo Financial Outlook",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary
+                                text = guidance,
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 13.sp
                             )
                         }
-                        Text(
-                            text = "${if (threeMoNet >= 0) "Surplus: +" else "Deficit: "}${String.format(Locale.US, "$%,.0f", threeMoNet)}",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (threeMoNet >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
-                        )
                     }
-
-                    // Spend Remaining Guidance Summary
-                    val guidance = if (safeToSpend > 0) {
-                        if (threeMoNet >= 0) {
-                            "Safe to allocate: 40% safety buffer ($${String.format(Locale.US, "%.0f", safeToSpend * 0.4)}), 30% savings/goals ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)}), 30% guilt-free ($${String.format(Locale.US, "%.0f", safeToSpend * 0.3)})."
-                        } else {
-                            "Caution: Upcoming 3-mo deficit ($${String.format(Locale.US, "%,.0f", Math.abs(threeMoNet))}). Prioritize reserving remaining buffer to protect future cycles."
-                        }
-                    } else {
-                        "Discretionary funds exhausted for this cycle. Freeze optional spending until next payday."
-                    }
-
-                    Text(
-                        text = guidance,
-                        fontSize = 9.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 13.sp
-                    )
                 }
             }
         }
@@ -4861,7 +5730,9 @@ fun CurrentFocusDebtCard(
     onLogPayment: (debtId: Int, paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit,
     onTogglePaidOff: (DebtEntity) -> Unit,
     modifier: Modifier = Modifier,
-    isWideScreen: Boolean = false
+    isWideScreen: Boolean = false,
+    expanded: Boolean? = null,
+    onToggleExpand: (() -> Unit)? = null
 ) {
     val debts = uiState.allDebts
     if (debts.isEmpty()) return
@@ -4871,6 +5742,14 @@ fun CurrentFocusDebtCard(
     }
 
     var showPaymentDialog by remember { mutableStateOf(false) }
+    var internalExpanded by rememberSaveable { mutableStateOf(false) }
+    val isExpanded = expanded ?: internalExpanded
+    val haptic = LocalHapticFeedback.current
+    val toggleAction = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (onToggleExpand != null) onToggleExpand() else internalExpanded = !internalExpanded
+    }
+    val arrowRotation by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f, label = "debt_arrow_rot")
 
     // If all debts are paid off, show an inspiring celebration banner
     if (activeDebts.isEmpty()) {
@@ -4954,13 +5833,13 @@ fun CurrentFocusDebtCard(
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(if (isExpanded) 3.dp else 1.5.dp)
         ),
         border = BorderStroke(
             1.5.dp,
-            if (isPinned) Color(0xFF8B5CF6).copy(alpha = 0.6f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            if (isPinned) Color(0xFF8B5CF6).copy(alpha = if (isExpanded) 0.8f else 0.5f) else MaterialTheme.colorScheme.primary.copy(alpha = if (isExpanded) 0.6f else 0.35f)
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isExpanded) 2.dp else 1.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag("current_focus_debt_card")
@@ -4968,18 +5847,23 @@ fun CurrentFocusDebtCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = if (isWideScreen) 14.dp else 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = if (isWideScreen) 14.dp else 12.dp, vertical = if (isExpanded) 10.dp else 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Header Row: Target Badge + Total Active Count + Link to Planner
+            // Header Row: Target Badge + Total Active Count + Link to Planner / Quick Info (Clickable to toggle expand / collapse)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { toggleAction() }
+                    .testTag("focus_debt_header_toggle"),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f, fill = false)
                 ) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -4995,218 +5879,331 @@ fun CurrentFocusDebtCard(
                                 fontSize = 9.5.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 letterSpacing = 0.4.sp,
-                                color = if (isPinned) Color(0xFF7C3AED) else MaterialTheme.colorScheme.onPrimaryContainer
+                                color = if (isPinned) Color(0xFF7C3AED) else MaterialTheme.colorScheme.onPrimaryContainer,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
 
-                    Text(
-                        text = "1 of ${activeDebts.size} active",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { onNavigateToDebtPlanner() }
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                        .testTag("focus_debt_open_planner")
-                ) {
-                    Text(
-                        text = "Planner",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = "Open Debt Planner",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-            }
-
-            // Middle: Name, Category, Balance & Terms
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
+                    if (!isExpanded) {
                         Text(
-                            text = getDebtCategoryEmoji(focusDebt.category),
-                            fontSize = 16.sp
-                        )
-                        Text(
-                            text = focusDebt.name,
-                            fontSize = if (isWideScreen) 16.sp else 14.5.sp,
+                            text = "${getDebtCategoryEmoji(focusDebt.category)} ${focusDebt.name}",
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    } else {
                         Text(
-                            text = "${String.format(Locale.US, "%.1f", focusDebt.interestRate)}% APR",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "•",
+                            text = "1 of ${activeDebts.size} active",
                             fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.outlineVariant
-                        )
-                        Text(
-                            text = "Min: $${String.format(Locale.US, "%.0f", focusDebt.minimumPayment)}/mo",
-                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (!focusDebt.linkedAccountName.isNullOrBlank()) {
-                            Text(
-                                text = "•",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.outlineVariant
-                            )
-                            Text(
-                                text = "🏦 ${focusDebt.linkedAccountName}",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                     }
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    modifier = Modifier.padding(start = 8.dp)
-                ) {
-                    Text(
-                        text = String.format(Locale.US, "$%,.2f", focusDebt.balance),
-                        fontSize = if (isWideScreen) 20.sp else 17.sp,
-                        fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = if (focusDebt.totalPaidSoFar > 0.0) {
-                            "Paid: $${String.format(Locale.US, "%,.0f", focusDebt.totalPaidSoFar)}"
-                        } else {
-                            "Remaining Balance"
-                        },
-                        fontSize = 9.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Progress Bar
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = if (isPinned) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "$progressPct% Paid Off",
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (progressPct > 0) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = if (focusDebt.isLinkedToBills) "📅 Due Day: ${focusDebt.billDueDay}th" else "Pay minimums on other debts",
-                        fontSize = 9.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-            // Action Row: Log Payment Button + Mark Paid Off Button + Payoff Hint
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("💡", fontSize = 12.sp)
-                    Text(
-                        text = "Focus extra cash here for fastest payoff.",
-                        fontSize = 9.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = { onTogglePaidOff(focusDebt) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier
-                            .height(28.dp)
-                            .testTag("focus_debt_mark_paid_button"),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = "Mark Paid",
-                            modifier = Modifier.size(12.dp)
+                    if (!isExpanded) {
+                        Text(
+                            text = String.format(Locale.US, "$%,.2f", focusDebt.balance),
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text("Paid Off", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                        if (progressPct > 0) {
+                            Text(
+                                text = "$progressPct%",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF059669)
+                            )
+                        }
+
+                        // Quick 1-tap Pay action button in collapsed header
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showPaymentDialog = true
+                                }
+                                .testTag("focus_debt_quick_pay_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FlashOn,
+                                    contentDescription = "Quick Pay",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Text(
+                                    text = "Pay",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onNavigateToDebtPlanner() }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .testTag("focus_debt_open_planner")
+                        ) {
+                            Text(
+                                text = "Planner",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = "Open Debt Planner",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
 
-                    Button(
-                        onClick = { showPaymentDialog = true },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (isExpanded) "Collapse Target #1" else "Expand Target #1",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
-                            .height(28.dp)
-                            .testTag("focus_debt_log_payment_button"),
-                        shape = RoundedCornerShape(6.dp)
+                            .size(20.dp)
+                            .rotate(arrowRotation)
+                    )
+                }
+            }
+
+            // Collapsed Progress Bar
+            if (!isExpanded && progressPct > 0) {
+                LinearProgressIndicator(
+                    progress = { (progressPct / 100f).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = Color(0xFF10B981),
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            }
+
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    // Middle: Name, Category, Balance & Terms
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Payment,
-                            contentDescription = "Log Payment",
-                            modifier = Modifier.size(12.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Text(
+                                    text = getDebtCategoryEmoji(focusDebt.category),
+                                    fontSize = 16.sp
+                                )
+                                Text(
+                                    text = focusDebt.name,
+                                    fontSize = if (isWideScreen) 16.sp else 14.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(2.dp))
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "${String.format(Locale.US, "%.1f", focusDebt.interestRate)}% APR",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                                Text(
+                                    text = "•",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
+                                Text(
+                                    text = "Min: $${String.format(Locale.US, "%.0f", focusDebt.minimumPayment)}/mo",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (!focusDebt.linkedAccountName.isNullOrBlank()) {
+                                    Text(
+                                        text = "•",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
+                                    Text(
+                                        text = "🏦 ${focusDebt.linkedAccountName}",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text(
+                                text = String.format(Locale.US, "$%,.2f", focusDebt.balance),
+                                fontSize = if (isWideScreen) 20.sp else 17.sp,
+                                fontWeight = FontWeight.Black,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = if (focusDebt.totalPaidSoFar > 0.0) {
+                                    "Paid: $${String.format(Locale.US, "%,.0f", focusDebt.totalPaidSoFar)}"
+                                } else {
+                                    "Remaining"
+                                },
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Progress Bar
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = if (isPinned) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Log Payment", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "$progressPct% Paid Off",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (progressPct > 0) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "📅 Due: ${focusDebt.formatNextDueDate()}",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                    // Action Row: Log Payment Button + Mark Paid Off Button + Payoff Hint
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("💡", fontSize = 12.sp)
+                            Text(
+                                text = "Focus extra cash here for fastest payoff.",
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { onTogglePaidOff(focusDebt) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("focus_debt_mark_paid_button"),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Mark Paid",
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Paid Off", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            Button(
+                                onClick = { showPaymentDialog = true },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("focus_debt_log_payment_button"),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Payment,
+                                    contentDescription = "Log Payment",
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Log Payment", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -5232,8 +6229,8 @@ fun TransactionSearchAndFilterBar(
             FilterChip(
                 selected = selected,
                 onClick = { onStatusFilterChange(index) },
-                label = { Text(label, fontSize = 11.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
-                modifier = Modifier.testTag("filter_chip_$index")
+                label = { Text(label, fontSize = 9.5.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
+                modifier = Modifier.height(24.dp).testTag("filter_chip_$index")
             )
         }
     }
@@ -5254,6 +6251,8 @@ fun PayCyclesListView(
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     onNavigateToUpcoming: (() -> Unit)? = null,
     onDeduplicate: (() -> Unit)? = null,
+    onRestoreFinancialData: (() -> Unit)? = null,
+    onManualSyncDrive: (() -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     var isSyncingSheets by remember { mutableStateOf(false) }
@@ -5384,6 +6383,62 @@ fun PayCyclesListView(
                                     onStatusFilterChange = { statusFilter = it }
                                 )
 
+                                if (uiState.allTransactions.isEmpty()) {
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 8.dp)
+                                            .testTag("empty_data_recovery_card"),
+                                        shape = RoundedCornerShape(16.dp),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                                                Text("No Transactions Yet", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface)
+                                            }
+                                            Text(
+                                                "Start tracking your budget by adding your income and expenses, or restore your budget from 'My Drive/ PayCycle Budget/'.",
+                                                fontSize = 13.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                if (onRestoreFinancialData != null) {
+                                                    OutlinedButton(
+                                                        onClick = { onRestoreFinancialData() },
+                                                        modifier = Modifier.weight(1f).testTag("btn_restore_erased_data")
+                                                    ) {
+                                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text("Restore Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                    }
+                                                }
+                                                if (onManualSyncDrive != null) {
+                                                    Button(
+                                                        onClick = { onManualSyncDrive() },
+                                                        modifier = Modifier.weight(1f).testTag("btn_sync_erased_data"),
+                                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                                    ) {
+                                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text("Cloud Sync", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                                     val canUseTwoColumns = isWideScreen && maxWidth >= 640.dp && uiState.payPeriods.size > 1
                                     val colSpacing = 8.dp
@@ -5509,8 +6564,8 @@ fun PayCycleCard(
     val isNextCycle = remember(period.startDate, isCurrentCycle, today) {
         !isCurrentCycle && (period.startDate.isAfter(today) || period.startDate.isEqual(today))
     }
-    var expanded by remember(period.payday, isCurrentCycle, isWideScreen) {
-        mutableStateOf(isCurrentCycle || isWideScreen || isNextCycle)
+    var expanded by remember(period.payday, isCurrentCycle) {
+        mutableStateOf(isCurrentCycle)
     }
     var selectedAccountFilterInCycle by remember(period.payday) { mutableStateOf<String?>(null) }
 
@@ -5522,8 +6577,13 @@ fun PayCycleCard(
     val pct = period.spentPercentage
 
     val unpaidBillsInCycle = remember(period.transactions) {
-        period.transactions.filter { !it.isIncome && !it.isCompleted && it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted") }
+        period.transactions.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment && !it.isCompleted && it.status !in listOf("paid", "cleared") && it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted") }
     }
+    val paidBillsInCycle = remember(period.transactions) {
+        period.transactions.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment && (it.isCompleted || it.status in listOf("paid", "cleared")) && it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted") }
+    }
+    val totalBillsDue = remember(unpaidBillsInCycle) { unpaidBillsInCycle.sumOf { it.amount } }
+    val totalBillsPaid = remember(paidBillsInCycle) { paidBillsInCycle.sumOf { it.amount } }
 
     val accountsInThisCycle = remember(period.transactions, period.paycheckAmount, period.otherIncome) {
         val validTx = period.transactions.filter {
@@ -5539,10 +6599,10 @@ fun PayCycleCard(
         }
 
         accountsMap.map { (acc, txs) ->
-            val inc = txs.filter { it.isIncome }.sumOf { it.amount }
-            val exp = txs.filter { !it.isIncome }.sumOf { it.amount }
-            val compExp = txs.filter { !it.isIncome && it.isCompleted }.sumOf { it.amount }
-            val pendExp = txs.filter { !it.isIncome && !it.isCompleted }.sumOf { it.amount }
+            val inc = txs.filter { it.isIncome && !it.isStartingBalanceOrAdjustment }.sumOf { it.amount }
+            val exp = txs.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment }.sumOf { it.amount }
+            val compExp = txs.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment && it.isCompleted }.sumOf { it.amount }
+            val pendExp = txs.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment && !it.isCompleted }.sumOf { it.amount }
             AccountInCycleSummary(
                 accountName = acc,
                 totalIncome = inc,
@@ -5630,39 +6690,39 @@ fun PayCycleCard(
                         }
                         if (isCurrentCycle) {
                             Surface(
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(4.dp),
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Text(
                                     text = if (isWideScreen) "Current Cycle" else "Current",
-                                    fontSize = if (isWideScreen) 11.sp else 10.sp,
+                                    fontSize = if (isWideScreen) 9.sp else 8.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
                         } else if (isNextCycle) {
                             Surface(
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(4.dp),
                                 color = MaterialTheme.colorScheme.tertiaryContainer
                             ) {
                                 Text(
                                     text = if (isWideScreen) "Next Cycle" else "Next",
-                                    fontSize = if (isWideScreen) 11.sp else 10.sp,
+                                    fontSize = if (isWideScreen) 9.sp else 8.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
                         }
 
-                        if (unpaidBillsInCycle.isNotEmpty()) {
+                        if (unpaidBillsInCycle.isNotEmpty() || paidBillsInCycle.isNotEmpty()) {
                             Surface(
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(4.dp),
                                 color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f),
                                 border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)),
                                 modifier = Modifier
@@ -5670,7 +6730,7 @@ fun PayCycleCard(
                                     .clickable { onNavigateToUpcoming?.invoke() }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
@@ -5678,15 +6738,29 @@ fun PayCycleCard(
                                         imageVector = Icons.Default.Schedule,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                        modifier = Modifier.size(11.dp)
+                                        modifier = Modifier.size(9.5.dp)
                                     )
+                                    val otherExpenseAmount = maxOf(0.0, period.totalExpenses - totalBillsDue - totalBillsPaid)
+                                    val chipLabel = when {
+                                        paidBillsInCycle.isNotEmpty() && unpaidBillsInCycle.isNotEmpty() ->
+                                            "${unpaidBillsInCycle.size} due (${String.format(Locale.US, "$%,.0f", totalBillsDue)}) • ${paidBillsInCycle.size} paid (${String.format(Locale.US, "$%,.0f", totalBillsPaid)})${if (otherExpenseAmount > 0.5) " + extra ($" + String.format(Locale.US, "%,.0f", otherExpenseAmount) + ")" else ""} • Total $${String.format(Locale.US, "%,.0f", period.totalExpenses)} →"
+                                        unpaidBillsInCycle.isNotEmpty() ->
+                                            if (otherExpenseAmount > 0.5) {
+                                                "${unpaidBillsInCycle.size} bills ($${String.format(Locale.US, "%,.0f", totalBillsDue)}) + other ($${String.format(Locale.US, "%,.0f", otherExpenseAmount)}) • Total $${String.format(Locale.US, "%,.0f", period.totalExpenses)} →"
+                                            } else {
+                                                if (isWideScreen) "${unpaidBillsInCycle.size} bills due (${String.format(Locale.US, "$%,.0f", totalBillsDue)}) →" else "${unpaidBillsInCycle.size} bills (${String.format(Locale.US, "$%,.0f", totalBillsDue)}) →"
+                                            }
+                                        paidBillsInCycle.isNotEmpty() ->
+                                            if (otherExpenseAmount > 0.5) {
+                                                "All ${paidBillsInCycle.size} paid ($${String.format(Locale.US, "%,.0f", totalBillsPaid)}) + extra ($${String.format(Locale.US, "%,.0f", otherExpenseAmount)}) →"
+                                            } else {
+                                                "All ${paidBillsInCycle.size} bills paid (${String.format(Locale.US, "$%,.0f", totalBillsPaid)}) →"
+                                            }
+                                        else -> "No bills"
+                                    }
                                     Text(
-                                        text = if (isWideScreen) {
-                                            "${unpaidBillsInCycle.size} bills due (${String.format(Locale.US, "$%,.0f", unpaidBillsInCycle.sumOf { it.amount })}) →"
-                                        } else {
-                                            "${unpaidBillsInCycle.size} bills (${String.format(Locale.US, "$%,.0f", unpaidBillsInCycle.sumOf { it.amount })}) →"
-                                        },
-                                        fontSize = if (isWideScreen) 10.5.sp else 9.5.sp,
+                                        text = chipLabel,
+                                        fontSize = if (isWideScreen) 8.5.sp else 7.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer,
                                         maxLines = 1,
@@ -5711,15 +6785,15 @@ fun PayCycleCard(
                                 softWrap = false
                             )
                             Surface(
-                                shape = RoundedCornerShape(6.dp),
+                                shape = RoundedCornerShape(4.dp),
                                 color = if (activeAccountName == "All Accounts") MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f)
                             ) {
                                 Text(
                                     text = if (activeAccountName == "All Accounts") "All Accounts" else activeAccountName,
-                                    fontSize = 10.sp,
+                                    fontSize = 8.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (activeAccountName == "All Accounts") MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -5754,30 +6828,46 @@ fun PayCycleCard(
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
+                            val isFunded = period.remainingBalance >= 0
+                            val accountHeaderLabel = if (activeAccountName != "All Accounts" && activeAccountName.isNotBlank()) "$activeAccountName Remaining:" else "Cycle Remaining:"
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = accountHeaderLabel,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (isFunded) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFFEF4444).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = if (isFunded) "Surplus" else "Deficit",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isFunded) Color(0xFF059669) else Color(0xFFDC2626),
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = "Carried Over from Previous Cycle:",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                                Text(
-                                    text = String.format(Locale.US, "%s$%,.2f", if (period.carryoverFromPrevious > 0) "+" else "", period.carryoverFromPrevious),
+                                    text = String.format(Locale.US, "%s$%,.2f", if (period.remainingBalance >= 0) "+" else "", period.remainingBalance),
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (period.carryoverFromPrevious >= 0) Color(0xFF059669) else Color(0xFFDC2626),
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (isFunded) Color(0xFF059669) else Color(0xFFDC2626),
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
 
-                            // Progress Bar
+                            // Progress Bar: Percentage of account funds spent
                             LinearProgressIndicator(
                                 progress = { pct.coerceIn(0f, 1f) },
                                 modifier = Modifier
@@ -5785,14 +6875,15 @@ fun PayCycleCard(
                                     .height(6.dp)
                                     .clip(RoundedCornerShape(3.dp)),
                                 color = when {
-                                    pct > 0.9f -> Color(0xFFDC2626)
-                                    pct > 0.7f -> Color(0xFFD97706)
+                                    pct > 0.95f -> Color(0xFFDC2626)
+                                    pct > 0.8f -> Color(0xFFD97706)
                                     else -> Color(0xFF059669)
                                 },
                                 trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                             )
 
                             // Cycle Breakdown Metrics Row
+                            val startFunds = period.startingBalance + period.carryoverFromPrevious
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -5824,7 +6915,53 @@ fun PayCycleCard(
                                             maxLines = 1,
                                             softWrap = false
                                         )
+                                        if (paidBillsInCycle.isNotEmpty() && unpaidBillsInCycle.isNotEmpty()) {
+                                            Text(
+                                                text = String.format(Locale.US, "$%,.0f due • $%,.0f paid", totalBillsDue, totalBillsPaid),
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFFDC2626).copy(alpha = 0.85f),
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        } else if (unpaidBillsInCycle.isNotEmpty()) {
+                                            val otherExp = maxOf(0.0, period.totalExpenses - totalBillsDue - totalBillsPaid)
+                                            Text(
+                                                text = if (otherExp > 0.5) "${unpaidBillsInCycle.size} bills ($${String.format(Locale.US, "%,.0f", totalBillsDue)}) + other ($${String.format(Locale.US, "%,.0f", otherExp)})" else "${unpaidBillsInCycle.size} bills due",
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFFDC2626).copy(alpha = 0.85f),
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        } else if (paidBillsInCycle.isNotEmpty()) {
+                                            Text(
+                                                text = "All paid",
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = Color(0xFF059669),
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        }
                                     }
+                                }
+
+                                val currentAccSummary = accountsInThisCycle.firstOrNull { it.accountName.equals(activeAccountName, ignoreCase = true) }
+                                val accountBalanceVal = if (activeAccountName != "All Accounts" && activeAccountName.isNotBlank() && currentAccSummary != null) {
+                                    startFunds + currentAccSummary.net
+                                } else {
+                                    period.totalAvailable
+                                }
+                                val accountBoxLabel = if (activeAccountName != "All Accounts" && activeAccountName.isNotBlank()) "BAL IN " + activeAccountName.uppercase(Locale.US) else "IN ACCOUNT"
+                                val accFundsSubtitle = when {
+                                    startFunds > 0 && period.totalIncome > 0 ->
+                                        String.format(Locale.US, "$%,.0f start + $%,.0f inc", startFunds, period.totalIncome)
+                                    startFunds > 0 ->
+                                        String.format(Locale.US, "$%,.0f start balance", startFunds)
+                                    period.totalIncome > 0 ->
+                                        String.format(Locale.US, "$%,.0f cycle income", period.totalIncome)
+                                    else -> "Available in account"
                                 }
 
                                 Surface(
@@ -5838,7 +6975,7 @@ fun PayCycleCard(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = "INCOME",
+                                            text = accountBoxLabel,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFF059669),
@@ -5846,10 +6983,18 @@ fun PayCycleCard(
                                             softWrap = false
                                         )
                                         Text(
-                                            text = String.format(Locale.US, "+$%,.2f", period.totalIncome),
+                                            text = String.format(Locale.US, "$%,.2f", accountBalanceVal),
                                             fontSize = 11.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFF059669),
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                        Text(
+                                            text = accFundsSubtitle,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF059669).copy(alpha = 0.85f),
                                             maxLines = 1,
                                             softWrap = false
                                         )
@@ -5859,8 +7004,8 @@ fun PayCycleCard(
                                 Surface(
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(8.dp),
-                                    color = if (period.remainingBalance >= 0) Color(0xFF10B981).copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f),
-                                    border = BorderStroke(1.dp, if (period.remainingBalance >= 0) Color(0xFF10B981).copy(alpha = 0.3f) else Color(0xFFEF4444).copy(alpha = 0.3f))
+                                    color = if (isFunded) Color(0xFF10B981).copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f),
+                                    border = BorderStroke(1.dp, if (isFunded) Color(0xFF10B981).copy(alpha = 0.3f) else Color(0xFFEF4444).copy(alpha = 0.3f))
                                 ) {
                                     Column(
                                         modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
@@ -5870,19 +7015,79 @@ fun PayCycleCard(
                                             text = "REMAINING",
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (period.remainingBalance >= 0) Color(0xFF059669) else Color(0xFFDC2626),
+                                            color = if (isFunded) Color(0xFF059669) else Color(0xFFDC2626),
                                             maxLines = 1,
                                             softWrap = false
                                         )
                                         Text(
-                                            text = String.format(Locale.US, "$%,.2f", period.remainingBalance),
+                                            text = String.format(Locale.US, "%s$%,.2f", if (period.remainingBalance >= 0) "+" else "", period.remainingBalance),
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.ExtraBold,
-                                            color = if (period.remainingBalance >= 0) Color(0xFF059669) else Color(0xFFDC2626),
+                                            color = if (isFunded) Color(0xFF059669) else Color(0xFFDC2626),
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                        Text(
+                                            text = if (isFunded) "After all bills" else "Shortfall",
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (isFunded) Color(0xFF059669).copy(alpha = 0.85f) else Color(0xFFDC2626).copy(alpha = 0.85f),
                                             maxLines = 1,
                                             softWrap = false
                                         )
                                     }
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val textParts = mutableListOf<String>()
+                                    if (startFunds != 0.0) {
+                                        textParts.add("Starting balance: ${if (startFunds > 0) "+" else ""}${String.format(Locale.US, "$%,.2f", startFunds)}")
+                                    }
+                                    if (period.totalIncome > 0.0) {
+                                        textParts.add("Cycle income: +${String.format(Locale.US, "$%,.2f", period.totalIncome)}")
+                                    }
+                                    Text(
+                                        text = if (textParts.isNotEmpty()) textParts.joinToString(" • ") else "Available in account: ${String.format(Locale.US, "$%,.2f", period.totalAvailable)}",
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "Total in Account: ${String.format(Locale.US, "$%,.2f", period.totalAvailable)}",
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (period.totalAvailable >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val cycleNetText = String.format(Locale.US, "%s$%,.2f", if (period.cycleNet >= 0) "+" else "", period.cycleNet)
+                                    val note = if (period.remainingBalance >= 0 && period.cycleNet < 0) " (Covered by starting balance)" else ""
+                                    Text(
+                                        text = "Income vs bills net: $cycleNetText$note",
+                                        fontSize = 9.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                                    )
+                                    Text(
+                                        text = "Remaining balance: ${String.format(Locale.US, "$%,.2f", period.remainingBalance)}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (period.remainingBalance >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                                    )
                                 }
                             }
                         }
@@ -6128,6 +7333,17 @@ fun PayCycleCard(
                             names.size != names.distinct().size
                         }
 
+                        val cycleExpenses = remember(cycleTransactions) { cycleTransactions.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment } }
+                        val cycleIncome = remember(cycleTransactions) { cycleTransactions.filter { it.isIncome && !it.isStartingBalanceOrAdjustment } }
+                        val cycleStartingBalances = remember(cycleTransactions) { cycleTransactions.filter { it.isStartingBalanceOrAdjustment } }
+                        val cycleTotalExpenses = remember(cycleExpenses) { cycleExpenses.sumOf { it.amount } }
+                        val cycleTotalIncome = remember(cycleIncome) { cycleIncome.sumOf { it.amount } }
+                        val cycleTotalStartingBalance = remember(cycleStartingBalances) { cycleStartingBalances.sumOf { if (it.isIncome) it.amount else -it.amount } }
+                        val cycleDueExpenses = remember(cycleExpenses) { cycleExpenses.filter { !it.isCompleted && it.getEffectiveStatus() !in listOf("paid", "cleared") }.sumOf { it.amount } }
+                        val cyclePaidExpenses = remember(cycleExpenses) { cycleExpenses.filter { it.isCompleted || it.getEffectiveStatus() in listOf("paid", "cleared") }.sumOf { it.amount } }
+
+                        var cycleItemTypeTab by remember { mutableIntStateOf(0) } // 0 = All, 1 = Expenses, 2 = Income, 3 = Starting Balance
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -6135,17 +7351,29 @@ fun PayCycleCard(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "SCHEDULED ITEMS",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                letterSpacing = 0.5.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "CYCLE SCHEDULE & TRANSACTIONS",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                    letterSpacing = 0.5.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Text(
+                                        text = "${cycleTransactions.size} items",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (hasDuplicates && onDeduplicate != null) {
                                     Surface(
@@ -6177,13 +7405,108 @@ fun PayCycleCard(
                                         }
                                     }
                                 }
-                                Text(
-                                    text = "${cycleTransactions.size} items",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    softWrap = false
+                            }
+                        }
+
+                        // Scheduled items subtotal summary banner: Reconciles items directly with Independent Cycle Net!
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Cycle Expenses:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "-$%,.2f", cycleTotalExpenses),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFFDC2626)
+                                    )
+                                    if (cyclePaidExpenses > 0.0) {
+                                        Text(
+                                            text = String.format(Locale.US, "(⌛$%,.0f • ✓$%,.0f)", cycleDueExpenses, cyclePaidExpenses),
+                                            fontSize = 8.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFFDC2626).copy(alpha = 0.85f)
+                                        )
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Cycle Income:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "+$%,.2f", cycleTotalIncome),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF059669)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Type filter chips
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = cycleItemTypeTab == 0,
+                                onClick = { cycleItemTypeTab = 0 },
+                                label = { Text("All (${cycleTransactions.size})", fontSize = 9.sp, fontWeight = if (cycleItemTypeTab == 0) FontWeight.Bold else FontWeight.Normal) },
+                                modifier = Modifier.height(24.dp).testTag("cycle_filter_all")
+                            )
+                            FilterChip(
+                                selected = cycleItemTypeTab == 1,
+                                onClick = { cycleItemTypeTab = 1 },
+                                label = {
+                                    Text(
+                                        text = "Expenses: -$${String.format(Locale.US, "%,.0f", cycleTotalExpenses)} (${cycleExpenses.size})",
+                                        fontSize = 9.sp,
+                                        fontWeight = if (cycleItemTypeTab == 1) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (cycleItemTypeTab == 1) Color(0xFFDC2626) else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                modifier = Modifier.height(24.dp).testTag("cycle_filter_expenses")
+                            )
+                            FilterChip(
+                                selected = cycleItemTypeTab == 2,
+                                onClick = { cycleItemTypeTab = 2 },
+                                label = {
+                                    Text(
+                                        text = "Income: +$${String.format(Locale.US, "%,.0f", cycleTotalIncome)} (${cycleIncome.size})",
+                                        fontSize = 9.sp,
+                                        fontWeight = if (cycleItemTypeTab == 2) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (cycleItemTypeTab == 2) Color(0xFF059669) else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                modifier = Modifier.height(24.dp).testTag("cycle_filter_income")
+                            )
+                            if (cycleStartingBalances.isNotEmpty()) {
+                                FilterChip(
+                                    selected = cycleItemTypeTab == 3,
+                                    onClick = { cycleItemTypeTab = 3 },
+                                    label = {
+                                        Text(
+                                            text = "Starting Bal: $${String.format(Locale.US, "%,.0f", cycleTotalStartingBalance)} (${cycleStartingBalances.size})",
+                                            fontSize = 9.sp,
+                                            fontWeight = if (cycleItemTypeTab == 3) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (cycleItemTypeTab == 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    modifier = Modifier.height(24.dp).testTag("cycle_filter_starting_bal")
                                 )
                             }
                         }
@@ -6204,58 +7527,107 @@ fun PayCycleCard(
                                 )
                             }
                         } else {
+                            val groupsToDisplay = when (cycleItemTypeTab) {
+                                1 -> listOf("Expenses" to cycleExpenses)
+                                2 -> listOf("Income" to cycleIncome)
+                                3 -> listOf("Starting Balance" to cycleStartingBalances)
+                                else -> listOf("Expenses" to cycleExpenses, "Income" to cycleIncome, "Starting Balance" to cycleStartingBalances).filter { it.second.isNotEmpty() }
+                            }
+
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 6.dp, vertical = 2.dp),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                for (tx in cycleTransactions) {
-                                    val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
-                                    val daysDiff = ChronoUnit.DAYS.between(today, txDate)
-                                    val isSettled = tx.isPaidOrCleared
-                                    val itemBorder = when {
-                                        !isSettled && !tx.isIncome && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
-                                        !isSettled && !tx.isIncome && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
-                                        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                    }
-                                    val itemBg = when {
-                                        !isSettled && !tx.isIncome && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
-                                        !isSettled && !tx.isIncome && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
-                                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                for ((groupName, groupTxs) in groupsToDisplay) {
+                                    if (groupsToDisplay.size > 1) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 2.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = when (groupName) {
+                                                    "Expenses" -> "EXPENSES & BILLS (${groupTxs.size})"
+                                                    "Income" -> "EARNED INCOME (${groupTxs.size})"
+                                                    else -> "ACCOUNT STARTING BALANCE (${groupTxs.size})"
+                                                },
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = when (groupName) {
+                                                    "Expenses" -> Color(0xFFDC2626)
+                                                    "Income" -> Color(0xFF059669)
+                                                    else -> MaterialTheme.colorScheme.primary
+                                                },
+                                                letterSpacing = 0.5.sp
+                                            )
+                                            Text(
+                                                text = when (groupName) {
+                                                    "Expenses" -> String.format(Locale.US, "-$%,.2f", groupTxs.sumOf { it.amount })
+                                                    "Income" -> String.format(Locale.US, "+$%,.2f", groupTxs.sumOf { it.amount })
+                                                    else -> String.format(Locale.US, "%s$%,.2f", if (groupTxs.sumOf { if (it.isIncome) it.amount else -it.amount } >= 0) "+" else "", groupTxs.sumOf { if (it.isIncome) it.amount else -it.amount })
+                                                },
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = when (groupName) {
+                                                    "Expenses" -> Color(0xFFDC2626)
+                                                    "Income" -> Color(0xFF059669)
+                                                    else -> MaterialTheme.colorScheme.primary
+                                                }
+                                            )
+                                        }
                                     }
 
-                                    SwipeableTransactionRow(
-                                        transaction = tx,
-                                        onDelete = { onDeleteTransaction(tx) },
-                                        onEdit = { onEditTransaction(tx) },
-                                        onDuplicate = { onDuplicateTransaction?.invoke(tx) },
-                                        onUpdateStatus = { newSt ->
-                                            onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
-                                        },
-                                        onToggleCompleted = { onToggleCompleted(tx) },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Surface(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(10.dp),
-                                            color = itemBg,
-                                            border = itemBorder
+                                    for (tx in groupTxs) {
+                                        val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                                        val daysDiff = ChronoUnit.DAYS.between(today, txDate)
+                                        val isSettled = tx.isPaidOrCleared
+                                        val itemBorder = when {
+                                            !isSettled && !tx.isIncome && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                                            !isSettled && !tx.isIncome && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                                            else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                        }
+                                        val itemBg = when {
+                                            !isSettled && !tx.isIncome && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
+                                            !isSettled && !tx.isIncome && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
+                                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                        }
+
+                                        SwipeableTransactionRow(
+                                            transaction = tx,
+                                            onDelete = { onDeleteTransaction(tx) },
+                                            onEdit = { onEditTransaction(tx) },
+                                            onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                            onUpdateStatus = { newSt ->
+                                                onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                            },
+                                            onToggleCompleted = { onToggleCompleted(tx) },
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            TransactionItemRow(
-                                                transaction = tx,
-                                                onDelete = { onDeleteTransaction(tx) },
-                                                onEdit = { onEditTransaction(tx) },
-                                                onDuplicate = { onDuplicateTransaction?.invoke(tx) },
-                                                onToggleCompleted = { onToggleCompleted(tx) },
-                                                onUpdateStatus = { newSt ->
-                                                    onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
-                                                },
-                                                onToggleReminder = { days ->
-                                                    onToggleReminder?.invoke(tx, days)
-                                                },
-                                                modifier = Modifier.padding(vertical = 0.dp)
-                                            )
+                                            Surface(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = itemBg,
+                                                border = itemBorder
+                                            ) {
+                                                TransactionItemRow(
+                                                    transaction = tx,
+                                                    onDelete = { onDeleteTransaction(tx) },
+                                                    onEdit = { onEditTransaction(tx) },
+                                                    onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                                    onToggleCompleted = { onToggleCompleted(tx) },
+                                                    onUpdateStatus = { newSt ->
+                                                        onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                                    },
+                                                    onToggleReminder = { days ->
+                                                        onToggleReminder?.invoke(tx, days)
+                                                    },
+                                                    modifier = Modifier.padding(vertical = 0.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -6466,11 +7838,18 @@ fun TransactionItemRow(
                     }
                 }
 
+                val isStartingBal = transaction.isStartingBalanceOrAdjustment
+                val amountColor = when {
+                    isStartingBal -> MaterialTheme.colorScheme.primary
+                    transaction.isIncome -> Color(0xFF10B981)
+                    transaction.isCompleted -> Color(0xFF047857)
+                    else -> Color(0xFFDC2626)
+                }
                 Text(
                     text = (if (transaction.isIncome) "+" else "-") + String.format(Locale.US, "$%,.2f", transaction.amount),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    color = if (transaction.isIncome) Color(0xFF10B981) else if (transaction.isCompleted) Color(0xFF047857) else Color(0xFFDC2626),
+                    color = amountColor,
                     maxLines = 1,
                     softWrap = false
                 )
@@ -6489,17 +7868,53 @@ fun TransactionItemRow(
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
+                    if (transaction.isStartingBalanceOrAdjustment) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "Account Starting Balance (Not cycle income)",
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    if (transaction.title.contains("Remaining Cycle Expense", ignoreCase = true)) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color(0xFF8B5CF6).copy(alpha = 0.15f),
+                            border = BorderStroke(0.5.dp, Color(0xFF8B5CF6).copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "Cycle Allocation",
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF7C3AED),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
                     if (showDateChip) {
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(3.dp),
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
                         ) {
                             Text(
                                 text = date.format(df),
-                                fontSize = 10.sp,
+                                fontSize = 7.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -6512,33 +7927,33 @@ fun TransactionItemRow(
                         if (daysBetween < 0) {
                             // Overdue badge (Soft Crimson)
                             Surface(
-                                shape = RoundedCornerShape(4.dp),
+                                shape = RoundedCornerShape(3.dp),
                                 color = if (dark) Color(0xFF450A0A) else Color(0xFFFEE2E2),
-                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                                border = BorderStroke(0.6.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
                             ) {
                                 Text(
                                     text = if (daysBetween == -1L) "⚠️ 1d Overdue" else "⚠️ ${kotlin.math.abs(daysBetween)}d Overdue",
-                                    fontSize = 9.sp,
+                                    fontSize = 7.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (dark) Color(0xFFFCA5A5) else Color(0xFFDC2626),
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
                         } else if (daysBetween == 0L) {
-                            // Due Today badge (Soft Crimson / Alert)
+                            // Due Today badge (Warm Orange)
                             Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = if (dark) Color(0xFF7F1D1D).copy(alpha = 0.6f) else Color(0xFFFEF2F2),
-                                border = BorderStroke(1.dp, Color(0xFFF87171))
+                                shape = RoundedCornerShape(3.dp),
+                                color = if (dark) Color(0xFF7C2D12).copy(alpha = 0.5f) else Color(0xFFFFEDD5),
+                                border = BorderStroke(0.6.dp, Color(0xFFEA580C).copy(alpha = 0.8f))
                             ) {
                                 Text(
                                     text = "⚡ Due Today",
-                                    fontSize = 9.sp,
+                                    fontSize = 7.sp,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = if (dark) Color(0xFFFCA5A5) else Color(0xFFDC2626),
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    color = if (dark) Color(0xFFFDBA74) else Color(0xFFC2410C),
+                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -6546,16 +7961,16 @@ fun TransactionItemRow(
                         } else if (daysBetween in 1L..2L) {
                             // Due within 48 hours badge (Warm Amber)
                             Surface(
-                                shape = RoundedCornerShape(4.dp),
+                                shape = RoundedCornerShape(3.dp),
                                 color = if (dark) Color(0xFF78350F).copy(alpha = 0.5f) else Color(0xFFFEF3C7),
-                                border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                                border = BorderStroke(0.6.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
                             ) {
                                 Text(
                                     text = if (daysBetween == 1L) "⏳ Due Tomorrow" else "🕒 Due in 2d (48h)",
-                                    fontSize = 9.sp,
+                                    fontSize = 7.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (dark) Color(0xFFFDE68A) else Color(0xFFB45309),
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -6566,7 +7981,7 @@ fun TransactionItemRow(
                     TransactionStatusChip(
                         status = transaction.getEffectiveStatus(),
                         isIncome = transaction.isIncome,
-                        fontSize = 9.sp,
+                        fontSize = 7.sp,
                         onStatusChange = { newStatus ->
                             if (onUpdateStatus != null) {
                                 onUpdateStatus(newStatus)
@@ -6578,15 +7993,15 @@ fun TransactionItemRow(
                     )
                     if (transaction.isAutoPay) {
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(3.dp),
                             color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.8f)
                         ) {
                             Text(
                                 text = "⚡ Auto Pay",
-                                fontSize = 9.sp,
+                                fontSize = 7.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -6594,16 +8009,16 @@ fun TransactionItemRow(
                     }
                     if (isUnpaidExpense && transaction.reminderDaysBefore >= 0) {
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(3.dp),
                             color = if (dark) Color(0xFF78350F).copy(alpha = 0.35f) else Color(0xFFFEF3C7),
-                            border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
+                            border = BorderStroke(0.8.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
                         ) {
                             Text(
                                 text = "🔔 Alert Active",
-                                fontSize = 8.5.sp,
+                                fontSize = 7.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (dark) Color(0xFFFDE68A) else Color(0xFFB45309),
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false
                             )
@@ -6613,16 +8028,16 @@ fun TransactionItemRow(
                     if (accountTag.isNotBlank()) {
                         val accountStyle = getAccountColorStyle(accountTag, isSystemInDarkTheme())
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(3.dp),
                             color = accountStyle.containerColor,
-                            border = BorderStroke(1.dp, accountStyle.borderColor)
+                            border = BorderStroke(0.8.dp, accountStyle.borderColor)
                         ) {
                             Text(
                                 text = accountTag,
-                                fontSize = 9.sp,
+                                fontSize = 7.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = accountStyle.contentColor,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                modifier = Modifier.padding(horizontal = 3.5.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Ellipsis
@@ -6634,16 +8049,16 @@ fun TransactionItemRow(
                         val catEmoji = CategoryTheme.getEmoji(transaction.category)
                         val catColor = CategoryTheme.getColor(transaction.category)
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(3.dp),
                             color = catColor.copy(alpha = if (isSystemInDarkTheme()) 0.22f else 0.12f),
-                            border = BorderStroke(1.dp, catColor.copy(alpha = 0.4f))
+                            border = BorderStroke(0.8.dp, catColor.copy(alpha = 0.4f))
                         ) {
                             Text(
                                 text = "$catEmoji $catParent",
-                                fontSize = 9.sp,
+                                fontSize = 7.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = catColor,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                modifier = Modifier.padding(horizontal = 3.5.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Ellipsis
@@ -6755,80 +8170,225 @@ fun CalendarGridView(
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
-    var isSyncingSheets by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val yearMonth = uiState.selectedMonth
-    val anchor = uiState.anchorPayday
+    var displayMonth by rememberSaveable { mutableStateOf(uiState.selectedMonth) }
+    LaunchedEffect(uiState.selectedMonth) {
+        displayMonth = uiState.selectedMonth
+    }
 
-    // Core Calendar Logic
-    val monthStart = yearMonth.atDay(1)
-    val monthEnd = yearMonth.atEndOfMonth()
+    val anchor = uiState.anchorPayday
+    val today = LocalDate.now()
+    var selectedDay by rememberSaveable { mutableStateOf(today) }
+
+    // Filter modes: 0 = All, 1 = Unpaid Bills, 2 = Paid Bills, 3 = Paydays
+    var selectedFilterIndex by rememberSaveable { mutableIntStateOf(0) }
+
+    // Core Calendar Logic for displayMonth
+    val monthStart = displayMonth.atDay(1)
+    val monthEnd = displayMonth.atEndOfMonth()
     val firstDayOffset = (monthStart.dayOfWeek.value - 1) % 7 // Monday = 0
 
-    val calendarDays = remember(yearMonth) {
+    val calendarDays = remember(displayMonth) {
         val days = mutableListOf<LocalDate>()
         // Back padding from previous month
         for (i in firstDayOffset downTo 1) {
             days.add(monthStart.minusDays(i.toLong()))
         }
         // Month days
-        for (i in 1..yearMonth.lengthOfMonth()) {
+        for (i in 1..displayMonth.lengthOfMonth()) {
             days.add(monthStart.plusDays((i - 1).toLong()))
         }
         // Front padding for next month
         while (days.size % 7 != 0) {
-            days.add(monthEnd.plusDays((days.size - firstDayOffset - yearMonth.lengthOfMonth() + 1).toLong()))
+            days.add(monthEnd.plusDays((days.size - firstDayOffset - displayMonth.lengthOfMonth() + 1).toLong()))
         }
         days
     }
 
-    var selectedDay by remember { mutableStateOf(LocalDate.now()) }
+    // Calculate full monthly summary report using MonthlySummaryCalculator
+    val monthReport = remember(displayMonth, uiState.allTransactions, uiState.plannedExpenses, uiState.allDebts, uiState.activeAccountName, uiState.defaultPaycheckAmount) {
+        MonthlySummaryCalculator.calculate(
+            month = displayMonth,
+            uiState = uiState,
+            activeAccountFilter = uiState.activeAccountName
+        )
+    }
 
-    // Map transactions by date across the visible calendar
-    val transactionsByDateMap = remember(calendarDays, uiState.allTransactions, uiState.payPeriods, uiState.activeAccountName, anchor) {
+    // Bills mapped by due date across the month
+    val billsByDateMap = remember(monthReport.bills) {
+        monthReport.bills.groupBy { it.dueDate }
+    }
+
+    // Incomes mapped by date across the month
+    val incomesByDateMap = remember(monthReport.incomeItems) {
+        monthReport.incomeItems.groupBy { it.date }
+    }
+
+    // Non-bill transactions mapped by date
+    val extraTxsByDateMap = remember(calendarDays, uiState.allTransactions, uiState.activeAccountName, monthReport.bills) {
         val map = mutableMapOf<LocalDate, MutableList<TransactionEntity>>()
-
         val rawActiveTxList = if (uiState.activeAccountName == "All Accounts") {
             uiState.allTransactions
         } else {
             uiState.allTransactions.filter { it.accountName == uiState.activeAccountName }
         }
-
-        val activeTxList = rawActiveTxList.filter { it.amount > 0.0 && !it.title.contains("Cancelled") && !it.title.contains("Deleted") }
-
+        val activeTxList = rawActiveTxList.filter {
+            it.amount > 0.0 &&
+            !it.isStartingBalanceOrAdjustment &&
+            !it.title.contains("Cancelled", ignoreCase = true) &&
+            !it.title.contains("Deleted", ignoreCase = true)
+        }
         activeTxList.forEach { tx ->
             val date = DateUtils.millisToLocalDate(tx.dateMillis)
-            map.getOrPut(date) { mutableListOf() }.add(tx)
+            val isAlreadyInBills = monthReport.bills.any { it.transactionRef?.id == tx.id }
+            if (!isAlreadyInBills) {
+                map.getOrPut(date) { mutableListOf() }.add(tx)
+            }
         }
         map
     }
 
-    // Filtered transaction list for the selected day
-    val dayTransactions = remember(selectedDay, transactionsByDateMap) {
-        (transactionsByDateMap[selectedDay] ?: emptyList())
-            .distinctBy { it.id }
-            .sortedWith(compareBy({ it.isCompleted }, { it.dateMillis }))
+    // Selected day items
+    val dayBills = remember(selectedDay, billsByDateMap) {
+        billsByDateMap[selectedDay] ?: emptyList()
+    }
+    val dayIncomes = remember(selectedDay, incomesByDateMap) {
+        incomesByDateMap[selectedDay] ?: emptyList()
+    }
+    val dayExtraTxs = remember(selectedDay, extraTxsByDateMap) {
+        extraTxsByDateMap[selectedDay] ?: emptyList()
     }
 
-    // Calculate overall month summary for visible current-month days
-    val monthIncomesSum = remember(calendarDays, transactionsByDateMap, yearMonth) {
-        calendarDays.filter { it.month == yearMonth.month && it.year == yearMonth.year }
-            .flatMap { transactionsByDateMap[it] ?: emptyList() }
-            .distinctBy { it.id }
-            .filter { it.isIncome }
-            .sumOf { it.amount }
+    // Filter counts
+    val totalUnpaidBillsCount = remember(monthReport.bills) {
+        monthReport.bills.count { !it.isPaid }
+    }
+    val totalPaidBillsCount = remember(monthReport.bills) {
+        monthReport.bills.count { it.isPaid }
+    }
+    val totalPaydaysCount = remember(calendarDays, anchor, displayMonth) {
+        calendarDays.filter { it.month == displayMonth.month && it.year == displayMonth.year }
+            .count { DateUtils.getPaydayOnOrBefore(it, anchor) == it }
     }
 
-    val monthExpensesSum = remember(calendarDays, transactionsByDateMap, yearMonth) {
-        calendarDays.filter { it.month == yearMonth.month && it.year == yearMonth.year }
-            .flatMap { transactionsByDateMap[it] ?: emptyList() }
-            .distinctBy { it.id }
-            .filter { !it.isIncome }
-            .sumOf { it.amount }
+    val handleToggleBillPaid: (MonthlyBillItem) -> Unit = { bill ->
+        val existingTx = bill.transactionRef
+        if (existingTx != null) {
+            val nextDone = !bill.isPaid
+            val nextStatus = if (nextDone) "paid" else "due"
+            onUpdateTransactionStatus?.invoke(existingTx, nextStatus) ?: onToggleCompleted(existingTx.copy(isCompleted = nextDone, status = nextStatus))
+        } else {
+            val targetAccount = if (bill.targetAccount.isNotBlank() && bill.targetAccount != "All Accounts") {
+                bill.targetAccount
+            } else if (uiState.activeAccountName != "All Accounts") {
+                uiState.activeAccountName
+            } else {
+                "Primary Account"
+            }
+            val newTx = TransactionEntity(
+                id = 0,
+                title = bill.title,
+                amount = bill.amount,
+                dateMillis = DateUtils.localDateToMillis(bill.dueDate),
+                category = bill.category.ifEmpty { "Planned Bill" },
+                accountName = targetAccount,
+                isIncome = false,
+                isCompleted = true,
+                isAutoPay = bill.isAutoPay,
+                status = "paid"
+            )
+            onUpdateTransactionStatus?.invoke(newTx, "paid") ?: onToggleCompleted(newTx)
+        }
     }
 
     val topBannerContent: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Month Navigation Row
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { displayMonth = displayMonth.minusMonths(1) },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Previous Month")
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            displayMonth = YearMonth.now()
+                            selectedDay = today
+                        }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = displayMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US)),
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (displayMonth == YearMonth.now()) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        "Current",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = "${monthReport.bills.size} scheduled bills • ${totalUnpaidBillsCount} due",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (displayMonth != YearMonth.now() || selectedDay != today) {
+                            FilledTonalButton(
+                                onClick = {
+                                    displayMonth = YearMonth.now()
+                                    selectedDay = today
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("Today", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        IconButton(
+                            onClick = { displayMonth = displayMonth.plusMonths(1) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.ArrowForward, contentDescription = "Next Month")
+                        }
+                    }
+                }
+            }
 
             // Monthly Summary & Legend Banner
             Card(
@@ -6838,76 +8398,166 @@ fun CalendarGridView(
                 ),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("INCOME", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF059669))
-                            Text(
-                                text = String.format(Locale.US, "$%,.0f", monthIncomesSum),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFF059669)
-                            )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("INCOME", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF059669))
+                                Text(
+                                    text = String.format(Locale.US, "$%,.0f", monthReport.totalIncome),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+                            Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                            Column {
+                                Text("BILLS & EXP", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+                                Text(
+                                    text = String.format(Locale.US, "$%,.0f", monthReport.totalPlannedExpenses),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFFDC2626)
+                                )
+                            }
+                            Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                            Column {
+                                Text("REMAINING DUE", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
+                                Text(
+                                    text = String.format(Locale.US, "$%,.0f", monthReport.totalRemainingDue),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFFD97706)
+                                )
+                            }
+                            Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                            Column {
+                                val net = monthReport.netSurplus
+                                Text("NET", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (net >= 0) Color(0xFF059669) else Color(0xFFDC2626))
+                                Text(
+                                    text = (if (net >= 0) "+" else "") + String.format(Locale.US, "$%,.0f", net),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (net >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                                )
+                            }
                         }
-                        Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                        Column {
-                            Text("EXPENSES", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626))
+
+                        // Progress indicator for bills paid
+                        val paidPercent = if (monthReport.totalPlannedExpenses > 0) {
+                            ((monthReport.totalPaidSoFar / monthReport.totalPlannedExpenses) * 100).toInt().coerceIn(0, 100)
+                        } else 100
+                        Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = String.format(Locale.US, "$%,.0f", monthExpensesSum),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFFDC2626)
+                                text = "$paidPercent% Paid",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (paidPercent == 100) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        }
-                        Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                        Column {
-                            val net = monthIncomesSum - monthExpensesSum
-                            Text("NET", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (net >= 0) Color(0xFF059669) else Color(0xFFDC2626))
-                            Text(
-                                text = (if (net >= 0) "+" else "") + String.format(Locale.US, "$%,.0f", net),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (net >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                            LinearProgressIndicator(
+                                progress = { paidPercent / 100f },
+                                modifier = Modifier
+                                    .width(64.dp)
+                                    .height(4.dp)
+                                    .clip(RoundedCornerShape(2.dp)),
+                                color = Color(0xFF10B981),
+                                trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
                             )
                         }
                     }
 
+                    // Legend Row
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF10B981).copy(alpha = 0.2f)) {
-                            Text("+$ Inc", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF059669), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF10B981).copy(alpha = 0.15f)) {
+                            Text("💰 Payday", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                         }
-                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFEF4444).copy(alpha = 0.2f)) {
-                            Text("-$ Exp", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF10B981).copy(alpha = 0.15f)) {
+                            Text("✓ Paid Bill", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        }
+                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFFEF4444).copy(alpha = 0.15f)) {
+                            Text("⚠️ Due / Overdue", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFFDC2626), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                        }
+                        Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF8B5CF6).copy(alpha = 0.15f)) {
+                            Text("⚡ AutoPay", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF7C3AED), modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                         }
                     }
                 }
+            }
+
+            // Quick Filter Chips Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = selectedFilterIndex == 0,
+                    onClick = { selectedFilterIndex = 0 },
+                    label = { Text("All Days", fontSize = 8.5.sp, fontWeight = FontWeight.Medium) },
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.height(22.dp)
+                )
+                FilterChip(
+                    selected = selectedFilterIndex == 1,
+                    onClick = { selectedFilterIndex = 1 },
+                    label = { Text("Unpaid Bills ($totalUnpaidBillsCount)", fontSize = 8.5.sp, fontWeight = FontWeight.Medium) },
+                    shape = RoundedCornerShape(6.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFFEF4444).copy(alpha = 0.2f),
+                        selectedLabelColor = Color(0xFFDC2626)
+                    ),
+                    modifier = Modifier.height(22.dp)
+                )
+                FilterChip(
+                    selected = selectedFilterIndex == 2,
+                    onClick = { selectedFilterIndex = 2 },
+                    label = { Text("Paid Bills ($totalPaidBillsCount)", fontSize = 8.5.sp, fontWeight = FontWeight.Medium) },
+                    shape = RoundedCornerShape(6.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF10B981).copy(alpha = 0.2f),
+                        selectedLabelColor = Color(0xFF047857)
+                    ),
+                    modifier = Modifier.height(22.dp)
+                )
+                FilterChip(
+                    selected = selectedFilterIndex == 3,
+                    onClick = { selectedFilterIndex = 3 },
+                    label = { Text("Paydays ($totalPaydaysCount)", fontSize = 8.5.sp, fontWeight = FontWeight.Medium) },
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.height(22.dp)
+                )
             }
         }
     }
 
     val calendarGridContent: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Calendar Grid Header (Weeks)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Calendar Grid Header (Weeks: Mon - Sun)
             Row(modifier = Modifier.fillMaxWidth()) {
-                val weekdays = listOf("M", "T", "W", "T", "F", "S", "S")
+                val weekdays = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
                 weekdays.forEach { day ->
                     Text(
                         text = day,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
                         textAlign = TextAlign.Center
                     )
@@ -6924,9 +8574,9 @@ fun CalendarGridView(
                     ) {
                         for (c in 0 until 7) {
                             val date = calendarDays[r * 7 + c]
-                            val isCurrentMonth = date.month == yearMonth.month && date.year == yearMonth.year
+                            val isCurrentMonth = date.month == displayMonth.month && date.year == displayMonth.year
 
-                            // Find corresponding Pay Period to tint background
+                            // Corresponding Pay Period tint
                             val payPeriodIndex = uiState.payPeriods.indexOfFirst {
                                 !it.startDate.isAfter(date) && !it.endDate.isBefore(date)
                             }
@@ -6934,20 +8584,35 @@ fun CalendarGridView(
                             val isDark = uiState.isDarkMode
                             val cellBg = when {
                                 date == selectedDay -> MaterialTheme.colorScheme.primaryContainer
-                                !isCurrentMonth -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
-                                payPeriodIndex == 0 -> if (isDark) Color(0xFF1E3A8A).copy(alpha = 0.6f) else Color(0xFFEFF6FF)
-                                payPeriodIndex == 1 -> if (isDark) Color(0xFF064E3B).copy(alpha = 0.6f) else Color(0xFFECFDF5)
-                                payPeriodIndex == 2 -> if (isDark) Color(0xFF78350F).copy(alpha = 0.6f) else Color(0xFFFFFBEB)
-                                payPeriodIndex == 3 -> if (isDark) Color(0xFF581C87).copy(alpha = 0.6f) else Color(0xFFFDF4FF)
-                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                !isCurrentMonth -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                                payPeriodIndex == 0 -> if (isDark) Color(0xFF1E3A8A).copy(alpha = 0.5f) else Color(0xFFEFF6FF)
+                                payPeriodIndex == 1 -> if (isDark) Color(0xFF064E3B).copy(alpha = 0.5f) else Color(0xFFECFDF5)
+                                payPeriodIndex == 2 -> if (isDark) Color(0xFF78350F).copy(alpha = 0.5f) else Color(0xFFFFFBEB)
+                                payPeriodIndex == 3 -> if (isDark) Color(0xFF581C87).copy(alpha = 0.5f) else Color(0xFFFDF4FF)
+                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
                             }
 
-                            val isToday = date == LocalDate.now()
+                            val isToday = date == today
                             val isPayday = DateUtils.getPaydayOnOrBefore(date, anchor) == date
 
-                            val dateTxs = transactionsByDateMap[date] ?: emptyList()
-                            val dateIncome = dateTxs.filter { it.isIncome }.sumOf { it.amount }
-                            val dateExpense = dateTxs.filter { !it.isIncome }.sumOf { it.amount }
+                            // Aggregate bills & transactions on this cell date
+                            val cellBills = billsByDateMap[date] ?: emptyList()
+                            val cellIncomes = incomesByDateMap[date] ?: emptyList()
+                            val cellExtraTxs = extraTxsByDateMap[date] ?: emptyList()
+
+                            val unpaidBillsAmount = cellBills.filter { !it.isPaid }.sumOf { it.amount } + cellExtraTxs.filter { !it.isIncome && !it.isPaidOrCleared }.sumOf { it.amount }
+                            val paidBillsAmount = cellBills.filter { it.isPaid }.sumOf { it.amount } + cellExtraTxs.filter { !it.isIncome && it.isPaidOrCleared }.sumOf { it.amount }
+                            val totalBillsCount = cellBills.size + cellExtraTxs.count { !it.isIncome }
+                            val totalIncomeAmount = cellIncomes.sumOf { it.amount } + cellExtraTxs.filter { it.isIncome }.sumOf { it.amount }
+
+                            // Filter dimming
+                            val matchesFilter = when (selectedFilterIndex) {
+                                1 -> unpaidBillsAmount > 0
+                                2 -> paidBillsAmount > 0
+                                3 -> isPayday || totalIncomeAmount > 0
+                                else -> true
+                            }
+                            val cellAlpha = if (matchesFilter || !isCurrentMonth) 1.0f else 0.4f
 
                             Box(
                                 modifier = Modifier
@@ -6974,11 +8639,13 @@ fun CalendarGridView(
                                     verticalArrangement = Arrangement.SpaceBetween,
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .padding(vertical = 4.dp, horizontal = 2.dp)
+                                        .padding(vertical = 3.dp, horizontal = 2.dp)
                                 ) {
+                                    // Top Row: Day number + Payday icon
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.Center
+                                        horizontalArrangement = Arrangement.Center,
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Text(
                                             text = date.dayOfMonth.toString(),
@@ -6987,7 +8654,7 @@ fun CalendarGridView(
                                             color = when {
                                                 date == selectedDay -> MaterialTheme.colorScheme.onPrimaryContainer
                                                 !isCurrentMonth -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                                                else -> MaterialTheme.colorScheme.onSurface
+                                                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = cellAlpha)
                                             }
                                         )
 
@@ -6997,11 +8664,12 @@ fun CalendarGridView(
                                         }
                                     }
 
+                                    // Center Badges: Income / Bills
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.spacedBy(1.dp)
                                     ) {
-                                        if (dateIncome > 0) {
+                                        if (totalIncomeAmount > 0) {
                                             Surface(
                                                 shape = RoundedCornerShape(3.dp),
                                                 color = if (date == selectedDay)
@@ -7010,34 +8678,99 @@ fun CalendarGridView(
                                                     Color(0xFF10B981).copy(alpha = 0.18f)
                                             ) {
                                                 Text(
-                                                    text = "+${formatCalendarAmount(dateIncome)}",
-                                                    fontSize = 9.sp,
+                                                    text = "+${formatCalendarAmount(totalIncomeAmount)}",
+                                                    fontSize = 8.5.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = if (date == selectedDay) MaterialTheme.colorScheme.onPrimaryContainer else Color(0xFF047857),
                                                     maxLines = 1,
-                                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                                                    modifier = Modifier.padding(horizontal = 2.5.dp, vertical = 0.5.dp)
                                                 )
                                             }
                                         }
 
-                                        if (dateExpense > 0) {
+                                        if (unpaidBillsAmount > 0) {
+                                            val isOverdue = date.isBefore(today)
+                                            val isDueToday = date == today
+                                            val badgeBg = when {
+                                                date == selectedDay -> MaterialTheme.colorScheme.error.copy(alpha = 0.25f)
+                                                isOverdue -> Color(0xFFEF4444).copy(alpha = 0.25f)
+                                                isDueToday -> Color(0xFFF59E0B).copy(alpha = 0.25f)
+                                                else -> Color(0xFFEF4444).copy(alpha = 0.18f)
+                                            }
+                                            val badgeText = when {
+                                                isOverdue -> "⚠️-${formatCalendarAmount(unpaidBillsAmount)}"
+                                                isDueToday -> "⚡-${formatCalendarAmount(unpaidBillsAmount)}"
+                                                else -> "-${formatCalendarAmount(unpaidBillsAmount)}"
+                                            }
+                                            val badgeColor = when {
+                                                date == selectedDay -> MaterialTheme.colorScheme.onErrorContainer
+                                                isOverdue -> Color(0xFFB91C1C)
+                                                isDueToday -> Color(0xFFB45309)
+                                                else -> Color(0xFFB91C1C)
+                                            }
                                             Surface(
                                                 shape = RoundedCornerShape(3.dp),
-                                                color = if (date == selectedDay)
-                                                    MaterialTheme.colorScheme.error.copy(alpha = 0.25f)
-                                                else
-                                                    Color(0xFFEF4444).copy(alpha = 0.18f)
+                                                color = badgeBg
                                             ) {
                                                 Text(
-                                                    text = "-${formatCalendarAmount(dateExpense)}",
-                                                    fontSize = 9.sp,
+                                                    text = badgeText,
+                                                    fontSize = 8.5.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = if (date == selectedDay) MaterialTheme.colorScheme.onErrorContainer else Color(0xFFB91C1C),
+                                                    color = badgeColor,
                                                     maxLines = 1,
-                                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                                                    modifier = Modifier.padding(horizontal = 2.5.dp, vertical = 0.5.dp)
+                                                )
+                                            }
+                                        } else if (paidBillsAmount > 0) {
+                                            // All bills on this day are settled/paid!
+                                            Surface(
+                                                shape = RoundedCornerShape(3.dp),
+                                                color = Color(0xFF10B981).copy(alpha = 0.18f)
+                                            ) {
+                                                Text(
+                                                    text = "✓-${formatCalendarAmount(paidBillsAmount)}",
+                                                    fontSize = 8.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF047857),
+                                                    maxLines = 1,
+                                                    modifier = Modifier.padding(horizontal = 2.5.dp, vertical = 0.5.dp)
                                                 )
                                             }
                                         }
+                                    }
+
+                                    // Bottom Indicator Dots for scheduled bills
+                                    if (totalBillsCount > 0) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            val displayBills = cellBills.take(3)
+                                            displayBills.forEach { b ->
+                                                val dotColor = when {
+                                                    b.isPaid -> Color(0xFF10B981)
+                                                    b.isAutoPay -> Color(0xFF8B5CF6)
+                                                    date.isBefore(today) -> Color(0xFFEF4444)
+                                                    else -> Color(0xFFF59E0B)
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(4.dp)
+                                                        .clip(CircleShape)
+                                                        .background(dotColor)
+                                                )
+                                            }
+                                            if (totalBillsCount > 3) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(3.dp)
+                                                        .clip(CircleShape)
+                                                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.height(4.dp))
                                     }
                                 }
                             }
@@ -7061,52 +8794,87 @@ fun CalendarGridView(
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                // Header with Date, Financial Pill Summary & Add Button
+                // Header with Date & Add Button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = selectedDay.format(DateTimeFormatter.ofPattern("EEEE, MMM d, yyyy", Locale.US)),
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        val dayIncomes = dayTransactions.filter { it.isIncome }.sumOf { it.amount }
-                        val dayExpenses = dayTransactions.filter { !it.isIncome }.sumOf { it.amount }
-                        if (dayIncomes > 0 || dayExpenses > 0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = selectedDay.format(DateTimeFormatter.ofPattern("EEEE, MMM d, yyyy", Locale.US)),
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (selectedDay == today) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        "Today",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Day Summary Badges
+                        val dayIncomeTotal = dayIncomes.sumOf { it.amount } + dayExtraTxs.filter { it.isIncome }.sumOf { it.amount }
+                        val dayBillsTotal = dayBills.sumOf { it.amount } + dayExtraTxs.filter { !it.isIncome }.sumOf { it.amount }
+                        val dayUnpaidTotal = dayBills.filter { !it.isPaid }.sumOf { it.amount } + dayExtraTxs.filter { !it.isIncome && !it.isPaidOrCleared }.sumOf { it.amount }
+
+                        if (dayIncomeTotal > 0 || dayBillsTotal > 0) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(top = 4.dp)
                             ) {
-                                if (dayIncomes > 0) {
+                                if (dayIncomeTotal > 0) {
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
+                                        shape = RoundedCornerShape(4.dp),
                                         color = Color(0xFF10B981).copy(alpha = 0.15f)
                                     ) {
                                         Text(
-                                            text = String.format(Locale.US, "+$%,.2f In", dayIncomes),
-                                            fontSize = 11.sp,
+                                            text = String.format(Locale.US, "+$%,.2f In", dayIncomeTotal),
+                                            fontSize = 9.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFF047857),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                         )
                                     }
                                 }
-                                if (dayExpenses > 0) {
+                                if (dayBillsTotal > 0) {
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
+                                        shape = RoundedCornerShape(4.dp),
                                         color = Color(0xFFEF4444).copy(alpha = 0.15f)
                                     ) {
                                         Text(
-                                            text = String.format(Locale.US, "-$%,.2f Out", dayExpenses),
-                                            fontSize = 11.sp,
+                                            text = String.format(Locale.US, "-$%,.2f Bills", dayBillsTotal),
+                                            fontSize = 9.5.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFB91C1C),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                                if (dayUnpaidTotal > 0) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = String.format(Locale.US, "$%,.2f Due", dayUnpaidTotal),
+                                            fontSize = 9.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFB45309),
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                         )
                                     }
                                 }
@@ -7128,7 +8896,9 @@ fun CalendarGridView(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                if (dayTransactions.isEmpty()) {
+                val hasAnyItems = dayBills.isNotEmpty() || dayIncomes.isNotEmpty() || dayExtraTxs.isNotEmpty()
+
+                if (!hasAnyItems) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -7154,55 +8924,252 @@ fun CalendarGridView(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        val today = LocalDate.now()
                         val isDark = isSystemInDarkTheme()
-                        for (tx in dayTransactions) {
-                            val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
-                            val daysDiff = ChronoUnit.DAYS.between(today, txDate)
-                            val isSettled = tx.isPaidOrCleared
-                            val itemBorder = when {
-                                !isSettled && !tx.isIncome && daysDiff < 0 -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
-                                !isSettled && !tx.isIncome && daysDiff in 0L..2L -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
-                                else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            }
-                            val itemBg = when {
-                                !isSettled && !tx.isIncome && daysDiff < 0 -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
-                                !isSettled && !tx.isIncome && daysDiff in 0L..2L -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
-                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                            }
 
-                            SwipeableTransactionRow(
-                                transaction = tx,
-                                onDelete = { onDeleteTransaction(tx) },
-                                onEdit = { onEditTransaction(tx) },
-                                onDuplicate = { onDuplicateTransaction?.invoke(tx) },
-                                onUpdateStatus = { newSt ->
-                                    onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
-                                },
-                                onToggleCompleted = { onToggleCompleted(tx) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
+                        // 1. Scheduled & Planned Bills on this date
+                        if (dayBills.isNotEmpty()) {
+                            Text(
+                                text = "BILLS & EXPENSES (${dayBills.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                letterSpacing = 0.8.sp
+                            )
+
+                            dayBills.forEach { bill ->
+                                val isOverdue = !bill.isPaid && bill.dueDate.isBefore(today)
+                                val isDueToday = !bill.isPaid && bill.dueDate == today
+                                val billBg = when {
+                                    bill.isPaid -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                    isOverdue -> if (isDark) Color(0xFF450A0A).copy(alpha = 0.35f) else Color(0xFFFEF2F2)
+                                    isDueToday -> if (isDark) Color(0xFF78350F).copy(alpha = 0.25f) else Color(0xFFFFFBEB)
+                                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                }
+                                val billBorder = when {
+                                    bill.isPaid -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                    isOverdue -> BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.8f))
+                                    isDueToday -> BorderStroke(1.2.dp, Color(0xFFF59E0B).copy(alpha = 0.85f))
+                                    else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("bill_calendar_item_${bill.id}"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = billBg,
+                                    border = billBorder
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // Left: Checkmark button + Title & Details
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            IconButton(
+                                                onClick = { handleToggleBillPaid(bill) },
+                                                modifier = Modifier.size(36.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (bill.isPaid) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                    contentDescription = if (bill.isPaid) "Mark as Due" else "Mark as Paid",
+                                                    tint = if (bill.isPaid) Color(0xFF10B981) else (if (isOverdue) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant),
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+
+                                            Column {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = bill.title,
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (bill.isPaid) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurface,
+                                                        textDecoration = if (bill.isPaid) TextDecoration.LineThrough else TextDecoration.None
+                                                    )
+                                                    if (bill.isAutoPay) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = Color(0xFF8B5CF6).copy(alpha = 0.15f)
+                                                        ) {
+                                                            Text(
+                                                                "⚡ AutoPay",
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = Color(0xFF7C3AED),
+                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(top = 2.dp)
+                                                ) {
+                                                    val statusLabel = when {
+                                                        bill.isPaid -> "PAID ✓"
+                                                        isOverdue -> "⚠️ OVERDUE"
+                                                        isDueToday -> "⚡ DUE TODAY"
+                                                        else -> "DUE ${bill.dueDate.format(DateTimeFormatter.ofPattern("MMM d", Locale.US))}"
+                                                    }
+                                                    val statusColor = when {
+                                                        bill.isPaid -> Color(0xFF047857)
+                                                        isOverdue -> Color(0xFFDC2626)
+                                                        isDueToday -> Color(0xFFD97706)
+                                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                                    }
+                                                    Text(
+                                                        text = statusLabel,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = statusColor
+                                                    )
+
+                                                    if (bill.targetAccount.isNotBlank() && !bill.targetAccount.equals("Primary Account", ignoreCase = true) && !bill.targetAccount.equals("All Accounts", ignoreCase = true)) {
+                                                        Text("•", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                                        Text(
+                                                            text = bill.targetAccount,
+                                                            fontSize = 10.sp,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Right: Amount + Quick Action
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                text = String.format(Locale.US, "-$%,.2f", bill.amount),
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = if (bill.isPaid) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f) else Color(0xFFDC2626),
+                                                textDecoration = if (bill.isPaid) TextDecoration.LineThrough else TextDecoration.None
+                                            )
+                                            Text(
+                                                text = bill.source,
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Incomes on this date
+                        if (dayIncomes.isNotEmpty()) {
+                            Text(
+                                text = "INCOMES & PAYDAYS (${dayIncomes.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF059669),
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+
+                            dayIncomes.forEach { income ->
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp),
-                                    color = itemBg,
-                                    border = itemBorder
+                                    color = if (isDark) Color(0xFF064E3B).copy(alpha = 0.35f) else Color(0xFFECFDF5),
+                                    border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.4f))
                                 ) {
-                                    TransactionItemRow(
-                                        transaction = tx,
-                                        onDelete = { onDeleteTransaction(tx) },
-                                        onEdit = { onEditTransaction(tx) },
-                                        onDuplicate = { onDuplicateTransaction?.invoke(tx) },
-                                        onToggleCompleted = { onToggleCompleted(tx) },
-                                        onUpdateStatus = { newSt ->
-                                            onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
-                                        },
-                                        onToggleReminder = { days ->
-                                            onToggleReminder?.invoke(tx, days)
-                                        },
-                                        showDateChip = false,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text("💰", fontSize = 18.sp)
+                                            Column {
+                                                Text(
+                                                    text = income.title,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = if (income.isProjected) "Projected Payday" else "Income Received",
+                                                    fontSize = 10.sp,
+                                                    color = Color(0xFF047857),
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = String.format(Locale.US, "+$%,.2f", income.amount),
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF059669)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Other recorded transactions on this date
+                        if (dayExtraTxs.isNotEmpty()) {
+                            Text(
+                                text = "OTHER TRANSACTIONS (${dayExtraTxs.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                letterSpacing = 0.8.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+
+                            for (tx in dayExtraTxs) {
+                                SwipeableTransactionRow(
+                                    transaction = tx,
+                                    onDelete = { onDeleteTransaction(tx) },
+                                    onEdit = { onEditTransaction(tx) },
+                                    onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                    onUpdateStatus = { newSt ->
+                                        onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                    },
+                                    onToggleCompleted = { onToggleCompleted(tx) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                    ) {
+                                        TransactionItemRow(
+                                            transaction = tx,
+                                            onDelete = { onDeleteTransaction(tx) },
+                                            onEdit = { onEditTransaction(tx) },
+                                            onDuplicate = { onDuplicateTransaction?.invoke(tx) },
+                                            onToggleCompleted = { onToggleCompleted(tx) },
+                                            onUpdateStatus = { newSt ->
+                                                onUpdateTransactionStatus?.invoke(tx, newSt) ?: onToggleCompleted(tx)
+                                            },
+                                            onToggleReminder = { days ->
+                                                onToggleReminder?.invoke(tx, days)
+                                            },
+                                            showDateChip = false,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -7218,7 +9185,7 @@ fun CalendarGridView(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             topBannerContent()
 
@@ -7266,10 +9233,15 @@ fun SettingsView(
     onToggleDriveAutoSync: (Boolean) -> Unit,
     onConnectCustomSyncEmail: (String) -> Unit = {},
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
+    onListDriveFiles: suspend () -> Pair<List<com.example.sync.DriveFileInfo>, String?> = { Pair(emptyList(), null) },
+    onImportSpecificDriveFile: suspend (com.example.sync.DriveFileInfo) -> Pair<Boolean, String> = { Pair(false, "") },
+    onImportGoogleSheetByUrlOrId: suspend (String) -> Pair<Boolean, String> = { Pair(false, "") },
     onExportToGoogleSheets: (((String) -> Unit) -> Unit)? = null,
     onExportCsv: suspend () -> String = { "" },
     onImportCsv: suspend (String) -> Boolean = { false },
+    onImportAnyDataDetailed: suspend (String) -> Pair<Boolean, String> = { Pair(false, "") },
     onExportWebCompanionToGoogleDrive: (suspend (String) -> Pair<Boolean, String>)? = null,
+    onRestoreFinancialData: () -> Unit = {},
     onClearDatabase: () -> Unit = {},
     isWideScreen: Boolean = false
 ) {
@@ -7284,7 +9256,9 @@ fun SettingsView(
     var loginEmailInput by remember { mutableStateOf(uiState.driveAccountEmail ?: "86brancan@gmail.com") }
     var showAdvancedOAuth by remember { mutableStateOf(false) }
     var themeCardExpanded by remember { mutableStateOf(false) }
-    var payScheduleExpanded by remember { mutableStateOf(true) }
+    var payScheduleExpanded by remember { mutableStateOf(false) }
+    var remindersExpanded by remember { mutableStateOf(false) }
+    var webCompanionExpanded by remember { mutableStateOf(false) }
     var showAddIncomeSourceDialog by remember { mutableStateOf(false) }
     var showEditAnchorDialog by remember { mutableStateOf(false) }
     var showEditDefaultPaycheckDialog by remember { mutableStateOf(false) }
@@ -7293,13 +9267,168 @@ fun SettingsView(
     var backupExpanded by remember { mutableStateOf(false) }
     var dangerZoneExpanded by remember { mutableStateOf(false) }
     val localContext = LocalContext.current
+    var showManufacturerGuideDialog by remember { mutableStateOf(false) }
+    var keepAliveServiceEnabled by remember {
+        mutableStateOf(com.example.notification.NotificationReliabilityHelper.isKeepAliveServiceEnabled(localContext))
+    }
+    var isBatteryIgnored by remember {
+        mutableStateOf(com.example.notification.NotificationReliabilityHelper.isBatteryOptimizationIgnored(localContext))
+    }
+    var canScheduleExact by remember {
+        mutableStateOf(com.example.notification.NotificationReliabilityHelper.canScheduleExactAlarms(localContext))
+    }
+    var hasNotifPermission by remember {
+        mutableStateOf(com.example.notification.NotificationReliabilityHelper.isNotificationPermissionGranted(localContext))
+    }
+
+    val refreshDiagnosticStates: () -> Unit = {
+        keepAliveServiceEnabled = com.example.notification.NotificationReliabilityHelper.isKeepAliveServiceEnabled(localContext)
+        isBatteryIgnored = com.example.notification.NotificationReliabilityHelper.isBatteryOptimizationIgnored(localContext)
+        canScheduleExact = com.example.notification.NotificationReliabilityHelper.canScheduleExactAlarms(localContext)
+        hasNotifPermission = com.example.notification.NotificationReliabilityHelper.isNotificationPermissionGranted(localContext)
+    }
+
+    val settingsCoroutineScope = rememberCoroutineScope()
+    var filePickerMode by remember { mutableStateOf("backup") }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importInputText by remember { mutableStateOf("") }
+    var importErrorMsg by remember { mutableStateOf("") }
+    var isImportingProgress by remember { mutableStateOf(false) }
+
+    var showCsvImportDialog by remember { mutableStateOf(false) }
+    var showCsvExportDialog by remember { mutableStateOf(false) }
+    var csvExportData by remember { mutableStateOf("") }
+    var csvImportInput by remember { mutableStateOf("") }
+    var csvStatusMsg by remember { mutableStateOf("") }
+    var isSyncingCsv by remember { mutableStateOf(false) }
+    var isExportingToSheets by remember { mutableStateOf(false) }
+
+    var showSyncImportPickerDialog by remember { mutableStateOf(false) }
+    var driveFileList by remember { mutableStateOf<List<com.example.sync.DriveFileInfo>>(emptyList()) }
+    var driveFileSearchQuery by remember { mutableStateOf("") }
+    var isDriveFilesLoading by remember { mutableStateOf(false) }
+    var driveFilesErrorMsg by remember { mutableStateOf<String?>(null) }
+    var importingDriveFileId by remember { mutableStateOf<String?>(null) }
+    var sheetUrlOrIdInput by remember { mutableStateOf("") }
+    var isImportingSheetUrl by remember { mutableStateOf(false) }
+    var showTokenBoxInPicker by remember { mutableStateOf(false) }
+    var customTokenInputInPicker by remember { mutableStateOf(onGetCustomDriveToken() ?: "") }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: android.net.Uri? ->
+        uri?.let {
+            settingsCoroutineScope.launch {
+                try {
+                    val (content, pickedFileName) = com.example.sync.SpreadsheetFileParser.extractContentFromUri(localContext, uri)
+
+                    if (!content.isNullOrBlank()) {
+                        csvImportInput = content
+                        importInputText = content
+                        val (ok, msg) = onImportAnyDataDetailed(content)
+                        if (ok) {
+                            csvStatusMsg = msg
+                            Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                            showCsvImportDialog = false
+                            showImportDialog = false
+                            showSyncImportPickerDialog = false
+                        } else {
+                            var fallbackOk = onImportCsv(content)
+                            if (!fallbackOk) {
+                                fallbackOk = onImportBackup(content)
+                            }
+                            if (fallbackOk) {
+                                csvStatusMsg = "✅ File '$pickedFileName' imported and synced with local budget!"
+                                Toast.makeText(localContext, csvStatusMsg, Toast.LENGTH_SHORT).show()
+                                showCsvImportDialog = false
+                                showImportDialog = false
+                                showSyncImportPickerDialog = false
+                            } else {
+                                csvStatusMsg = msg
+                                importErrorMsg = msg
+                                Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                if (filePickerMode == "csv") showCsvImportDialog = true else showImportDialog = true
+                            }
+                        }
+                    } else {
+                        // If file is a Google Sheet or virtual document, try fetching via Google Drive
+                        val (sheetOk, sheetMsg) = onImportGoogleSheetByUrlOrId(pickedFileName)
+                        if (sheetOk) {
+                            csvStatusMsg = sheetMsg
+                            Toast.makeText(localContext, sheetMsg, Toast.LENGTH_LONG).show()
+                            showCsvImportDialog = false
+                            showImportDialog = false
+                            showSyncImportPickerDialog = false
+                        } else {
+                            Toast.makeText(localContext, "Selected '$pickedFileName'. You can also tap 'Import' directly in the Google Drive Files list.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(localContext, "Error opening file: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
+        hasNotifPermission = isGranted
         com.example.notification.BillReminderScheduler.sendTestNotification(
             localContext,
             title = "Electric Bill Reminder",
             amount = 84.50
+        )
+    }
+
+    if (showManufacturerGuideDialog) {
+        val guideData = remember { com.example.notification.NotificationReliabilityHelper.getManufacturerGuide() }
+        AlertDialog(
+            onDismissRequest = { showManufacturerGuideDialog = false },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneAndroid,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(guideData.first, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Many phone manufacturers enforce aggressive power-management rules that kill background processes or delay alarms. Follow these steps to ensure 100% on-time reminders:",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    guideData.second.forEach { step ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = step,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(10.dp),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showManufacturerGuideDialog = false }) {
+                    Text("Understood")
+                }
+            }
         )
     }
 
@@ -7367,9 +9496,59 @@ fun SettingsView(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "Simply log in with your Google Email below. No Client ID or Client Secret is required!",
+                        text = "Google Drive & Google Sheets permanent sync is active for your account:",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF10B981).copy(alpha = 0.15f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF047857), modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = "Google Account: ${uiState.driveAccountEmail ?: "86brancan@gmail.com"}",
+                                    color = Color(0xFF047857),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                text = "Permanent OAuth Scopes: Google Drive & Google Sheets enabled.",
+                                color = Color(0xFF065F46),
+                                fontSize = 10.5.sp
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                showAuthorizeDriveDialog = false
+                                onConnectGoogleDrive()
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("sign_in_google_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("1-Tap Google Sign-In Authorization", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    Text(
+                        text = "Linked Google Email for Cloud Sync:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
                     OutlinedTextField(
@@ -7380,36 +9559,6 @@ fun SettingsView(
                         modifier = Modifier.fillMaxWidth().testTag("email_login_dialog_input"),
                         singleLine = true
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val email = loginEmailInput.trim()
-                                if (email.isNotEmpty()) {
-                                    onConnectCustomSyncEmail(email)
-                                    showAuthorizeDriveDialog = false
-                                    onManualSyncDrive()
-                                    onSyncCsvDrive?.invoke {}
-                                }
-                            },
-                            modifier = Modifier.weight(1f).testTag("save_email_login_button")
-                        ) {
-                            Text("Log In & Sync", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                showAuthorizeDriveDialog = false
-                                onConnectGoogleDrive()
-                            },
-                            modifier = Modifier.weight(1f).testTag("sign_in_google_button")
-                        ) {
-                            Text("Sign In with Google", fontSize = 11.sp)
-                        }
-                    }
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -7427,7 +9576,7 @@ fun SettingsView(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = if (showAdvancedOAuth) "Hide Advanced Credentials (Client ID / Secret)" else "Show Advanced Credentials (Client ID / Secret)",
+                                text = if (showAdvancedOAuth) "Hide Advanced Settings" else "Show Optional Token / Custom Credentials",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
                             )
@@ -7437,10 +9586,21 @@ fun SettingsView(
                     if (showAdvancedOAuth) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
+                                value = driveTokenInput,
+                                onValueChange = { driveTokenInput = it },
+                                label = { Text("Custom Access Token (Optional)") },
+                                placeholder = { Text("Auto-managed via Google Sign-In") },
+                                modifier = Modifier.fillMaxWidth().testTag("dialog_oauth_token_input"),
+                                maxLines = 2,
+                                singleLine = false,
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                            )
+
+                            OutlinedTextField(
                                 value = clientIdInput,
                                 onValueChange = { clientIdInput = it },
                                 label = { Text("Client ID (Optional)") },
-                                placeholder = { Text("123456789-xyz.apps.googleusercontent.com") },
+                                placeholder = { Text("Auto-configured") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -7449,7 +9609,7 @@ fun SettingsView(
                                 value = clientSecretInput,
                                 onValueChange = { clientSecretInput = it },
                                 label = { Text("Client Secret (Optional)") },
-                                placeholder = { Text("GOCSPX-...") },
+                                placeholder = { Text("Auto-configured") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
@@ -7457,35 +9617,8 @@ fun SettingsView(
                             OutlinedTextField(
                                 value = refreshTokenInput,
                                 onValueChange = { refreshTokenInput = it },
-                                label = { Text("Refresh Token or Auth Code (Optional)") },
-                                placeholder = { Text("1//04... or 4/0A...") },
-                                modifier = Modifier.fillMaxWidth(),
-                                maxLines = 2,
-                                singleLine = false
-                            )
-
-                            OutlinedButton(
-                                onClick = {
-                                    try {
-                                        val intent = android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse("https://developers.google.com/oauthplayground/#step1&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fspreadsheets")
-                                        )
-                                        localContext.startActivity(intent)
-                                    } catch (_: Exception) {}
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Get OAuth Token/Code (OAuth Playground)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            OutlinedTextField(
-                                value = driveTokenInput,
-                                onValueChange = { driveTokenInput = it },
-                                label = { Text("Direct OAuth Access Token (Optional)") },
-                                placeholder = { Text("ya29.a0A...") },
+                                label = { Text("Refresh Token (Optional)") },
+                                placeholder = { Text("Auto-managed") },
                                 modifier = Modifier.fillMaxWidth(),
                                 maxLines = 2,
                                 singleLine = false
@@ -7920,7 +10053,8 @@ fun SettingsView(
                                 FilterChip(
                                     selected = sourceFreq == f,
                                     onClick = { sourceFreq = f },
-                                    label = { Text(f, fontSize = 11.sp) }
+                                    label = { Text(f, fontSize = 9.5.sp) },
+                                    modifier = Modifier.height(24.dp)
                                 )
                             }
                         }
@@ -7956,7 +10090,7 @@ fun SettingsView(
     }
 
     val cardRemindersAndThemes: @Composable () -> Unit = {
-        // --- Card: Expense Notification Reminders & Themes ---
+        // --- Card: Expense Notification Reminders & Background Reliability ---
         Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -7967,23 +10101,26 @@ fun SettingsView(
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { remindersExpanded = !remindersExpanded },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Surface(
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Notifications,
+                                    imageVector = Icons.Default.NotificationsActive,
                                     contentDescription = "Notifications",
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.padding(8.dp).size(20.dp)
@@ -7997,77 +10134,384 @@ fun SettingsView(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Automated alerts on the day bills & expenses are due (unless marked complete)",
+                                    text = "Automated on-time alerts with persistent background reliability",
                                     fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        IconButton(onClick = { remindersExpanded = !remindersExpanded }) {
+                            Icon(
+                                imageVector = if (remindersExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (remindersExpanded) "Collapse" else "Expand"
+                            )
+                        }
+                    }
+
+                    if (remindersExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        val scheduledCount = remember(uiState.allTransactions, uiState.plannedExpenses) {
+                            val txReminders = uiState.allTransactions.count { !it.isIncome && !it.isCompleted && it.reminderDaysBefore >= 0 }
+                            val billReminders = uiState.plannedExpenses.count { it.reminderDaysBefore >= 0 }
+                            txReminders + billReminders
+                        }
+
+                    // Active alerts and instant test row
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Active Scheduled Reminders",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "$scheduledCount Active Alerts",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        com.example.notification.BillReminderScheduler.rescheduleAll(
+                                            localContext,
+                                            uiState.plannedExpenses,
+                                            uiState.allTransactions
+                                        )
+                                        refreshDiagnosticStates()
+                                        Toast.makeText(
+                                            localContext,
+                                            "Rescheduled $scheduledCount alerts & refreshed background work",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Reschedule", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            ContextCompat.checkSelfPermission(localContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        } else {
+                                            com.example.notification.BillReminderScheduler.sendTestNotification(
+                                                localContext,
+                                                title = "Electric Bill Reminder",
+                                                amount = 84.50
+                                            )
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                    modifier = Modifier.testTag("send_test_notification_button")
+                                ) {
+                                    Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Test Alert", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    // --- Card: Keep App Active (Foreground Service) ---
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(
+                            1.dp,
+                            if (keepAliveServiceEnabled) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (keepAliveServiceEnabled) Color(0xFF10B981).copy(alpha = 0.15f)
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PowerSettingsNew,
+                                            contentDescription = null,
+                                            tint = if (keepAliveServiceEnabled) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(6.dp).size(18.dp)
+                                        )
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "Keep App Running in Background",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Runs a persistent foreground service so Android and OEM task killers never stop reminders when swiped away or phone is locked.",
+                                            fontSize = 11.sp,
+                                            lineHeight = 15.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = keepAliveServiceEnabled,
+                                    onCheckedChange = { enabled ->
+                                        com.example.notification.NotificationReliabilityHelper.setKeepAliveServiceEnabled(localContext, enabled)
+                                        keepAliveServiceEnabled = enabled
+                                        refreshDiagnosticStates()
+                                        Toast.makeText(
+                                            localContext,
+                                            if (enabled) "✓ Persistent background monitor active" else "Background monitor stopped",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                )
+                            }
+
+                            if (keepAliveServiceEnabled) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.1f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("●", color = Color(0xFF10B981), fontSize = 12.sp)
+                                        Text(
+                                            text = "Active in notification tray • RAM protected from low-memory kill",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF047857)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    text = "💡 Tip: Enable this if your phone silences or skips bill reminders after closing the app.",
+                                    fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
                     }
 
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    val scheduledCount = remember(uiState.allTransactions, uiState.plannedExpenses) {
-                        val txReminders = uiState.allTransactions.count { !it.isIncome && !it.isCompleted && it.reminderDaysBefore >= 0 }
-                        val billReminders = uiState.plannedExpenses.count { it.reminderDaysBefore >= 0 }
-                        txReminders + billReminders
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
+                    // --- Section: System Diagnostics Checklist ---
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = "Scheduled Reminders Active",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "$scheduledCount Active Alerts",
-                                fontSize = 16.sp,
+                                text = "System Reliability Diagnostics",
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
+                            IconButton(
+                                onClick = { refreshDiagnosticStates() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh status", modifier = Modifier.size(16.dp))
+                            }
                         }
 
-                        Button(
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                    ContextCompat.checkSelfPermission(localContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                } else {
-                                    com.example.notification.BillReminderScheduler.sendTestNotification(
-                                        localContext,
-                                        title = "Electric Bill Reminder",
-                                        amount = 84.50
-                                    )
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            ),
-                            modifier = Modifier.testTag("send_test_notification_button")
+                        // 1. Battery Optimization Diagnostic Row
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Text("Test Alert Now", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isBatteryIgnored) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = if (isBatteryIgnored) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column {
+                                        Text("Battery Optimization", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            text = if (isBatteryIgnored) "Unrestricted (Allowed to wake device)" else "Optimized (Android may delay alarms)",
+                                            fontSize = 10.sp,
+                                            color = if (isBatteryIgnored) Color(0xFF047857) else Color(0xFFB45309)
+                                        )
+                                    }
+                                }
+
+                                TextButton(
+                                    onClick = {
+                                        com.example.notification.NotificationReliabilityHelper.openBatteryOptimizationSettings(localContext)
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text(if (isBatteryIgnored) "Adjust" else "Exempt", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
+                        }
+
+                        // 2. Exact Alarm Diagnostic Row
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = if (canScheduleExact) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = if (canScheduleExact) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column {
+                                        Text("Exact Alarms (Alarms & Reminders)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            text = if (canScheduleExact) "Granted (Exact minute delivery)" else "Restricted (Alarms will be batched)",
+                                            fontSize = 10.sp,
+                                            color = if (canScheduleExact) Color(0xFF047857) else Color(0xFFB45309)
+                                        )
+                                    }
+                                }
+
+                                if (!canScheduleExact) {
+                                    TextButton(
+                                        onClick = {
+                                            com.example.notification.NotificationReliabilityHelper.openExactAlarmSettings(localContext)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Allow", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Notification Permission Row
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = if (hasNotifPermission) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                                        contentDescription = null,
+                                        tint = if (hasNotifPermission) Color(0xFF10B981) else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column {
+                                        Text("Notification Permission", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            text = if (hasNotifPermission) "Granted (Status bar popups allowed)" else "Blocked (Notifications cannot display)",
+                                            fontSize = 10.sp,
+                                            color = if (hasNotifPermission) Color(0xFF047857) else MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+
+                                if (!hasNotifPermission) {
+                                    Button(
+                                        onClick = {
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                            } else {
+                                                com.example.notification.NotificationReliabilityHelper.openAppNotificationSettings(localContext)
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Grant", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        // 4. Device Manufacturer Guide Button
+                        OutlinedButton(
+                            onClick = { showManufacturerGuideDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.PhoneAndroid, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "Device Manufacturer Guide (${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }})",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
                 }
             }
+        }
 
             // --- Card 3: Visual Theme & Appearance ---
             Card(
@@ -8082,12 +10526,58 @@ fun SettingsView(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Dark Mode Toggle Row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { themeCardExpanded = !themeCardExpanded },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Palette,
+                                    contentDescription = "Themes",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(8.dp).size(20.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = "Visual Theme & Appearance",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (uiState.isDarkMode) "Dark Mode active • Custom color palette" else "Light Mode active • Custom color palette",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        IconButton(onClick = { themeCardExpanded = !themeCardExpanded }) {
+                            Icon(
+                                imageVector = if (themeCardExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (themeCardExpanded) "Collapse" else "Expand"
+                            )
+                        }
+                    }
+
+                    if (themeCardExpanded) {
+                        // Dark Mode Toggle Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Dark Mode Theme",
@@ -8581,7 +11071,7 @@ fun SettingsView(
 
                         if (appIconsExpanded) {
                             Text(
-                                text = "Select an icon style below. Your device launcher and home screen will update to display the chosen icon style.",
+                                text = "Select an icon for your home screen & app drawer. Changes only the app launcher icon on your home screen without altering your app color theme.",
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -8600,11 +11090,6 @@ fun SettingsView(
                                         Surface(
                                             onClick = {
                                                 onSelectAppIcon(iconOption)
-                                                Toast.makeText(
-                                                    localContext,
-                                                    "App icon set to ${iconOption.title}. Home screen will update shortly!",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
                                             },
                                             modifier = Modifier
                                                 .weight(1f)
@@ -8711,6 +11196,7 @@ fun SettingsView(
                     }
                 }
             }
+        }
 
             // --- Google Drive Cloud Sync Card ---
             if (showPairingDialog) {
@@ -8767,13 +11253,16 @@ fun SettingsView(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { driveSyncExpanded = !driveSyncExpanded },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Share,
@@ -8781,36 +11270,57 @@ fun SettingsView(
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(24.dp)
                             )
-                            Text("Google Drive Cloud Sync", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Column {
+                                Text("Google Drive Cloud Sync", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text(
+                                    text = if (uiState.driveAccountEmail != null) "Account: ${uiState.driveAccountEmail}" else "Encrypted cross-device cloud sync",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
-                        if (uiState.driveAccountEmail != null) {
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF22C55E).copy(alpha = 0.15f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (uiState.driveAccountEmail != null) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFF22C55E).copy(alpha = 0.15f)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF22C55E))
-                                    )
-                                    Text("Connected", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF15803D))
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF22C55E))
+                                        )
+                                        Text("Connected", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF15803D))
+                                    }
                                 }
+                            }
+                            IconButton(onClick = { driveSyncExpanded = !driveSyncExpanded }) {
+                                Icon(
+                                    imageVector = if (driveSyncExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (driveSyncExpanded) "Collapse" else "Expand"
+                                )
                             }
                         }
                     }
 
-                    Text(
-                        text = "Sync your budget database seamlessly across all your devices via encrypted cloud sync.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (driveSyncExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Text(
+                            text = "Sync your budget database seamlessly across all your devices via encrypted cloud sync.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
                     if (uiState.driveAccountEmail == null) {
                         Button(
@@ -8906,21 +11416,27 @@ fun SettingsView(
                                     Text("Authorize Google", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
+
+                            Button(
+                                onClick = { onRestoreFinancialData() },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                modifier = Modifier.fillMaxWidth().testTag("restore_financial_data_button")
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Text("Restore From Cloud Backup", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
 
             // --- Google Sheets & Google Drive CSV Sync Card ---
-            var showCsvExportDialog by remember { mutableStateOf(false) }
-            var showCsvImportDialog by remember { mutableStateOf(false) }
-            var csvExportData by remember { mutableStateOf("") }
-            var csvImportInput by remember { mutableStateOf("") }
-            var csvStatusMsg by remember { mutableStateOf("") }
-            var isSyncingCsv by remember { mutableStateOf(false) }
-            var isExportingToSheets by remember { mutableStateOf(false) }
-            val csvCoroutineScope = rememberCoroutineScope()
-
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -8931,7 +11447,9 @@ fun SettingsView(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { sheetsSyncExpanded = !sheetsSyncExpanded },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -8948,35 +11466,49 @@ fun SettingsView(
                             )
                             Column {
                                 Text("Google Sheets & Drive Export", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("Export: 'Expenses & Budget Export Sheet' | Import: 'Expenses & Budget Import Sheet'", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Location: My Drive/ PayCycle Budget/", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
 
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0xFF10B981).copy(alpha = 0.15f)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF10B981).copy(alpha = 0.15f)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF10B981))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF10B981))
+                                    )
+                                    Text("Live Drive Sync", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
+                                }
+                            }
+                            IconButton(onClick = { sheetsSyncExpanded = !sheetsSyncExpanded }) {
+                                Icon(
+                                    imageVector = if (sheetsSyncExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (sheetsSyncExpanded) "Collapse" else "Expand"
                                 )
-                                Text("Live Drive Sync", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF047857))
                             }
                         }
                     }
 
-                    Text(
-                        text = "Export income and expenses directly into a Google Sheet saved on your Google Drive. You can also sync remote changes back into the app on demand.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (sheetsSyncExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Text(
+                            text = "Export and import directly to & from 'My Drive/ PayCycle Budget/' without saving any files locally on your device. Live sync keeps your Google Sheet updated.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
                     Button(
                         onClick = {
@@ -8984,9 +11516,6 @@ fun SettingsView(
                             onExportToGoogleSheets?.invoke { msg ->
                                 csvStatusMsg = msg
                                 isExportingToSheets = false
-                                if (!msg.startsWith("Successfully") && (msg.contains("failed") || msg.contains("authorize") || msg.contains("OAuth") || msg.contains("not connected") || msg.contains("Could not upload") || msg.contains("permissions"))) {
-                                    showAuthorizeDriveDialog = true
-                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
@@ -8998,7 +11527,7 @@ fun SettingsView(
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                             Text(
-                                if (isExportingToSheets) "Exporting to 'Expenses & Budget Export Sheet'..." else "Export to 'Expenses & Budget Export Sheet'",
+                                if (isExportingToSheets) "Exporting to My Drive/ PayCycle Budget/..." else "Export to My Drive/ PayCycle Budget/",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )
@@ -9007,17 +11536,7 @@ fun SettingsView(
 
                     Button(
                         onClick = {
-                            isSyncingCsv = true
-                            csvCoroutineScope.launch {
-                                csvExportData = onExportCsv()
-                            }
-                            onSyncCsvDrive?.invoke { msg ->
-                                csvStatusMsg = msg
-                                isSyncingCsv = false
-                                if (!msg.startsWith("Synced") && !msg.startsWith("Created") && (msg.contains("failed") || msg.contains("authorize") || msg.contains("OAuth") || msg.contains("not connected"))) {
-                                    showAuthorizeDriveDialog = true
-                                }
-                            }
+                            showSyncImportPickerDialog = true
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
                         modifier = Modifier.fillMaxWidth().testTag("sync_google_sheets_csv_button")
@@ -9026,9 +11545,9 @@ fun SettingsView(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
                             Text(
-                                if (isSyncingCsv) "Syncing with Google Sheets..." else "Sync / Import from 'Expenses & Budget Import Sheet'",
+                                "Sync / Pick & Import (Google Drive & Device)",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )
@@ -9067,14 +11586,20 @@ fun SettingsView(
                         OutlinedButton(
                             onClick = {
                                 try {
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://drive.google.com/drive/my-drive"))
+                                    val folderId = com.example.sync.GoogleDriveSyncManager(context).getCachedFolderId()
+                                    val uriStr = if (!folderId.isNullOrBlank()) {
+                                        "https://drive.google.com/drive/folders/$folderId"
+                                    } else {
+                                        "https://drive.google.com/drive/my-drive"
+                                    }
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uriStr))
                                     context.startActivity(intent)
                                 } catch (_: Exception) {}
                             },
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                             modifier = Modifier.weight(1f).testTag("open_drive_button")
                         ) {
-                            Text("My Drive", fontWeight = FontWeight.Bold, fontSize = 10.sp, maxLines = 1)
+                            Text("PayCycle Folder", fontWeight = FontWeight.Bold, fontSize = 10.sp, maxLines = 1)
                         }
                     }
 
@@ -9084,7 +11609,7 @@ fun SettingsView(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                csvCoroutineScope.launch {
+                                settingsCoroutineScope.launch {
                                     csvExportData = onExportCsv()
                                     showCsvExportDialog = true
                                 }
@@ -9144,26 +11669,18 @@ fun SettingsView(
                                     OutlinedButton(
                                         onClick = {
                                             try {
-                                                val file = java.io.File(context.filesDir, "expenses_google_sheets_sync.csv")
-                                                file.writeText(csvExportData, Charsets.UTF_8)
-                                                val uri = androidx.core.content.FileProvider.getUriForFile(
-                                                    context,
-                                                    "com.example.fileprovider",
-                                                    file
-                                                )
                                                 val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                    type = "text/csv"
-                                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                                    type = "text/plain"
+                                                    putExtra(android.content.Intent.EXTRA_TEXT, csvExportData)
                                                     putExtra(android.content.Intent.EXTRA_SUBJECT, "expenses_google_sheets_sync.csv")
-                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                 }
-                                                context.startActivity(android.content.Intent.createChooser(shareIntent, "Share or Save CSV File"))
+                                                context.startActivity(android.content.Intent.createChooser(shareIntent, "Share CSV Data"))
                                             } catch (e: Exception) {
-                                                android.widget.Toast.makeText(context, "CSV saved to app storage", android.widget.Toast.LENGTH_SHORT).show()
+                                                android.widget.Toast.makeText(context, "Could not share CSV", android.widget.Toast.LENGTH_SHORT).show()
                                             }
                                         }
                                     ) {
-                                        Text("Share / Save File")
+                                        Text("Share CSV")
                                     }
                                     Button(
                                         onClick = {
@@ -9188,19 +11705,82 @@ fun SettingsView(
 
                     // CSV Import Dialog
                     if (showCsvImportDialog) {
+                        val clipboardManager = localContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                         AlertDialog(
                             onDismissRequest = { showCsvImportDialog = false },
                             title = { Text("Import Google Sheets CSV", fontWeight = FontWeight.Bold) },
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Paste CSV content copied from Google Sheets or CSV file:", fontSize = 12.sp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                filePickerMode = "csv"
+                                                try {
+                                                    filePickerLauncher.launch(arrayOf(
+                                                        "application/vnd.google-apps.spreadsheet",
+                                                        "text/csv",
+                                                        "text/comma-separated-values",
+                                                        "text/tab-separated-values",
+                                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                        "application/vnd.ms-excel",
+                                                        "application/json",
+                                                        "*/*"
+                                                    ))
+                                                } catch (e: Exception) {
+                                                    csvStatusMsg = "File picker unavailable on this system. Please paste data below."
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f).testTag("btn_select_csv_file_dialog")
+                                        ) {
+                                            Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text("File", fontSize = 10.sp)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                showCsvImportDialog = false
+                                                showSyncImportPickerDialog = true
+                                            },
+                                            modifier = Modifier.weight(1.2f).testTag("btn_drive_pick_in_csv_dialog")
+                                        ) {
+                                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color(0xFF10B981))
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text("Google Drive", fontSize = 10.sp)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                try {
+                                                    val clipData = clipboardManager?.primaryClip
+                                                    if (clipData != null && clipData.itemCount > 0) {
+                                                        val text = clipData.getItemAt(0)?.text?.toString() ?: ""
+                                                        if (text.isNotBlank()) {
+                                                            csvImportInput = text
+                                                            csvStatusMsg = "Pasted from clipboard!"
+                                                        }
+                                                    }
+                                                } catch (_: Exception) {}
+                                            },
+                                            modifier = Modifier.weight(1f).testTag("btn_paste_csv_dialog")
+                                        ) {
+                                            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text("Paste", fontSize = 10.sp)
+                                        }
+                                    }
+
+                                    Text("Or paste CSV text copied from sheets/file:", fontSize = 12.sp)
                                     OutlinedTextField(
                                         value = csvImportInput,
                                         onValueChange = { csvImportInput = it },
                                         placeholder = { Text("Date,Title,Amount,Category,Type,Account,Completed\n2026-07-29,\"Grocery Store\",45.50,\"Groceries\",\"Expense\",\"Checking\",\"Yes\"") },
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(150.dp),
+                                            .height(140.dp),
                                         textStyle = androidx.compose.ui.text.TextStyle(
                                             fontSize = 11.sp,
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -9212,13 +11792,33 @@ fun SettingsView(
                             confirmButton = {
                                 Button(
                                     onClick = {
-                                        csvCoroutineScope.launch {
-                                            val ok = onImportCsv(csvImportInput)
-                                            showCsvImportDialog = false
-                                            if (ok) {
-                                                csvStatusMsg = "CSV imported & synced with local database!"
-                                            } else {
-                                                csvStatusMsg = "Failed to parse CSV lines. Check format."
+                                        if (csvImportInput.isBlank()) {
+                                            csvStatusMsg = "Please paste CSV lines or select a file."
+                                            return@Button
+                                        }
+                                        settingsCoroutineScope.launch {
+                                            try {
+                                                val (ok, msg) = onImportAnyDataDetailed(csvImportInput)
+                                                if (ok) {
+                                                    csvStatusMsg = msg
+                                                    showCsvImportDialog = false
+                                                    Toast.makeText(localContext, msg, Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    var fallbackOk = onImportCsv(csvImportInput)
+                                                    if (!fallbackOk) {
+                                                        fallbackOk = onImportBackup(csvImportInput)
+                                                    }
+                                                    if (fallbackOk) {
+                                                        csvStatusMsg = "✅ Data imported & synced with local budget!"
+                                                        showCsvImportDialog = false
+                                                        Toast.makeText(localContext, "✅ Successfully imported data into budget!", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        csvStatusMsg = msg
+                                                        Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                csvStatusMsg = "Error: ${e.localizedMessage}"
                                             }
                                         }
                                     }
@@ -9233,9 +11833,565 @@ fun SettingsView(
                             }
                         )
                     }
+
+                    // Sync & Import File Picker Dialog
+                    if (showSyncImportPickerDialog) {
+                        val clipboardManager = localContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        LaunchedEffect(showSyncImportPickerDialog, uiState.driveAccountEmail, uiState.driveAuthVersion) {
+                            isDriveFilesLoading = true
+                            driveFilesErrorMsg = null
+                            val (files, err) = onListDriveFiles()
+                            driveFileList = files
+                            driveFilesErrorMsg = err
+                            isDriveFilesLoading = false
+                        }
+
+                        AlertDialog(
+                            onDismissRequest = {
+                                if (importingDriveFileId == null && !isSyncingCsv) {
+                                    showSyncImportPickerDialog = false
+                                }
+                            },
+                            title = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.CloudSync, contentDescription = null, tint = Color(0xFF10B981))
+                                    Column {
+                                        Text("Sync & Import Files", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                                        Text("Select any file to import into your budget", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            },
+                            text = {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 500.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // 1. Direct Google Sheet Link or ID card (Primary 1-Tap Option)
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)),
+                                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Icon(Icons.Default.TableChart, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                                                    Text("📊 Permanent Google Sheet Link (Never Expires)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                }
+                                                TextButton(
+                                                    onClick = {
+                                                        try {
+                                                            val clipData = clipboardManager?.primaryClip
+                                                            if (clipData != null && clipData.itemCount > 0) {
+                                                                val text = clipData.getItemAt(0)?.text?.toString() ?: ""
+                                                                if (text.isNotBlank()) {
+                                                                    sheetUrlOrIdInput = text.trim()
+                                                                }
+                                                            }
+                                                        } catch (_: Exception) {}
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(13.dp))
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text("Paste Link", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                            Text(
+                                                "Set sharing on your Google Sheet to 'Anyone with link can view'. This link syncs permanently without expiring or needing OAuth tokens.",
+                                                fontSize = 10.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                OutlinedTextField(
+                                                    value = sheetUrlOrIdInput,
+                                                    onValueChange = { sheetUrlOrIdInput = it },
+                                                    placeholder = { Text("https://docs.google.com/spreadsheets/d/...", fontSize = 10.sp) },
+                                                    modifier = Modifier.weight(1f).testTag("input_sheet_url_picker"),
+                                                    singleLine = true,
+                                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                                                )
+                                                Button(
+                                                    onClick = {
+                                                        val input = sheetUrlOrIdInput.trim()
+                                                        if (input.isNotEmpty()) {
+                                                            isImportingSheetUrl = true
+                                                            settingsCoroutineScope.launch {
+                                                                try {
+                                                                    val (ok, msg) = onImportGoogleSheetByUrlOrId(input)
+                                                                    csvStatusMsg = msg
+                                                                    Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                                    if (ok) {
+                                                                        showSyncImportPickerDialog = false
+                                                                    }
+                                                                } catch (e: Exception) {
+                                                                    csvStatusMsg = "Import failed: ${e.localizedMessage}"
+                                                                    Toast.makeText(localContext, csvStatusMsg, Toast.LENGTH_LONG).show()
+                                                                } finally {
+                                                                    isImportingSheetUrl = false
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    enabled = sheetUrlOrIdInput.isNotBlank() && !isImportingSheetUrl,
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                    modifier = Modifier.height(48.dp).testTag("btn_import_sheet_picker")
+                                                ) {
+                                                    if (isImportingSheetUrl) {
+                                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                                                    } else {
+                                                        Text("Import Sheet", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 2. Google Drive files section
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text("☁️ Google Drive & Cloud Files", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                    val emailDisplay = uiState.driveAccountEmail ?: "86brancan@gmail.com"
+                                                    Text(emailDisplay, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    OutlinedButton(
+                                                        onClick = { showTokenBoxInPicker = !showTokenBoxInPicker },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                                        modifier = Modifier.height(28.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                        Text("Token", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                    }
+                                                    OutlinedButton(
+                                                        onClick = onConnectGoogleDrive,
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                                        modifier = Modifier.height(28.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                        Text("Sign In", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                    }
+                                                    IconButton(
+                                                        onClick = {
+                                                            settingsCoroutineScope.launch {
+                                                                isDriveFilesLoading = true
+                                                                driveFilesErrorMsg = null
+                                                                val (files, err) = onListDriveFiles()
+                                                                driveFileList = files
+                                                                driveFilesErrorMsg = err
+                                                                isDriveFilesLoading = false
+                                                            }
+                                                        },
+                                                        modifier = Modifier.size(28.dp).testTag("refresh_drive_files_button")
+                                                    ) {
+                                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh Drive Files", modifier = Modifier.size(16.dp))
+                                                    }
+                                                }
+                                            }
+
+                                            if (showTokenBoxInPicker) {
+                                                Card(
+                                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier.padding(8.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Text("🔑 Enter Drive Token or Auth Code:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            OutlinedTextField(
+                                                                value = customTokenInputInPicker,
+                                                                onValueChange = { customTokenInputInPicker = it },
+                                                                placeholder = { Text("Paste ya29... token or 4/... code", fontSize = 10.sp) },
+                                                                singleLine = true,
+                                                                modifier = Modifier.weight(1f),
+                                                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                                                            )
+                                                            Button(
+                                                                onClick = {
+                                                                    val input = customTokenInputInPicker.trim()
+                                                                    if (input.isNotBlank()) {
+                                                                        onSaveCustomDriveToken(input)
+                                                                        showTokenBoxInPicker = false
+                                                                        settingsCoroutineScope.launch {
+                                                                            isDriveFilesLoading = true
+                                                                            driveFilesErrorMsg = null
+                                                                            val (files, err) = onListDriveFiles()
+                                                                            driveFileList = files
+                                                                            driveFilesErrorMsg = err
+                                                                            isDriveFilesLoading = false
+                                                                        }
+                                                                    }
+                                                                },
+                                                                enabled = customTokenInputInPicker.isNotBlank(),
+                                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                                modifier = Modifier.height(38.dp)
+                                                            ) {
+                                                                Text("Connect", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if (!driveFilesErrorMsg.isNullOrBlank()) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                                        Text(driveFilesErrorMsg ?: "", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f))
+                                                        Button(
+                                                            onClick = onConnectGoogleDrive,
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                            modifier = Modifier.height(28.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(13.dp))
+                                                            Spacer(modifier = Modifier.width(3.dp))
+                                                            Text("Authorize Drive & Sheets", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (isDriveFilesLoading) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                                    horizontalArrangement = Arrangement.Center,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("Loading files from Google Drive...", fontSize = 11.sp)
+                                                }
+                                            } else if (driveFileList.isEmpty()) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Text("No files found yet in Drive / Cloud Sync.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text("Save files in 'PayCycle Budget' folder, import a sheet above, or link a permanent Google Sheet.", fontSize = 10.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        modifier = Modifier.padding(top = 4.dp)
+                                                    ) {
+                                                        Button(
+                                                            onClick = onConnectGoogleDrive,
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                            Spacer(modifier = Modifier.width(4.dp))
+                                                            Text("Sign In with Google", fontSize = 11.sp)
+                                                        }
+
+                                                        OutlinedButton(
+                                                            onClick = {
+                                                                settingsCoroutineScope.launch {
+                                                                    isDriveFilesLoading = true
+                                                                    driveFilesErrorMsg = null
+                                                                    val (files, err) = onListDriveFiles()
+                                                                    driveFileList = files
+                                                                    driveFilesErrorMsg = err
+                                                                    isDriveFilesLoading = false
+                                                                }
+                                                            },
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                                        ) {
+                                                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                            Spacer(modifier = Modifier.width(4.dp))
+                                                            Text("Refresh", fontSize = 11.sp)
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                Text("Tap 'Import' on any spreadsheet or file to load into your budget (${driveFileList.size} files found):", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                OutlinedTextField(
+                                                    value = driveFileSearchQuery,
+                                                    onValueChange = { driveFileSearchQuery = it },
+                                                    placeholder = { Text("Search ${driveFileList.size} Drive files...", fontSize = 11.sp) },
+                                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                    trailingIcon = {
+                                                        if (driveFileSearchQuery.isNotEmpty()) {
+                                                            IconButton(onClick = { driveFileSearchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(14.dp))
+                                                            }
+                                                        }
+                                                    },
+                                                    singleLine = true,
+                                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    textStyle = LocalTextStyle.current.copy(fontSize = 11.sp)
+                                                )
+                                                val filteredDriveFiles = remember(driveFileList, driveFileSearchQuery) {
+                                                    if (driveFileSearchQuery.isBlank()) driveFileList
+                                                    else driveFileList.filter { it.name.contains(driveFileSearchQuery.trim(), ignoreCase = true) }
+                                                }
+                                                if (filteredDriveFiles.isEmpty()) {
+                                                    Text("No files matching \"$driveFileSearchQuery\"", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
+                                                }
+                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    filteredDriveFiles.forEach { file ->
+                                                        val isCurrentImporting = importingDriveFileId == file.id
+                                                        Surface(
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            color = MaterialTheme.colorScheme.surface,
+                                                            tonalElevation = 2.dp,
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .clickable(enabled = importingDriveFileId == null && !isSyncingCsv) {
+                                                                    importingDriveFileId = file.id
+                                                                    settingsCoroutineScope.launch {
+                                                                        try {
+                                                                            val (ok, msg) = onImportSpecificDriveFile(file)
+                                                                            csvStatusMsg = msg
+                                                                            Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                                            if (ok) {
+                                                                                showSyncImportPickerDialog = false
+                                                                            }
+                                                                        } catch (e: Exception) {
+                                                                            csvStatusMsg = "Import failed: ${e.localizedMessage}"
+                                                                            Toast.makeText(localContext, csvStatusMsg, Toast.LENGTH_LONG).show()
+                                                                        } finally {
+                                                                            importingDriveFileId = null
+                                                                        }
+                                                                    }
+                                                                }
+                                                        ) {
+                                                            Row(
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                            ) {
+                                                                val iconColor = when {
+                                                                    file.isGoogleSheet -> Color(0xFF0F9D58)
+                                                                    file.isCsv -> Color(0xFF1E88E5)
+                                                                    file.isJson -> Color(0xFFF59E0B)
+                                                                    else -> Color(0xFF6B7280)
+                                                                }
+                                                                Icon(
+                                                                    when {
+                                                                        file.isGoogleSheet -> Icons.Default.TableChart
+                                                                        file.isJson -> Icons.Default.Code
+                                                                        else -> Icons.Default.Description
+                                                                    },
+                                                                    contentDescription = null,
+                                                                    tint = iconColor,
+                                                                    modifier = Modifier.size(22.dp)
+                                                                )
+                                                                Column(modifier = Modifier.weight(1f)) {
+                                                                    Text(file.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                                        Text(
+                                                                            if (file.location == "PayCycle Budget") "📁 PayCycle Folder" else "☁️ My Drive",
+                                                                            fontSize = 9.sp,
+                                                                            color = if (file.location == "PayCycle Budget") Color(0xFF059669) else Color(0xFF4B5563),
+                                                                            fontWeight = FontWeight.Medium
+                                                                        )
+                                                                        if (file.sizeString.isNotBlank()) {
+                                                                            Text("• ${file.sizeString}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                                        }
+                                                                    }
+                                                                    if (file.formattedDate.isNotBlank()) {
+                                                                        Text(file.formattedDate, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                                    }
+                                                                }
+
+                                                                Button(
+                                                                    onClick = {
+                                                                        importingDriveFileId = file.id
+                                                                        settingsCoroutineScope.launch {
+                                                                            try {
+                                                                                val (ok, msg) = onImportSpecificDriveFile(file)
+                                                                                csvStatusMsg = msg
+                                                                                Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                                                if (ok) {
+                                                                                    showSyncImportPickerDialog = false
+                                                                                }
+                                                                            } catch (e: Exception) {
+                                                                                csvStatusMsg = "Import error: ${e.localizedMessage}"
+                                                                                Toast.makeText(localContext, csvStatusMsg, Toast.LENGTH_LONG).show()
+                                                                            } finally {
+                                                                                importingDriveFileId = null
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    enabled = importingDriveFileId == null && !isSyncingCsv,
+                                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                                                    modifier = Modifier.testTag("btn_import_drive_file_${file.id}")
+                                                                ) {
+                                                                    if (isCurrentImporting) {
+                                                                        CircularProgressIndicator(modifier = Modifier.size(12.dp), color = Color.White, strokeWidth = 2.dp)
+                                                                    } else {
+                                                                        Text("Import", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Sync all folder files button
+                                            OutlinedButton(
+                                                onClick = {
+                                                    isSyncingCsv = true
+                                                    settingsCoroutineScope.launch {
+                                                        try {
+                                                            csvExportData = onExportCsv()
+                                                            onSyncCsvDrive?.invoke { msg ->
+                                                                csvStatusMsg = msg
+                                                                isSyncingCsv = false
+                                                                Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                                if (msg.contains("Successfully", ignoreCase = true)) {
+                                                                    showSyncImportPickerDialog = false
+                                                                }
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            isSyncingCsv = false
+                                                            csvStatusMsg = "Sync error: ${e.localizedMessage}"
+                                                            Toast.makeText(localContext, csvStatusMsg, Toast.LENGTH_LONG).show()
+                                                        }
+                                                    }
+                                                },
+                                                enabled = !isSyncingCsv && importingDriveFileId == null,
+                                                modifier = Modifier.fillMaxWidth().testTag("sync_all_drive_files_in_picker_button")
+                                            ) {
+                                                if (isSyncingCsv) {
+                                                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Syncing all PayCycle files...", fontSize = 11.sp)
+                                                } else {
+                                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Sync All PayCycle Budget Files", fontSize = 11.sp)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 3. Pick from Device Storage section
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text("📁 Pick from Device / File Storage", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                            Text("Select any CSV, Spreadsheet, JSON, or Excel file:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        filePickerMode = "csv"
+                                                        try {
+                                                            filePickerLauncher.launch(arrayOf(
+                                                                "application/vnd.google-apps.spreadsheet",
+                                                                "text/csv",
+                                                                "text/comma-separated-values",
+                                                                "text/tab-separated-values",
+                                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                                "application/vnd.ms-excel",
+                                                                "application/json",
+                                                                "*/*"
+                                                            ))
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(localContext, "File picker unavailable: ${e.message}", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                                                    modifier = Modifier.weight(1f).testTag("dialog_pick_device_file_button")
+                                                ) {
+                                                    Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Pick File", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                }
+
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        showSyncImportPickerDialog = false
+                                                        showCsvImportDialog = true
+                                                    },
+                                                    modifier = Modifier.weight(1f).testTag("dialog_paste_text_button")
+                                                ) {
+                                                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Paste Data", fontSize = 11.sp)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {},
+                            dismissButton = {
+                                TextButton(
+                                    onClick = { showSyncImportPickerDialog = false },
+                                    enabled = importingDriveFileId == null && !isSyncingCsv
+                                ) {
+                                    Text("Close")
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
+    }
 
     val cardWebCompanion: @Composable () -> Unit = {
         // --- Card: PC & Desktop Web App Companion ---
@@ -9253,128 +12409,140 @@ fun SettingsView(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { webCompanionExpanded = !webCompanionExpanded },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("💻", fontSize = 20.sp)
-                    Text("PC & Desktop Web Companion", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                }
-
-                Text(
-                    text = "Manage your PayCycle budget, transactions, and debt snowball payoff from any PC or laptop web browser with real-time cloud sync.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(
-                            text = "Cloud Sync Channel ID:",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        val rawEmail = uiState.driveAccountEmail ?: "86brancan@gmail.com"
-                        val sanitizedKey = rawEmail.lowercase().replace(Regex("[@.#$\\[\\]]"), "_").replace(Regex("[^a-z0-9_]"), "")
-                        Text(
-                            text = "paycycle_sync_$sanitizedKey",
-                            fontSize = 11.sp,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text("💻", fontSize = 18.sp, modifier = Modifier.padding(8.dp))
+                        }
+                        Column {
+                            Text("PC & Desktop Web Companion", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text("Browser access & real-time sync channel", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    IconButton(onClick = { webCompanionExpanded = !webCompanionExpanded }) {
+                        Icon(
+                            imageVector = if (webCompanionExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (webCompanionExpanded) "Collapse" else "Expand"
                         )
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            coroutineScope.launch {
-                                try {
-                                    val currentJson = onExportBackup()
-                                    val assetManager = context.assets
-                                    val inputStream = assetManager.open("web_companion.html")
-                                    var htmlContent = inputStream.bufferedReader().use { it.readText() }
-                                    
-                                    // Pre-embed user's current live budget data directly into the exported HTML
-                                    if (currentJson.isNotBlank()) {
-                                        val cleanJson = currentJson.trim()
-                                        val replacementBlock = "window.EMBEDDED_DATA = $cleanJson;\ntry { localStorage.setItem('paycycle_budget_db', JSON.stringify(window.EMBEDDED_DATA)); } catch(e) {}"
-                                        htmlContent = htmlContent.replace("window.EMBEDDED_DATA = null;", replacementBlock)
-                                    }
-                                    
-                                    // Save file as "PayCycle Budget - Web Companion App.html" for direct overwrites and clean sharing
-                                    val file = java.io.File(context.filesDir, "PayCycle Budget - Web Companion App.html")
-                                    file.writeText(htmlContent, Charsets.UTF_8)
-                                    try {
-                                        val legacyFile = java.io.File(context.filesDir, "PayCycle_Web_Companion.html")
-                                        legacyFile.writeText(htmlContent, Charsets.UTF_8)
-                                    } catch (_: Exception) {}
+                if (webCompanionExpanded) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                                    // Overwrite previous "PayCycle Budget - Web Companion App" on Google Drive if connected
-                                    if (onExportWebCompanionToGoogleDrive != null) {
-                                        val (driveSuccess, driveStatus) = onExportWebCompanionToGoogleDrive(htmlContent)
-                                        if (driveSuccess) {
-                                            toastMsg = driveStatus
-                                        }
-                                    }
+                    Text(
+                        text = "Manage your PayCycle budget, transactions, and debt snowball payoff from any PC or laptop web browser with real-time cloud sync.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-                                    val uri = androidx.core.content.FileProvider.getUriForFile(
-                                        context,
-                                        "com.example.fileprovider",
-                                        file
-                                    )
-                                    val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        type = "text/html"
-                                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                        putExtra(android.content.Intent.EXTRA_TITLE, "PayCycle Budget - Web Companion App")
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "PayCycle Budget - Web Companion App")
-                                        putExtra(android.content.Intent.EXTRA_TEXT, "Open this PayCycle Web Companion file on your PC or desktop browser to manage your budget and debt snowball.")
-                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(android.content.Intent.createChooser(shareIntent, "Share or Save 'PayCycle Budget - Web Companion App'"))
-                                } catch (e: Exception) {
-                                    toastMsg = "Could not export web app: ${e.localizedMessage}"
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.weight(1f).testTag("btn_share_pc_web_app")
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Export / Share Web App", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Cloud Sync Channel ID:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                             val rawEmail = uiState.driveAccountEmail ?: "86brancan@gmail.com"
                             val sanitizedKey = rawEmail.lowercase().replace(Regex("[@.#$\\[\\]]"), "_").replace(Regex("[^a-z0-9_]"), "")
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            val clip = android.content.ClipData.newPlainText("PayCycleSyncKey", "paycycle_sync_$sanitizedKey")
-                            clipboard.setPrimaryClip(clip)
-                            toastMsg = "Sync Channel copied to clipboard!"
-                        },
-                        modifier = Modifier.weight(1f).testTag("btn_copy_sync_code")
-                    ) {
-                        Text("Copy Sync Code", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                            Text(
+                                text = "paycycle_sync_$sanitizedKey",
+                                fontSize = 11.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
-                }
 
-                if (toastMsg.isNotEmpty()) {
-                    Text(
-                        text = toastMsg,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    try {
+                                        val currentJson = onExportBackup()
+                                        val assetManager = context.assets
+                                        val inputStream = assetManager.open("web_companion.html")
+                                        var htmlContent = inputStream.bufferedReader().use { it.readText() }
+                                        
+                                        // Pre-embed user's current live budget data directly into the exported HTML
+                                        if (currentJson.isNotBlank()) {
+                                            val cleanJson = currentJson.trim()
+                                            val replacementBlock = "window.EMBEDDED_DATA = $cleanJson;\ntry { localStorage.setItem('paycycle_budget_db', JSON.stringify(window.EMBEDDED_DATA)); } catch(e) {}"
+                                            htmlContent = htmlContent.replace("window.EMBEDDED_DATA = null;", replacementBlock)
+                                        }
+                                        
+                                        // Overwrite previous "PayCycle Budget - Web Companion App" on Google Drive if connected
+                                        if (onExportWebCompanionToGoogleDrive != null) {
+                                            val (driveSuccess, driveStatus) = onExportWebCompanionToGoogleDrive(htmlContent)
+                                            if (driveSuccess) {
+                                                toastMsg = driveStatus
+                                            }
+                                        }
+
+                                        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                            type = "text/html"
+                                            putExtra(android.content.Intent.EXTRA_TEXT, htmlContent)
+                                            putExtra(android.content.Intent.EXTRA_TITLE, "PayCycle Budget - Web Companion App")
+                                            putExtra(android.content.Intent.EXTRA_SUBJECT, "PayCycle Budget - Web Companion App")
+                                        }
+                                        context.startActivity(android.content.Intent.createChooser(shareIntent, "Share 'PayCycle Budget - Web Companion App'"))
+                                    } catch (e: Exception) {
+                                        toastMsg = "Could not export web app: ${e.localizedMessage}"
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.weight(1f).testTag("btn_share_pc_web_app")
+                        ) {
+                            Text("Export / Share Web App", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val rawEmail = uiState.driveAccountEmail ?: "86brancan@gmail.com"
+                                val sanitizedKey = rawEmail.lowercase().replace(Regex("[@.#$\\[\\]]"), "_").replace(Regex("[^a-z0-9_]"), "")
+                                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("PayCycleSyncKey", "paycycle_sync_$sanitizedKey")
+                                clipboard.setPrimaryClip(clip)
+                                toastMsg = "Sync Channel copied to clipboard!"
+                            },
+                            modifier = Modifier.weight(1f).testTag("btn_copy_sync_code")
+                        ) {
+                            Text("Copy Sync Code", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+
+                    if (toastMsg.isNotEmpty()) {
+                        Text(
+                            text = toastMsg,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
         }
@@ -9389,10 +12557,6 @@ fun SettingsView(
             ) {
                 var exportedJson by remember { mutableStateOf("") }
                 var showExportDialog by remember { mutableStateOf(false) }
-                var showImportDialog by remember { mutableStateOf(false) }
-                var importInputText by remember { mutableStateOf("") }
-                var importErrorMsg by remember { mutableStateOf("") }
-                var isImportingProgress by remember { mutableStateOf(false) }
                 val coroutineScope = rememberCoroutineScope()
 
                 Column(
@@ -9400,166 +12564,281 @@ fun SettingsView(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { backupExpanded = !backupExpanded },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Data Backup Icon",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text("Data Portability & Backup", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Data Backup Icon",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(8.dp).size(20.dp)
+                                )
+                            }
+                            Column {
+                                Text("Data Portability & Backup", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                Text("Export, import & restore device storage", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        IconButton(onClick = { backupExpanded = !backupExpanded }) {
+                            Icon(
+                                imageVector = if (backupExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (backupExpanded) "Collapse" else "Expand"
+                            )
+                        }
                     }
 
-                    Text(
-                        text = "Export your complete financial records or restore them anytime.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (backupExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                        Text(
+                            text = "Export your complete financial records or restore them anytime.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        exportedJson = onExportBackup()
+                                        showExportDialog = true
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).testTag("export_backup_button")
+                            ) {
+                                Text("Export Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    importInputText = ""
+                                    importErrorMsg = ""
+                                    showImportDialog = true
+                                },
+                                modifier = Modifier.weight(1f).testTag("import_backup_button")
+                            ) {
+                                Text("Restore Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+
                         OutlinedButton(
                             onClick = {
-                                coroutineScope.launch {
-                                    exportedJson = onExportBackup()
-                                    showExportDialog = true
+                                filePickerMode = "backup"
+                                try {
+                                    filePickerLauncher.launch(arrayOf(
+                                        "application/json",
+                                        "text/csv",
+                                        "text/comma-separated-values",
+                                        "application/vnd.google-apps.spreadsheet",
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        "*/*"
+                                    ))
+                                } catch (e: Exception) {
+                                    Toast.makeText(localContext, "File picker unavailable. Tap 'Restore Backup' and paste your data directly.", Toast.LENGTH_LONG).show()
+                                    showImportDialog = true
                                 }
                             },
-                            modifier = Modifier.weight(1f).testTag("export_backup_button")
+                            modifier = Modifier.fillMaxWidth().testTag("select_backup_file_button")
                         ) {
-                            Text("Export Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Select Backup File from Storage (.json / .csv)", fontSize = 12.sp)
                         }
 
-                        Button(
-                            onClick = {
-                                importInputText = ""
-                                importErrorMsg = ""
-                                showImportDialog = true
-                            },
-                            modifier = Modifier.weight(1f).testTag("import_backup_button")
-                        ) {
-                            Text("Restore Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
-                    }
-
-                    // Export Dialog
-                    if (showExportDialog) {
-                        val context = LocalContext.current
-                        AlertDialog(
-                            onDismissRequest = { showExportDialog = false },
-                            title = { Text("Backup String Ready", fontWeight = FontWeight.Bold) },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Copy the backup payload below or save it in a safe location:", fontSize = 12.sp)
-                                    OutlinedTextField(
-                                        value = exportedJson,
-                                        onValueChange = {},
-                                        readOnly = true,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(150.dp),
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            fontSize = 11.sp,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                        ),
-                                        maxLines = 100
-                                    )
-                                }
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                        val clip = android.content.ClipData.newPlainText("BudgetBackup", exportedJson)
-                                        clipboard.setPrimaryClip(clip)
-                                        showExportDialog = false
-                                    }
-                                ) {
-                                    Text("Copy to Clipboard")
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showExportDialog = false }) {
-                                    Text("Close")
-                                }
-                            }
-                        )
-                    }
-
-                    // Import Dialog
-                    if (showImportDialog) {
-                        AlertDialog(
-                            onDismissRequest = { if (!isImportingProgress) showImportDialog = false },
-                            title = { Text("Restore From Backup", fontWeight = FontWeight.Bold) },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Paste your exported JSON backup data below:", fontSize = 12.sp)
-                                    OutlinedTextField(
-                                        value = importInputText,
-                                        onValueChange = {
-                                            importInputText = it
-                                            importErrorMsg = ""
-                                        },
-                                        placeholder = { Text("{ ... }") },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(150.dp),
-                                        textStyle = androidx.compose.ui.text.TextStyle(
-                                            fontSize = 11.sp,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                        ),
-                                        maxLines = 100
-                                    )
-                                    if (importErrorMsg.isNotEmpty()) {
-                                        Text(
-                                            text = importErrorMsg,
-                                            color = MaterialTheme.colorScheme.error,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Medium
+                        // Export Dialog
+                        if (showExportDialog) {
+                            val context = LocalContext.current
+                            AlertDialog(
+                                onDismissRequest = { showExportDialog = false },
+                                title = { Text("Backup String Ready", fontWeight = FontWeight.Bold) },
+                                text = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("Copy the backup payload below or save it in a safe location:", fontSize = 12.sp)
+                                        OutlinedTextField(
+                                            value = exportedJson,
+                                            onValueChange = {},
+                                            readOnly = true,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(150.dp),
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 11.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            ),
+                                            maxLines = 100
                                         )
                                     }
-                                }
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        if (importInputText.isBlank()) {
-                                            importErrorMsg = "❌ Please paste a valid backup string first."
-                                            return@Button
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                            val clip = android.content.ClipData.newPlainText("BudgetBackup", exportedJson)
+                                            clipboard.setPrimaryClip(clip)
+                                            showExportDialog = false
                                         }
-                                        isImportingProgress = true
-                                        coroutineScope.launch {
-                                            val success = onImportBackup(importInputText)
-                                            isImportingProgress = false
-                                            if (success) {
-                                                showImportDialog = false
-                                            } else {
-                                                importErrorMsg = "❌ Failed to restore backup. Please ensure the formatting is correct."
-                                            }
-                                        }
-                                    },
-                                    enabled = !isImportingProgress
-                                ) {
-                                    if (isImportingProgress) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    } else {
-                                        Text("Restore Data")
+                                    ) {
+                                        Text("Copy to Clipboard")
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showExportDialog = false }) {
+                                        Text("Close")
                                     }
                                 }
-                            },
-                            dismissButton = {
-                                TextButton(
-                                    onClick = { showImportDialog = false },
-                                    enabled = !isImportingProgress
-                                ) {
-                                    Text("Cancel")
+                            )
+                        }
+
+                        // Import Dialog
+                        if (showImportDialog) {
+                            val clipboardManager = localContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            AlertDialog(
+                                onDismissRequest = { if (!isImportingProgress) showImportDialog = false },
+                                title = { Text("Restore From Backup", fontWeight = FontWeight.Bold) },
+                                text = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    filePickerMode = "backup"
+                                                    try {
+                                                        filePickerLauncher.launch(arrayOf(
+                                                            "application/json",
+                                                            "text/csv",
+                                                            "text/comma-separated-values",
+                                                            "application/vnd.google-apps.spreadsheet",
+                                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                            "*/*"
+                                                        ))
+                                                    } catch (e: Exception) {
+                                                        importErrorMsg = "System file picker is unavailable. Please paste your data directly below."
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f).testTag("btn_select_backup_file_dialog")
+                                            ) {
+                                                Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Select File", fontSize = 11.sp)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    try {
+                                                        val clipData = clipboardManager?.primaryClip
+                                                        if (clipData != null && clipData.itemCount > 0) {
+                                                            val text = clipData.getItemAt(0)?.text?.toString() ?: ""
+                                                            if (text.isNotBlank()) {
+                                                                importInputText = text
+                                                                importErrorMsg = ""
+                                                            }
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                },
+                                                modifier = Modifier.weight(1f).testTag("btn_paste_backup_dialog")
+                                            ) {
+                                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Paste Clipboard", fontSize = 11.sp)
+                                            }
+                                        }
+
+                                        Text("Or paste your backup JSON/CSV text below:", fontSize = 12.sp)
+                                        OutlinedTextField(
+                                            value = importInputText,
+                                            onValueChange = {
+                                                importInputText = it
+                                                importErrorMsg = ""
+                                            },
+                                            placeholder = { Text("{ \"transactions\": [ ... ] }") },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(140.dp),
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 11.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            ),
+                                            maxLines = 100
+                                        )
+                                        if (importErrorMsg.isNotEmpty()) {
+                                            Text(
+                                                text = importErrorMsg,
+                                                color = MaterialTheme.colorScheme.error,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            if (importInputText.isBlank()) {
+                                                importErrorMsg = "❌ Please paste backup data or select a file."
+                                                return@Button
+                                            }
+                                            isImportingProgress = true
+                                            coroutineScope.launch {
+                                                try {
+                                                    val (ok, msg) = onImportAnyDataDetailed(importInputText)
+                                                    isImportingProgress = false
+                                                    if (ok) {
+                                                        Toast.makeText(localContext, msg, Toast.LENGTH_SHORT).show()
+                                                        showImportDialog = false
+                                                    } else {
+                                                        var success = onImportBackup(importInputText)
+                                                        if (!success) {
+                                                            success = onImportCsv(importInputText)
+                                                        }
+                                                        if (success) {
+                                                            Toast.makeText(localContext, "✅ Data restored successfully!", Toast.LENGTH_SHORT).show()
+                                                            showImportDialog = false
+                                                        } else {
+                                                            importErrorMsg = "❌ Failed to restore data: $msg"
+                                                        }
+                                                    }
+                                                } catch (e: Exception) {
+                                                    isImportingProgress = false
+                                                    importErrorMsg = "❌ Error: ${e.localizedMessage}"
+                                                }
+                                            }
+                                        },
+                                        enabled = !isImportingProgress
+                                    ) {
+                                        if (isImportingProgress) {
+                                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            Text("Restore Data")
+                                        }
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { showImportDialog = false },
+                                        enabled = !isImportingProgress
+                                    ) {
+                                        Text("Cancel")
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -9580,81 +12859,169 @@ fun SettingsView(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                        Text(
-                            "Reset & Danger Zone",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    Text(
-                        "Clear all stored local database entries including transactions, accounts, income sources, and scheduled bills. Make sure to export a backup beforehand if needed.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    OutlinedButton(
-                        onClick = { showClearDataConfirmDialog = true },
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("clear_database_button")
+                            .clickable { dangerZoneExpanded = !dangerZoneExpanded },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(8.dp).size(20.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    "Reset & Danger Zone",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Text("Clear all stored local database entries", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        IconButton(onClick = { dangerZoneExpanded = !dangerZoneExpanded }) {
+                            Icon(
+                                imageVector = if (dangerZoneExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (dangerZoneExpanded) "Collapse" else "Expand",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+
+                    if (dangerZoneExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.error.copy(alpha = 0.3f))
+
+                        Text(
+                            "Clear all stored local database entries including transactions, accounts, income sources, and scheduled bills. Make sure to export a backup beforehand if needed.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Clear Database", fontWeight = FontWeight.Bold)
+
+                        OutlinedButton(
+                            onClick = { showClearDataConfirmDialog = true },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("clear_database_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Clear Database", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
         }
     }
 
-    BoxWithConstraints(
+    val anySettingsExpanded = payScheduleExpanded || remindersExpanded || themeCardExpanded || webCompanionExpanded || driveSyncExpanded || sheetsSyncExpanded || backupExpanded || dangerZoneExpanded
+    val setAllSettingsExpanded: (Boolean) -> Unit = { target ->
+        payScheduleExpanded = target
+        remindersExpanded = target
+        themeCardExpanded = target
+        webCompanionExpanded = target
+        driveSyncExpanded = target
+        sheetsSyncExpanded = target
+        backupExpanded = target
+        dangerZoneExpanded = target
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        val useTwoColumns = isWideScreen && maxWidth >= 680.dp
-        if (useTwoColumns) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top
+        // Master Collapse All / Expand All header bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Settings & Preferences",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { setAllSettingsExpanded(!anySettingsExpanded) }
+                    .testTag("settings_master_expand_collapse_button")
             ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (anySettingsExpanded) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
+                        contentDescription = if (anySettingsExpanded) "Collapse All" else "Expand All",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = if (anySettingsExpanded) "Collapse All" else "Expand All",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            val useTwoColumns = isWideScreen && maxWidth >= 680.dp
+            if (useTwoColumns) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        cardPaySchedule()
+                        cardRemindersAndThemes()
+                        cardWebCompanion()
+                        cardDangerZone()
+                    }
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        cardDriveSync()
+                        cardBackup()
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     cardPaySchedule()
                     cardRemindersAndThemes()
                     cardWebCompanion()
-                    cardDangerZone()
-                }
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     cardDriveSync()
                     cardBackup()
+                    cardDangerZone()
                 }
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                cardPaySchedule()
-                cardRemindersAndThemes()
-                cardWebCompanion()
-                cardDriveSync()
-                cardBackup()
-                cardDangerZone()
             }
         }
     }
@@ -9871,8 +13238,8 @@ fun AddTransactionDialog(
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { selectedCategory = cat },
-                                    label = { Text("${icons[idx]} $cat", fontSize = 11.sp) },
-                                    modifier = Modifier.testTag("tx_category_chip_${cat.lowercase()}")
+                                    label = { Text("${icons[idx]} $cat", fontSize = 9.5.sp) },
+                                    modifier = Modifier.height(24.dp).testTag("tx_category_chip_${cat.lowercase()}")
                                 )
                             }
                         }
@@ -10056,12 +13423,19 @@ fun AddTransactionDialog(
                                     modifier = Modifier.testTag("tx_recurring_checkbox")
                                 )
                             }
-                            Text(
-                                text = if (isIncome) "Recur automatically" else "Recur monthly on this day",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            Column {
+                                Text(
+                                    text = if (isRecurring) "Set as recurring baseline (Reoccurs every cycle)" else "Single transaction (This cycle only)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (isRecurring) "Baseline repeats across cycles. Each cycle's items remain independent and can be individually edited." else "Applies only to this specific cycle without affecting other cycles.",
+                                    fontSize = 10.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
                         if (isRecurring && isIncome) {
@@ -10082,7 +13456,8 @@ fun AddTransactionDialog(
                                         FilterChip(
                                             selected = recurFrequency == f,
                                             onClick = { recurFrequency = f },
-                                            label = { Text(f, fontSize = 10.5.sp) }
+                                            label = { Text(f, fontSize = 9.sp) },
+                                            modifier = Modifier.height(24.dp)
                                         )
                                     }
                                 }
@@ -10179,13 +13554,14 @@ fun EditTransactionDialog(
     transaction: TransactionEntity,
     allAccounts: List<String>,
     onDismiss: () -> Unit,
-    onSave: (TransactionEntity) -> Unit,
+    onSave: (TransactionEntity, Boolean) -> Unit,
     onDelete: (TransactionEntity) -> Unit
 ) {
     var title by remember { mutableStateOf(transaction.title) }
     var amount by remember { mutableStateOf(if (transaction.amount > 0) String.format(Locale.US, "%.2f", transaction.amount) else "") }
     val initialDate = remember(transaction.dateMillis) { DateUtils.millisToLocalDate(transaction.dateMillis) }
     var dateInput by remember { mutableStateOf(initialDate.toString()) }
+    var applyToBaseline by remember { mutableStateOf(false) }
     var selectedCategory by remember {
         mutableStateOf(
             if (transaction.isIncome) {
@@ -10343,8 +13719,8 @@ fun EditTransactionDialog(
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { selectedCategory = cat },
-                                    label = { Text("${icons[idx]} $cat", fontSize = 11.sp) },
-                                    modifier = Modifier.testTag("edit_tx_category_chip_${cat.lowercase()}")
+                                    label = { Text("${icons[idx]} $cat", fontSize = 9.5.sp) },
+                                    modifier = Modifier.height(24.dp).testTag("edit_tx_category_chip_${cat.lowercase()}")
                                 )
                             }
                         }
@@ -10506,7 +13882,8 @@ fun EditTransactionDialog(
                                 FilterChip(
                                     selected = recurFrequency == f,
                                     onClick = { recurFrequency = f },
-                                    label = { Text(f, fontSize = 10.5.sp) }
+                                    label = { Text(f, fontSize = 9.sp) },
+                                    modifier = Modifier.height(24.dp)
                                 )
                             }
                         }
@@ -10553,6 +13930,50 @@ fun EditTransactionDialog(
                     )
                 }
 
+                // Recurring Baseline Independence Scope Selector
+                if (transaction.isRecurring || transaction.id < 0 || transaction.title.contains("(Planned)") || isRecurring) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth().testTag("edit_tx_scope_selector")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Apply Changes To",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                FilterChip(
+                                    selected = !applyToBaseline,
+                                    onClick = { applyToBaseline = false },
+                                    label = { Text("This Cycle Only", fontSize = 9.5.sp, fontWeight = FontWeight.Bold) },
+                                    modifier = Modifier.weight(1f).height(24.dp).testTag("edit_scope_cycle_only")
+                                )
+                                FilterChip(
+                                    selected = applyToBaseline,
+                                    onClick = { applyToBaseline = true },
+                                    label = { Text("Update Baseline", fontSize = 9.5.sp, fontWeight = FontWeight.Bold) },
+                                    modifier = Modifier.weight(1f).height(24.dp).testTag("edit_scope_baseline")
+                                )
+                            }
+                            Text(
+                                text = if (!applyToBaseline) "⚡ This cycle's income/expenses remain independent from other cycles." else "🔄 Updates the recurring baseline so future cycles will use these values.",
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
                 if (errorMsg.isNotEmpty()) {
                     Text(errorMsg, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
@@ -10593,7 +14014,7 @@ fun EditTransactionDialog(
                             isCompleted = isCompleted,
                             status = txStatus
                         )
-                        onSave(updatedTx)
+                        onSave(updatedTx, applyToBaseline)
                     }
                 },
                 modifier = Modifier.testTag("save_edited_transaction_button")
@@ -10624,6 +14045,7 @@ fun UpcomingExpensesWidget(
     val upcomingItems = remember(
         uiState.allTransactions,
         uiState.plannedExpenses,
+        uiState.allDebts,
         uiState.activeAccountName,
         uiState.currentPayPeriodStart,
         uiState.currentPayPeriodEnd
@@ -10634,7 +14056,8 @@ fun UpcomingExpensesWidget(
             activeAccountName = uiState.activeAccountName,
             today = today,
             payPeriodStart = uiState.currentPayPeriodStart,
-            payPeriodEnd = uiState.currentPayPeriodEnd
+            payPeriodEnd = uiState.currentPayPeriodEnd,
+            allDebts = uiState.allDebts
         )
     }
 
@@ -10975,12 +14398,20 @@ fun AccountSwitcherCarousel(
     onMoveAccount: ((String, Int) -> Unit)? = null,
     onSetAccountBalance: ((String, Double) -> Unit)? = null,
     onAddAccountWithBalance: ((String, Double) -> Unit)? = null,
-    isWideScreen: Boolean = false
+    onTransferFunds: ((String, String, Double, String) -> Unit)? = null,
+    onReconcileBalance: ((String, Double) -> Unit)? = null,
+    isWideScreen: Boolean = false,
+    expanded: Boolean? = null,
+    onToggleExpand: (() -> Unit)? = null
 ) {
     var showAddAccountDialog by remember { mutableStateOf(false) }
     var newAccountName by remember { mutableStateOf("") }
     var newAccountInitialBalance by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf("") }
+
+    // Dialog state for Transfers and Reconciliation
+    var showTransferModal by remember { mutableStateOf(false) }
+    var showReconcileModal by remember { mutableStateOf(false) }
 
     // Dialog state for Reordering
     var showReorderAccountsModal by remember { mutableStateOf(false) }
@@ -10993,9 +14424,15 @@ fun AccountSwitcherCarousel(
     var editErrorMsg by remember { mutableStateOf("") }
 
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    var carouselExpanded by remember { mutableStateOf(true) }
+    var internalExpanded by rememberSaveable { mutableStateOf(true) }
+    val carouselExpanded = expanded ?: internalExpanded
     var isReorderMode by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
+
+    val toggleAction = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (onToggleExpand != null) onToggleExpand() else internalExpanded = !internalExpanded
+    }
 
     Column(
         modifier = Modifier
@@ -11003,26 +14440,20 @@ fun AccountSwitcherCarousel(
             .padding(horizontal = 0.dp, vertical = 1.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        val dateFmt = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
-        val payCycleTag = remember(uiState.currentPayPeriodStart, uiState.currentPayPeriodEnd, isWideScreen) {
-            if (isWideScreen) {
-                "Pay Cycle: ${uiState.currentPayPeriodStart.format(dateFmt)} – ${uiState.currentPayPeriodEnd.format(dateFmt)}"
-            } else {
-                "${uiState.currentPayPeriodStart.format(dateFmt)} – ${uiState.currentPayPeriodEnd.format(dateFmt)}"
-            }
-        }
-
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
-                    .weight(1f, fill = false)
-                    .clickable { carouselExpanded = !carouselExpanded }
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { toggleAction() }
+                    .padding(vertical = 3.dp, horizontal = 2.dp)
             ) {
                 Icon(
                     imageVector = if (carouselExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -11031,33 +14462,92 @@ fun AccountSwitcherCarousel(
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = if (isWideScreen) "ACCOUNTS & LEDGERS (GRID)" else "ACCOUNTS",
-                    fontSize = 10.sp,
+                    text = if (isWideScreen) "ACCOUNTS & LEDGERS" else "ACCOUNTS",
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                    letterSpacing = 0.5.sp
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    letterSpacing = 0.5.sp,
+                    maxLines = 1,
+                    softWrap = false
                 )
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                ) {
-                    Text(
-                        text = payCycleTag,
-                        fontSize = 8.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
-                }
             }
+
+            // Horizontally scrollable actions toolbar so it NEVER squeezes the title into a vertical line
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
+                // Transfer Funds button
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+                    modifier = Modifier
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showTransferModal = true
+                        }
+                        .testTag("transfer_accounts_button")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SwapHoriz,
+                            contentDescription = "Transfer Funds",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Transfer",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+
+                // Reconcile Balance button
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.75f),
+                    modifier = Modifier
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showReconcileModal = true
+                        }
+                        .testTag("reconcile_accounts_button")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountBalance,
+                            contentDescription = "Reconcile Balance",
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "Reconcile",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+
                 // Manage / Edit Accounts button
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
                     modifier = Modifier
                         .clickable {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -11068,7 +14558,7 @@ fun AccountSwitcherCarousel(
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
@@ -11080,7 +14570,9 @@ fun AccountSwitcherCarousel(
                             text = "Manage",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
@@ -11106,7 +14598,9 @@ fun AccountSwitcherCarousel(
                             Text(
                                 text = "Lock",
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     } else {
@@ -11123,7 +14617,7 @@ fun AccountSwitcherCarousel(
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(3.dp),
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.SwapHoriz,
@@ -11135,21 +14629,43 @@ fun AccountSwitcherCarousel(
                                     text = "Reorder",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
                     }
                 }
-                Text(
-                    text = "+ Add",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier
                         .clickable { showAddAccountDialog = true }
                         .testTag("add_account_button")
-                )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add Account",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Add",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
             }
         }
 
@@ -11157,7 +14673,13 @@ fun AccountSwitcherCarousel(
             if (isWideScreen) {
                 // Adaptive Compact Multi-Column Grid for Galaxy Z Fold / Landscape
                 BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                    val colCount = if (maxWidth >= 1050.dp) 6 else if (maxWidth >= 750.dp) 5 else if (maxWidth >= 480.dp) 4 else 3
+                    val colCount = when {
+                        maxWidth >= 1050.dp -> 5
+                        maxWidth >= 800.dp -> 4
+                        maxWidth >= 520.dp -> 3
+                        maxWidth >= 320.dp -> 2
+                        else -> 2
+                    }
                     val chunkedAccounts = remember(uiState.allAccounts, colCount) { uiState.allAccounts.chunked(colCount) }
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -11165,11 +14687,13 @@ fun AccountSwitcherCarousel(
                     ) {
                         chunkedAccounts.forEach { rowAccounts ->
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(IntrinsicSize.Min),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 rowAccounts.forEach { acc ->
-                                    Box(modifier = Modifier.weight(1f)) {
+                                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                                         AccountCardItem(
                                             acc = acc,
                                             uiState = uiState,
@@ -11199,7 +14723,8 @@ fun AccountSwitcherCarousel(
                                                 showEditAccountDialog = true
                                             },
                                             onMoveLeft = { onMoveAccount?.invoke(acc, -1) },
-                                            onMoveRight = { onMoveAccount?.invoke(acc, 1) }
+                                            onMoveRight = { onMoveAccount?.invoke(acc, 1) },
+                                            modifier = Modifier.fillMaxHeight()
                                         )
                                     }
                                 }
@@ -11816,6 +15341,432 @@ fun AccountSwitcherCarousel(
             }
         )
     }
+
+    if (showTransferModal) {
+        TransferFundsDialog(
+            uiState = uiState,
+            onDismiss = { showTransferModal = false },
+            onConfirmTransfer = { from, to, amount, note ->
+                onTransferFunds?.invoke(from, to, amount, note)
+            }
+        )
+    }
+
+    if (showReconcileModal) {
+        ReconcileBalanceDialog(
+            uiState = uiState,
+            onDismiss = { showReconcileModal = false },
+            onConfirmReconcile = { acc, actualBal ->
+                onReconcileBalance?.invoke(acc, actualBal)
+            }
+        )
+    }
+}
+
+@Composable
+fun TransferFundsDialog(
+    uiState: BudgetUiState,
+    onDismiss: () -> Unit,
+    onConfirmTransfer: (from: String, to: String, amount: Double, note: String) -> Unit
+) {
+    val nonAllAccounts = remember(uiState.allAccounts) {
+        uiState.allAccounts.filter { it != "All Accounts" }
+    }
+    var fromAccount by remember {
+        mutableStateOf(
+            if (uiState.activeAccountName != "All Accounts" && nonAllAccounts.contains(uiState.activeAccountName)) {
+                uiState.activeAccountName
+            } else {
+                nonAllAccounts.firstOrNull() ?: "Primary Account"
+            }
+        )
+    }
+    var toAccount by remember {
+        mutableStateOf(
+            nonAllAccounts.firstOrNull { it != fromAccount } ?: nonAllAccounts.lastOrNull() ?: ""
+        )
+    }
+    var amountText by remember { mutableStateOf("") }
+    var noteText by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf("") }
+
+    val fromBal = uiState.accountBalances[fromAccount]?.clearedBalance ?: 0.0
+    val toBal = uiState.accountBalances[toAccount]?.clearedBalance ?: 0.0
+    val parsedAmount = amountText.toDoubleOrNull() ?: 0.0
+    val newFromBal = fromBal - parsedAmount
+    val newToBal = toBal + parsedAmount
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text("Transfer Funds", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // From Account Selector
+                Column {
+                    Text("From Account", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        nonAllAccounts.forEach { acc ->
+                            val isSelected = acc == fromAccount
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    fromAccount = acc
+                                    if (toAccount == acc) {
+                                        toAccount = nonAllAccounts.firstOrNull { it != acc } ?: ""
+                                    }
+                                },
+                                label = {
+                                    Text(
+                                        "$acc (${String.format(Locale.US, "$%,.0f", uiState.accountBalances[acc]?.clearedBalance ?: 0.0)})",
+                                        fontSize = 9.5.sp
+                                    )
+                                },
+                                modifier = Modifier.height(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                // To Account Selector
+                Column {
+                    Text("To Account", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        nonAllAccounts.filter { it != fromAccount }.forEach { acc ->
+                            val isSelected = acc == toAccount
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { toAccount = acc },
+                                label = {
+                                    Text(
+                                        "$acc (${String.format(Locale.US, "$%,.0f", uiState.accountBalances[acc]?.clearedBalance ?: 0.0)})",
+                                        fontSize = 9.5.sp
+                                    )
+                                },
+                                modifier = Modifier.height(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Amount Input
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = {
+                        amountText = it.filter { c -> c.isDigit() || c == '.' }
+                        errorMessage = ""
+                    },
+                    label = { Text("Transfer Amount ($)") },
+                    prefix = { Text("$", fontWeight = FontWeight.Bold) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Quick Amount Chips
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(25.0, 50.0, 100.0, 250.0, 500.0).forEach { quickVal ->
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.clickable { amountText = String.format(Locale.US, "%.0f", quickVal) }
+                        ) {
+                            Text(
+                                text = "+$${quickVal.toInt()}",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (fromBal > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                            modifier = Modifier.clickable { amountText = String.format(Locale.US, "%.2f", fromBal) }
+                        ) {
+                            Text(
+                                text = "Max ($${String.format(Locale.US, "%,.2f", fromBal)})",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Real-time Balance Preview
+                if (parsedAmount > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("BALANCE IMPACT PREVIEW", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(fromAccount, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(
+                                    "${String.format(Locale.US, "$%,.2f", fromBal)} → ${String.format(Locale.US, "$%,.2f", newFromBal)}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (newFromBal >= 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                )
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(toAccount, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(
+                                    "${String.format(Locale.US, "$%,.2f", toBal)} → ${String.format(Locale.US, "$%,.2f", newToBal)}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Optional Memo
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    label = { Text("Note / Memo (Optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (errorMessage.isNotEmpty()) {
+                    Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (parsedAmount <= 0.0) {
+                        errorMessage = "Please enter a valid transfer amount greater than $0"
+                        return@Button
+                    }
+                    if (fromAccount == toAccount) {
+                        errorMessage = "Source and destination accounts must be different"
+                        return@Button
+                    }
+                    onConfirmTransfer(fromAccount, toAccount, parsedAmount, noteText.trim())
+                    onDismiss()
+                },
+                modifier = Modifier.testTag("confirm_transfer_funds_button")
+            ) {
+                Text("Confirm Transfer", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun ReconcileBalanceDialog(
+    uiState: BudgetUiState,
+    onDismiss: () -> Unit,
+    onConfirmReconcile: (account: String, actualBalance: Double) -> Unit
+) {
+    val nonAllAccounts = remember(uiState.allAccounts) {
+        uiState.allAccounts.filter { it != "All Accounts" }
+    }
+    var selectedAccount by remember {
+        mutableStateOf(
+            if (uiState.activeAccountName != "All Accounts" && nonAllAccounts.contains(uiState.activeAccountName)) {
+                uiState.activeAccountName
+            } else {
+                nonAllAccounts.firstOrNull() ?: "Primary Account"
+            }
+        )
+    }
+    val currentAppBal = uiState.accountBalances[selectedAccount]?.clearedBalance ?: 0.0
+    var actualBankBalanceText by remember(selectedAccount) {
+        mutableStateOf(String.format(Locale.US, "%.2f", currentAppBal))
+    }
+    var errorMessage by remember { mutableStateOf("") }
+
+    val parsedActualBal = actualBankBalanceText.toDoubleOrNull() ?: currentAppBal
+    val delta = parsedActualBal - currentAppBal
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.AccountBalance, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                Text("Bank Balance Reconciliation", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Compare your app balance against your bank's online statement. If there's a difference, the app will log an adjustment to match to the penny.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Account Selection
+                Column {
+                    Text("Select Account", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        nonAllAccounts.forEach { acc ->
+                            FilterChip(
+                                selected = acc == selectedAccount,
+                                onClick = { selectedAccount = acc },
+                                label = { Text(acc, fontSize = 9.5.sp) },
+                                modifier = Modifier.height(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Current App Balance Display
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("CURRENT APP CLEARED BALANCE", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            text = String.format(Locale.US, "$%,.2f", currentAppBal),
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (currentAppBal >= 0) Color(0xFF059669) else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                // Bank Online Balance Input
+                OutlinedTextField(
+                    value = actualBankBalanceText,
+                    onValueChange = {
+                        actualBankBalanceText = it.filter { c -> c.isDigit() || c == '.' || c == '-' }
+                        errorMessage = ""
+                    },
+                    label = { Text("Actual Online Bank Balance ($)") },
+                    prefix = { Text("$", fontWeight = FontWeight.Bold) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Discrepancy Live Feedback
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = when {
+                        kotlin.math.abs(delta) < 0.005 -> Color(0xFF10B981).copy(alpha = 0.12f)
+                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (kotlin.math.abs(delta) < 0.005) Color(0xFF10B981).copy(alpha = 0.4f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(if (kotlin.math.abs(delta) < 0.005) "✅" else "⚖️", fontSize = 16.sp)
+                        Column {
+                            Text(
+                                text = when {
+                                    kotlin.math.abs(delta) < 0.005 -> "Balances match perfectly! No adjustment needed."
+                                    delta > 0 -> "Bank is higher by +$${String.format(Locale.US, "%,.2f", delta)}"
+                                    else -> "Bank is lower by -$${String.format(Locale.US, "%,.2f", kotlin.math.abs(delta))}"
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = when {
+                                    kotlin.math.abs(delta) < 0.005 -> Color(0xFF047857)
+                                    delta > 0 -> Color(0xFF059669)
+                                    else -> Color(0xFFDC2626)
+                                }
+                            )
+                            if (kotlin.math.abs(delta) >= 0.005) {
+                                Text(
+                                    text = "Reconciling will record a $${String.format(Locale.US, "%,.2f", kotlin.math.abs(delta))} balance adjustment to match.",
+                                    fontSize = 10.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (errorMessage.isNotEmpty()) {
+                    Text(errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val actualBal = actualBankBalanceText.toDoubleOrNull()
+                    if (actualBal == null) {
+                        errorMessage = "Please enter a valid bank balance"
+                        return@Button
+                    }
+                    onConfirmReconcile(selectedAccount, actualBal)
+                    onDismiss()
+                },
+                modifier = Modifier.testTag("confirm_reconcile_balance_button")
+            ) {
+                Text("Reconcile Balance", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -11853,6 +15804,7 @@ fun AccountCardItem(
     val cardModifier = if (isWideScreen) {
         modifier
             .fillMaxWidth()
+            .fillMaxHeight()
             .combinedClickable(
                 onClick = { onSelectAccount(acc) },
                 onLongClick = {
@@ -11863,7 +15815,7 @@ fun AccountCardItem(
             .testTag("account_card_$acc")
     } else {
         modifier
-            .width(if (isReorderMode) 110.dp else 100.dp)
+            .width(if (isReorderMode) 120.dp else 110.dp)
             .combinedClickable(
                 onClick = { onSelectAccount(acc) },
                 onLongClick = {
@@ -11888,7 +15840,11 @@ fun AccountCardItem(
         ),
         border = borderStroke
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight()
+        ) {
             val accStyle = getAccountColorStyle(acc, isSystemInDarkTheme())
             // Top accent color bar
             Box(
@@ -11899,7 +15855,7 @@ fun AccountCardItem(
             )
             Column(
                 modifier = Modifier
-                    .padding(horizontal = if (isWideScreen) 4.dp else 5.dp, vertical = if (isWideScreen) 2.dp else 2.5.dp)
+                    .padding(horizontal = if (isWideScreen) 6.dp else 7.dp, vertical = if (isWideScreen) 4.dp else 5.dp)
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(if (isWideScreen) 1.dp else 1.5.dp)
             ) {
@@ -11910,7 +15866,7 @@ fun AccountCardItem(
                 ) {
                     Text(
                         text = acc,
-                        fontSize = if (isWideScreen) 10.5.sp else 11.sp,
+                        fontSize = if (isWideScreen) 11.sp else 11.5.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -11926,7 +15882,7 @@ fun AccountCardItem(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(1.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         if (isOverBudget) {
                             Icon(
@@ -11934,7 +15890,7 @@ fun AccountCardItem(
                                 contentDescription = "Warning: Over Budget",
                                 tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier
-                                    .size(if (isWideScreen) 10.dp else 12.dp)
+                                    .size(if (isWideScreen) 11.dp else 12.dp)
                                     .testTag("account_warning_icon_$acc")
                             )
                         } else if (isSelected) {
@@ -11942,16 +15898,18 @@ fun AccountCardItem(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Selected",
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(if (isWideScreen) 10.dp else 12.dp)
+                                modifier = Modifier.size(if (isWideScreen) 11.dp else 12.dp)
                             )
                         }
 
                         if (acc != "All Accounts") {
-                            IconButton(
-                                onClick = { onEditAccount() },
+                            Box(
                                 modifier = Modifier
-                                    .size(if (isWideScreen) 20.dp else 22.dp)
-                                    .testTag("edit_account_icon_$acc")
+                                    .size(if (isWideScreen) 18.dp else 22.dp)
+                                    .clip(CircleShape)
+                                    .clickable { onEditAccount() }
+                                    .testTag("edit_account_icon_$acc"),
+                                contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Edit,
@@ -11963,7 +15921,7 @@ fun AccountCardItem(
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
                                     },
-                                    modifier = Modifier.size(if (isWideScreen) 11.dp else 12.dp)
+                                    modifier = Modifier.size(if (isWideScreen) 10.dp else 12.dp)
                                 )
                             }
                         }
@@ -11992,8 +15950,11 @@ fun AccountCardItem(
                     ) {
                         Text(
                             text = String.format(Locale.US, "$%,.2f", clearedBalance),
-                            fontSize = 11.sp,
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                             color = if (isOverBudget) {
                                 MaterialTheme.colorScheme.error
                             } else if (clearedBalance >= 0) {
@@ -12022,6 +15983,7 @@ fun AccountCardItem(
                         fontSize = 7.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         color = if (isOverBudget) {
                             MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
                         } else {
@@ -12730,10 +16692,10 @@ fun EditableAutoPayTag(
     var expanded by remember { mutableStateOf(false) }
 
     Surface(
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(4.dp),
         color = if (isAutoPay) Color(0xFF0284C7).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(
-            1.dp,
+            0.8.dp,
             if (isAutoPay) Color(0xFF38BDF8) else MaterialTheme.colorScheme.outlineVariant
         ),
         modifier = Modifier
@@ -12741,18 +16703,18 @@ fun EditableAutoPayTag(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
         ) {
             Text(
                 text = "⚡ AutoPay",
-                fontSize = 11.sp,
+                fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (isAutoPay) Color(0xFF38BDF8) else MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = "▾",
-                fontSize = 10.sp,
+                fontSize = 8.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }

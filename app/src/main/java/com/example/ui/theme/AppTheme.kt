@@ -114,6 +114,26 @@ enum class AppTheme(
         containerColorDark = Color(0xFF382A22)
     );
 
+    fun getColorScheme(darkTheme: Boolean): ColorScheme {
+        return if (darkTheme) {
+            darkColorScheme(
+                primary = primaryColorDark,
+                primaryContainer = containerColorDark,
+                secondary = primaryColorDark,
+                background = Color(0xFF0F172A),
+                surface = Color(0xFF1E293B)
+            )
+        } else {
+            lightColorScheme(
+                primary = primaryColorLight,
+                primaryContainer = containerColorLight,
+                secondary = primaryColorLight,
+                background = Color(0xFFF8FAFC),
+                surface = Color.White
+            )
+        }
+    }
+
     companion object {
         fun fromId(id: String?): AppTheme {
             return values().firstOrNull { it.id.equals(id, ignoreCase = true) } ?: COLOR_THEORY

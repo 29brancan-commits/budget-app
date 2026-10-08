@@ -40,7 +40,9 @@ object BillReminderScheduler {
             ).apply {
                 description = "Notifications and alerts for upcoming bills and scheduled expenses"
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 200, 250)
                 enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
@@ -64,12 +66,20 @@ object BillReminderScheduler {
     }
 
     fun scheduleReminder(context: Context, bill: PlannedExpenseEntity) {
+        val today = LocalDate.now()
+        val dueDate = try {
+            LocalDate.parse(bill.dueDate)
+        } catch (_: Exception) {
+            val day = (bill.dueDate.filter { it.isDigit() }.toIntOrNull() ?: 15).coerceIn(1, 28)
+            val dateThisMonth = today.withDayOfMonth(minOf(day, today.lengthOfMonth()))
+            if (!dateThisMonth.isBefore(today)) dateThisMonth else today.plusMonths(1).let { it.withDayOfMonth(minOf(day, it.lengthOfMonth())) }
+        }
         scheduleGenericReminder(
             context = context,
             id = bill.id,
             title = bill.title,
             amount = bill.minAmount,
-            dueDateStr = bill.dueDate,
+            dueDateStr = dueDate.toString(),
             daysBefore = bill.reminderDaysBefore,
             isAutoPay = bill.isAutoPay,
             isTx = false
@@ -169,23 +179,31 @@ object BillReminderScheduler {
             var scheduledExact = false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (alarmManager.canScheduleExactAlarms()) {
-                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
                     scheduledExact = true
                 }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
                 scheduledExact = true
             }
 
             if (!scheduledExact) {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                } else {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                }
             }
-            Log.d("BillReminderScheduler", "Scheduled expense reminder for '$title' at $reminderDateTime (RequestCode: $requestCode)")
+            Log.d("BillReminderScheduler", "Scheduled expense reminder for '$title' at $reminderDateTime (Exact: $scheduledExact, RequestCode: $requestCode)")
         } catch (e: SecurityException) {
-            Log.e("BillReminderScheduler", "SecurityException scheduling exact alarm, using fallback set()", e)
+            Log.e("BillReminderScheduler", "SecurityException scheduling exact alarm, using fallback setAndAllowWhileIdle()", e)
             try {
                 val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                } else {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerMillis, pendingIntent)
+                }
             } catch (e2: Exception) {
                 Log.e("BillReminderScheduler", "Fallback alarm scheduling failed", e2)
             }
@@ -236,7 +254,18 @@ object BillReminderScheduler {
         // 1. Process planned bills: only schedule if NOT completed by matching expense transaction
         for (bill in bills) {
             if (bill.reminderDaysBefore >= 0) {
-                val dueDate = try { LocalDate.parse(bill.dueDate) } catch (_: Exception) { null }
+                val dueDate = try {
+                    LocalDate.parse(bill.dueDate)
+                } catch (_: Exception) {
+                    val day = bill.dueDate.toIntOrNull()
+                    if (day != null && day in 1..31) {
+                        val targetDay = minOf(day, today.lengthOfMonth())
+                        val dateThisMonth = today.withDayOfMonth(targetDay)
+                        if (!dateThisMonth.isBefore(today)) dateThisMonth else today.plusMonths(1).let { it.withDayOfMonth(minOf(day, it.lengthOfMonth())) }
+                    } else {
+                        null
+                    }
+                }
                 if (dueDate != null && !dueDate.isBefore(today)) {
                     val hasCompletedInTransactions = transactions.any { tx ->
                         !tx.isIncome && tx.isCompleted &&
@@ -245,7 +274,16 @@ object BillReminderScheduler {
                     if (hasCompletedInTransactions) {
                         cancelReminder(context, bill.id)
                     } else {
-                        scheduleReminder(context, bill)
+                        scheduleGenericReminder(
+                            context = context,
+                            id = bill.id,
+                            title = bill.title,
+                            amount = bill.minAmount,
+                            dueDateStr = dueDate.toString(),
+                            daysBefore = bill.reminderDaysBefore,
+                            isAutoPay = bill.isAutoPay,
+                            isTx = false
+                        )
                     }
                 } else {
                     cancelReminder(context, bill.id)
@@ -269,6 +307,13 @@ object BillReminderScheduler {
                     }
                 }
             }
+        }
+
+        // 3. Ensure periodic WorkManager backup is active
+        try {
+            NotificationReliabilityHelper.schedulePeriodicWork(context)
+        } catch (e: Exception) {
+            Log.e("BillReminderScheduler", "Could not enqueue periodic work backup", e)
         }
     }
 }

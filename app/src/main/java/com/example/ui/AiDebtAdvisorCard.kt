@@ -56,7 +56,7 @@ fun AiDebtAdvisorCard(
     isDark: Boolean = false
 ) {
     var customPromptText by remember { mutableStateOf("") }
-    var isExpanded by remember { mutableStateOf(true) }
+    var isExpanded by remember { mutableStateOf(false) }
     var showScenarioModeling by remember { mutableStateOf(false) }
     var windfallInput by remember { mutableStateOf("") }
     var consolidationAprInput by remember { mutableStateOf("") }
@@ -194,9 +194,10 @@ fun AiDebtAdvisorCard(
                                     val consolAprVal = consolidationAprInput.toDoubleOrNull()?.coerceIn(0.0, 100.0)
                                     onGenerateSuggestions(prompt, windfallVal, consolAprVal)
                                 },
-                                label = { Text(label, fontSize = 10.5.sp, fontWeight = FontWeight.Medium) },
-                                shape = RoundedCornerShape(20.dp),
-                                border = BorderStroke(1.dp, Color(0xFF8B5CF6).copy(alpha = 0.5f)),
+                                label = { Text(label, fontSize = 9.5.sp, fontWeight = FontWeight.Medium) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(26.dp),
+                                border = BorderStroke(0.8.dp, Color(0xFF8B5CF6).copy(alpha = 0.5f)),
                                 colors = SuggestionChipDefaults.suggestionChipColors(
                                     containerColor = if (isDark) Color(0xFF231E33) else Color.White
                                 )
@@ -262,7 +263,8 @@ fun AiDebtAdvisorCard(
                                             FilterChip(
                                                 selected = windfallInput == amt,
                                                 onClick = { windfallInput = if (windfallInput == amt) "" else amt },
-                                                label = { Text(label, fontSize = 9.5.sp) }
+                                                label = { Text(label, fontSize = 8.5.sp) },
+                                                modifier = Modifier.height(24.dp)
                                             )
                                         }
                                     }

@@ -43,6 +43,10 @@ class BudgetRepository(private val transactionDao: TransactionDao) {
         transactionDao.insertIncomeSource(incomeSource)
     }
 
+    suspend fun updateIncomeSource(incomeSource: IncomeSourceEntity) {
+        transactionDao.updateIncomeSource(incomeSource)
+    }
+
     suspend fun deleteIncomeSource(incomeSource: IncomeSourceEntity) {
         transactionDao.deleteIncomeSource(incomeSource)
     }

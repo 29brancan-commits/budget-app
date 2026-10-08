@@ -20,8 +20,12 @@ data class CurrentPayCycleSummary(
     val remainingBalance: Double,
     val clearedBalance: Double,
     val daysRemaining: Long,
-    val spentPercentage: Int
-)
+    val spentPercentage: Int,
+    val startingBalance: Double = 0.0
+) {
+    val cycleNet: Double get() = totalIncome - totalExpenses
+    val isOverspentInCycle: Boolean get() = totalExpenses > totalIncome
+}
 
 object PayCycleCalculator {
 
@@ -84,7 +88,8 @@ object PayCycleCalculator {
                                     existing.title.equals("Cancelled " + tx.title.replace(" (Planned)", ""), ignoreCase = true) ||
                                     existing.title.contains("Cancelled " + tx.title, ignoreCase = true) ||
                                     (existing.id > 0 && existing.id == tx.id)) &&
-                                    DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate
+                                    (DateUtils.millisToLocalDate(existing.dateMillis) == projectedDate ||
+                                     (existing.isPaidOrCleared && Math.abs(ChronoUnit.DAYS.between(DateUtils.millisToLocalDate(existing.dateMillis), projectedDate)) <= 10))
                         }
                         if (!alreadyExists) {
                             val synthId = -(Math.abs((tx.id.toString() + "_exp_" + projectedDate.toString()).hashCode()) + 10000)
@@ -92,7 +97,8 @@ object PayCycleCalculator {
                                 tx.copy(
                                     id = synthId,
                                     dateMillis = projectedMillis,
-                                    isCompleted = false
+                                    isCompleted = false,
+                                    status = "due"
                                 )
                             )
                         }
@@ -143,14 +149,18 @@ object PayCycleCalculator {
 
             val cUsedIds = cPaychecks.map { it.id }.toSet()
             val cOtherInc = accountTransactions.filter {
-                it.isIncome && it.dateMillis >= cPStartMillis && it.dateMillis < cPEndMillis && !cUsedIds.contains(it.id)
+                it.isIncome && !it.isStartingBalanceOrAdjustment && it.dateMillis >= cPStartMillis && it.dateMillis < cPEndMillis && !cUsedIds.contains(it.id)
             }.sumOf { it.amount }
+
+            val cStartingBal = accountTransactions.filter {
+                it.isStartingBalanceOrAdjustment && it.dateMillis >= cPStartMillis && it.dateMillis < cPEndMillis
+            }.sumOf { if (it.isIncome) it.amount else -it.amount }
 
             val cExp = accountTransactions.filter {
-                !it.isIncome && it.dateMillis >= cPStartMillis && it.dateMillis < cPEndMillis
+                !it.isIncome && !it.isStartingBalanceOrAdjustment && it.dateMillis >= cPStartMillis && it.dateMillis < cPEndMillis
             }.sumOf { it.amount }
 
-            accCarryover += (cPaycheck + cOtherInc - cExp)
+            accCarryover += (cPaycheck + cOtherInc + cStartingBal - cExp)
             cPayday = cPayday.plusDays(14)
         }
 
@@ -160,7 +170,7 @@ object PayCycleCalculator {
         }
 
         val periodPaychecks = if (isPrimary) {
-            periodTransactions.filter { it.isIncome && it.category == "Paycheck" }
+            periodTransactions.filter { it.isIncome && !it.isStartingBalanceOrAdjustment && it.category == "Paycheck" }
         } else emptyList()
 
         val paycheckAmount = if (isPrimary) {
@@ -169,20 +179,90 @@ object PayCycleCalculator {
 
         val usedPaycheckIds = periodPaychecks.map { it.id }.toSet()
         val otherIncome = periodTransactions.filter {
-            it.isIncome && !usedPaycheckIds.contains(it.id)
+            it.isIncome && !it.isStartingBalanceOrAdjustment && !usedPaycheckIds.contains(it.id)
         }.sumOf { it.amount }
 
+        val periodStartingBalance = periodTransactions.filter {
+            it.isStartingBalanceOrAdjustment
+        }.sumOf { if (it.isIncome) it.amount else -it.amount }
+
         val totalIncome = paycheckAmount + otherIncome
-        val totalAvailable = accCarryover + totalIncome
+        val totalAvailable = accCarryover + periodStartingBalance + totalIncome
 
         // Also factor in planned bills falling into this cycle if not already tracked as transaction
-        val validExpenses = periodTransactions.filter { !it.isIncome && !it.title.contains("Cancelled", ignoreCase = true) }
+        val validExpenses = periodTransactions.filter { !it.isIncome && !it.isStartingBalanceOrAdjustment && !it.title.contains("Cancelled", ignoreCase = true) }
         val periodExpenses = validExpenses.sumOf { it.amount }
 
-        val completedExpenses = validExpenses.filter { it.isCompleted }.sumOf { it.amount }
-        val pendingExpenses = validExpenses.filter { !it.isCompleted }.sumOf { it.amount }
+        val completedExpenses = validExpenses.filter { it.isCompleted || it.isPaidOrCleared }.sumOf { it.amount }
+        val pendingTxExpenses = validExpenses.filter { !it.isCompleted && !it.isPaidOrCleared }.sumOf { it.amount }
 
-        val remainingBalance = totalAvailable - periodExpenses
+        fun isAccountMatching(acc: String): Boolean {
+            if (isAllAccounts || acc.isBlank()) return true
+            if (acc.equals(activeAccount, ignoreCase = true)) return true
+            if (isPrimary && (acc.equals("Primary Account", ignoreCase = true) || acc.equals("Primary", ignoreCase = true))) return true
+            return false
+        }
+
+        val monthsCovered = mutableSetOf<YearMonth>()
+        var mCursor = YearMonth.from(cycleStart)
+        val endMonth = YearMonth.from(cycleEnd)
+        while (!mCursor.isAfter(endMonth)) {
+            monthsCovered.add(mCursor)
+            mCursor = mCursor.plusMonths(1)
+        }
+
+        var plannedBillsDueAmount = 0.0
+        plannedExpenses.filter { isAccountMatching(it.targetAccount) }.forEach { bill ->
+            val origDay = try {
+                LocalDate.parse(bill.dueDate).dayOfMonth
+            } catch (e: Exception) {
+                bill.dueDate.filter { it.isDigit() }.toIntOrNull() ?: 15
+            }.coerceIn(1, 28)
+
+            monthsCovered.forEach { m ->
+                val dueDateInMonth = LocalDate.of(
+                    m.year,
+                    m.month,
+                    minOf(origDay, m.lengthOfMonth())
+                )
+
+                if (!dueDateInMonth.isBefore(cycleStart) && !dueDateInMonth.isAfter(cycleEnd)) {
+                    val hasPaidOrCompletedTx = allTransactions.any { tx ->
+                        !tx.isIncome &&
+                                !tx.isStartingBalanceOrAdjustment &&
+                                tx.isPaidOrCleared &&
+                                (tx.title.equals(bill.title, ignoreCase = true) ||
+                                 tx.title.contains(bill.title, ignoreCase = true) ||
+                                 bill.title.contains(tx.title, ignoreCase = true)) &&
+                                (YearMonth.from(DateUtils.millisToLocalDate(tx.dateMillis)) == m ||
+                                 (!DateUtils.millisToLocalDate(tx.dateMillis).isBefore(cycleStart) && !DateUtils.millisToLocalDate(tx.dateMillis).isAfter(cycleEnd)) ||
+                                 Math.abs(ChronoUnit.DAYS.between(DateUtils.millisToLocalDate(tx.dateMillis), dueDateInMonth)) <= 15)
+                    }
+
+                    val matchingTx = allTransactions.firstOrNull { tx ->
+                        !tx.isIncome &&
+                                (tx.title.equals(bill.title, ignoreCase = true) || tx.title.contains(bill.title, ignoreCase = true)) &&
+                                YearMonth.from(DateUtils.millisToLocalDate(tx.dateMillis)) == m
+                    }
+
+                    val isCancelledForMonth = allTransactions.any { tx ->
+                        !tx.isIncome &&
+                                (tx.title.equals("Cancelled " + bill.title, ignoreCase = true) ||
+                                 tx.title.contains("Cancelled " + bill.title, ignoreCase = true)) &&
+                                YearMonth.from(DateUtils.millisToLocalDate(tx.dateMillis)) == m
+                    }
+
+                    if (!isCancelledForMonth && !hasPaidOrCompletedTx && matchingTx == null) {
+                        plannedBillsDueAmount += bill.minAmount
+                    }
+                }
+            }
+        }
+
+        val totalExpenses = periodExpenses + plannedBillsDueAmount
+        val totalPending = pendingTxExpenses + plannedBillsDueAmount
+
+        val remainingBalance = totalAvailable - totalExpenses
         val clearedBalance = totalAvailable - completedExpenses
 
         val daysRemaining = if (today.isBefore(cycleStart)) {
@@ -194,9 +274,9 @@ object PayCycleCalculator {
         }
 
         val spentPercentage = if (totalAvailable > 0) {
-            ((periodExpenses / totalAvailable) * 100).toInt().coerceIn(0, 100)
+            ((totalExpenses / totalAvailable) * 100).toInt().coerceIn(0, 100)
         } else {
-            if (periodExpenses > 0) 100 else 0
+            if (totalExpenses > 0) 100 else 0
         }
 
         return CurrentPayCycleSummary(
@@ -209,13 +289,14 @@ object PayCycleCalculator {
             totalIncome = totalIncome,
             carryover = accCarryover,
             totalAvailable = totalAvailable,
-            totalExpenses = periodExpenses,
+            totalExpenses = totalExpenses,
             completedExpenses = completedExpenses,
-            pendingExpenses = pendingExpenses,
+            pendingExpenses = totalPending,
             remainingBalance = remainingBalance,
             clearedBalance = clearedBalance,
             daysRemaining = daysRemaining,
-            spentPercentage = spentPercentage
+            spentPercentage = spentPercentage,
+            startingBalance = periodStartingBalance
         )
     }
 }

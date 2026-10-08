@@ -1,6 +1,6 @@
 {
   "name": "PayCycle Budget",
-  "description": "A clean bi-weekly budget planner aligned with your paycheck cycle.",
+  "description": "Smart pay cycle budget and expense tracker with debt planning, calendar schedule, and Google Drive sync",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,15 +1,17 @@
 package com.example.ui
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -21,2158 +23,107 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.*
+import com.example.data.DebtEntity
+import com.example.data.DebtPaymentEntity
+import com.example.model.DebtCategory
+import com.example.model.DebtItem
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 @Composable
-fun DebtPlannerView(
-    uiState: BudgetUiState,
-    onAddDebt: (name: String, balance: Double, interestRate: Double, minimumPayment: Double, category: String, notes: String) -> Unit,
-    onUpdateDebt: (DebtEntity) -> Unit,
-    onDeleteDebt: (DebtEntity) -> Unit,
-    isWideScreen: Boolean = false,
-    onImportDebtsFromCsv: (suspend (String) -> Pair<Boolean, String>)? = null,
-    onExportDebtsToCsv: (() -> String)? = null,
-    onSyncGoogleDrive: (() -> Unit)? = null,
-    onConnectGoogleDrive: (() -> Unit)? = null,
-    isSyncing: Boolean = false,
-    accountEmail: String? = null,
-    onLogPayment: ((debtId: Int, paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit)? = null,
-    onDeletePayment: ((DebtPaymentEntity) -> Unit)? = null,
-    onToggleBillLink: ((DebtEntity, Boolean, Int) -> Unit)? = null,
-    onTogglePriorityPin: ((DebtEntity) -> Unit)? = null,
-    onTogglePaidOff: ((DebtEntity) -> Unit)? = null,
-    onAddFullDebt: ((DebtEntity) -> Unit)? = null
-) {
-    var selectedStrategy by remember { mutableStateOf(PayoffStrategy.SNOWBALL) }
-    var extraPaymentInput by remember { mutableStateOf("150") }
-    var targetMonthsGoal by remember { mutableStateOf(24) } // Target payoff timeframe in months
-    var isTargetTimelineMode by remember { mutableStateOf(false) }
-
-    val debts = uiState.allDebts
-    val isDark = uiState.isDarkMode
-    val coroutineScope = rememberCoroutineScope()
-
-    var showDebtCsvImportDialog by remember { mutableStateOf(false) }
-    var showDebtCsvExportDialog by remember { mutableStateOf(false) }
-    var debtCsvExportData by remember { mutableStateOf("") }
-    var debtImportStatusMsg by remember { mutableStateOf("") }
-    var isImportingDebtsProgress by remember { mutableStateOf(false) }
-
-    // Payment logging & history states
-    var debtForPaymentLog by remember { mutableStateOf<DebtEntity?>(null) }
-    var prefilledPaymentAmount by remember { mutableStateOf<Double?>(null) }
-    var expandedPaymentHistoryDebtId by remember { mutableStateOf<Int?>(null) }
-
-    // Cycle Safe-to-Spend Buffer Calculation
-    val cycleSafeToSpend = remember(uiState.currentPayPeriod, uiState.monthlyRemainingBalance) {
-        maxOf(0.0, uiState.currentPayPeriod?.remainingBalance ?: uiState.monthlyRemainingBalance)
-    }
-
-    // AI Debt Payoff Advisor States
-    var aiSuggestionsResult by remember { mutableStateOf<String?>(null) }
-    var isLoadingAiSuggestions by remember { mutableStateOf(false) }
-    var aiErrorMessage by remember { mutableStateOf<String?>(null) }
-
-    val activeDebts = remember(debts) { debts.filter { !it.isPaidOff && it.balance > 0.0 } }
-
-    // Target timeline mode calculation
-    val computedExtraForTarget = remember(activeDebts, selectedStrategy, targetMonthsGoal) {
-        if (activeDebts.isNotEmpty()) {
-            DebtPayoffCalculator.calculateRequiredExtraPayment(activeDebts, selectedStrategy, targetMonthsGoal)
-        } else 0.0
-    }
-
-    val extraMonthlyBudget = if (isTargetTimelineMode) {
-        computedExtraForTarget
-    } else {
-        extraPaymentInput.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-    }
-
-    val runAiAnalysis: (String?, Double, Double?) -> Unit = { customPrompt, windfall, consolidationApr ->
-        if (debts.isEmpty()) {
-            aiErrorMessage = "Please add at least one debt to generate AI payoff suggestions."
-        } else {
-            isLoadingAiSuggestions = true
-            aiErrorMessage = null
-            coroutineScope.launch {
-                val result = com.example.data.GeminiDebtAdvisorService.getDebtPayoffSuggestions(
-                    debts = debts,
-                    selectedStrategy = selectedStrategy,
-                    extraMonthlyBudget = extraMonthlyBudget,
-                    targetMonthsGoal = targetMonthsGoal,
-                    isTargetTimelineMode = isTargetTimelineMode,
-                    customPrompt = customPrompt,
-                    windfallAmount = windfall,
-                    consolidationApr = consolidationApr
-                )
-                isLoadingAiSuggestions = false
-                result.onSuccess { text ->
-                    aiSuggestionsResult = text
-                    aiErrorMessage = null
-                }.onFailure { err ->
-                    aiErrorMessage = err.localizedMessage ?: "Failed to generate AI suggestions."
-                }
-            }
-        }
-    }
-
-    var showAddDialog by remember { mutableStateOf(false) }
-    var debtToEdit by remember { mutableStateOf<DebtEntity?>(null) }
-    var showTimelineDetails by remember { mutableStateOf(false) }
-
-    // Strategy calculations
-    val strategyMap = remember(activeDebts, extraMonthlyBudget) {
-        DebtPayoffCalculator.calculatePayoff(
-            debts = activeDebts,
-            extraMonthlyBudget = extraMonthlyBudget
-        )
-    }
-
-    val activeResult = strategyMap[selectedStrategy] ?: strategyMap[PayoffStrategy.SNOWBALL]!!
-    val minimumResult = strategyMap[PayoffStrategy.MINIMUM_ONLY]!!
-
-    val surplusImpact = remember(activeDebts, selectedStrategy, extraMonthlyBudget, cycleSafeToSpend) {
-        if (cycleSafeToSpend > 0.0 && activeDebts.isNotEmpty()) {
-            DebtPayoffCalculator.calculateSurplusImpact(
-                debts = activeDebts,
-                strategy = selectedStrategy,
-                currentExtraMonthlyBudget = extraMonthlyBudget,
-                surplusAmount = cycleSafeToSpend
-            )
-        } else null
-    }
-
-    val totalDebtBalance = remember(activeDebts) { activeDebts.sumOf { it.balance } }
-    val totalMinimumPayments = remember(activeDebts) { activeDebts.sumOf { it.minimumPayment } }
-    val averageApr = remember(activeDebts) {
-        if (activeDebts.isNotEmpty()) activeDebts.map { it.interestRate }.average() else 0.0
-    }
-
-    val monthYearFormatter = remember { DateTimeFormatter.ofPattern("MMM yyyy", Locale.US) }
-
-    val plannerControls: @Composable () -> Unit = {
-        // 1. Debt Planner Header Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("debt_summary_card"),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isDark) Color(0xFF09090B) else Color(0xFFF1F5F9)
-            ),
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Column(
-                modifier = Modifier.padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text("🎯", fontSize = 14.sp)
-                            }
-                        }
-                        Column {
-                            Text(
-                                text = "Debt Payoff Planner",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Model Snowball vs Avalanche & optimize payoff timelines",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = { showAddDialog = true },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("add_debt_button")
-                    ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(2.dp))
-                        Text("Add Debt", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                // Summary Stats Grid
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isDark) Color(0xFF000000) else Color.White,
-                        border = BorderStroke(1.dp, if (isDark) Color(0xFF27272A) else Color(0xFFE2E8F0))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("Total Debt", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                String.format(Locale.US, "$%,.2f", totalDebtBalance),
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFFEF4444)
-                            )
-                        }
-                    }
-
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isDark) Color(0xFF000000) else Color.White,
-                        border = BorderStroke(1.dp, if (isDark) Color(0xFF27272A) else Color(0xFFE2E8F0))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("Min Payments", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                String.format(Locale.US, "$%,.2f/mo", totalMinimumPayments),
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isDark) Color(0xFF000000) else Color.White,
-                        border = BorderStroke(1.dp, if (isDark) Color(0xFF27272A) else Color(0xFFE2E8F0))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("Avg APR", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                String.format(Locale.US, "%.1f%%", averageApr),
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFFF59E0B)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Google Sheets & CSV Import Card for Debts
-        GoogleSheetsDebtSyncCard(
-            accountEmail = accountEmail,
-            isSyncing = isSyncing,
-            onSyncClick = { onSyncGoogleDrive?.invoke() },
-            onOpenImportDialog = {
-                debtImportStatusMsg = ""
-                showDebtCsvImportDialog = true
-            },
-            onOpenExportDialog = {
-                debtCsvExportData = onExportDebtsToCsv?.invoke() ?: ""
-                showDebtCsvExportDialog = true
-            },
-            onConnectDrive = { onConnectGoogleDrive?.invoke() },
-            statusMessage = debtImportStatusMsg
-        )
-
-        // 3. AI Debt Payoff Advisor Card
-        AiDebtAdvisorCard(
-            debts = debts,
-            selectedStrategy = selectedStrategy,
-            extraMonthlyBudget = extraMonthlyBudget,
-            targetMonthsGoal = targetMonthsGoal,
-            isTargetTimelineMode = isTargetTimelineMode,
-            aiResult = aiSuggestionsResult,
-            isLoading = isLoadingAiSuggestions,
-            errorMessage = aiErrorMessage,
-            onGenerateSuggestions = { prompt, windfall, apr ->
-                runAiAnalysis(prompt, windfall, apr)
-            },
-            onClearSuggestions = {
-                aiSuggestionsResult = null
-                aiErrorMessage = null
-            },
-            isDark = isDark
-        )
-
-        // 3. Planning Mode Switcher & Contribution/Target Controls
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isDark) Color(0xFF18181B) else Color.White
-            ),
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Planning Mode",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        FilterChip(
-                            selected = !isTargetTimelineMode,
-                            onClick = { isTargetTimelineMode = false },
-                            label = { Text("💵 Monthly Budget", fontSize = 10.sp) },
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.testTag("mode_monthly_budget")
-                        )
-                        FilterChip(
-                            selected = isTargetTimelineMode,
-                            onClick = {
-                                isTargetTimelineMode = true
-                                targetMonthsGoal = activeResult.totalMonths.coerceAtLeast(6)
-                            },
-                            label = { Text("🎯 Target Timeline", fontSize = 10.sp) },
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.testTag("mode_target_timeline")
-                        )
-                    }
-                }
-
-                if (!isTargetTimelineMode) {
-                    // Extra monthly payment input
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = extraPaymentInput,
-                            onValueChange = { extraPaymentInput = it },
-                            label = { Text("Extra Monthly Payment ($)") },
-                            prefix = { Text("$ ") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("extra_payment_input")
-                        )
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "Total Monthly Budget",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = String.format(
-                                    Locale.US,
-                                    "$%,.2f/mo",
-                                    totalMinimumPayments + extraMonthlyBudget
-                                ),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                } else {
-                    // Target timeline slider & goal box
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                                shape = RoundedCornerShape(10.dp)
-                            )
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = "Target Debt-Free Date",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                val targetDate = java.time.LocalDate.now().plusMonths(targetMonthsGoal.toLong())
-                                Text(
-                                    text = "${targetDate.format(monthYearFormatter)} ($targetMonthsGoal months)",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    text = "Required Extra Payment",
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = String.format(
-                                        Locale.US,
-                                        "+$%,.2f/mo",
-                                        computedExtraForTarget
-                                    ),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF10B981)
-                                )
-                            }
-                        }
-
-                        Slider(
-                            value = targetMonthsGoal.toFloat(),
-                            onValueChange = { targetMonthsGoal = it.toInt() },
-                            valueRange = 6f..120f,
-                            steps = 113,
-                            modifier = Modifier.testTag("target_timeline_slider")
-                        )
-
-                        Text(
-                            text = "Total Monthly Allocation: ${String.format(Locale.US, "$%,.2f", totalMinimumPayments + computedExtraForTarget)}/mo",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-
-        // 3b. Pay-Cycle "Safe-to-Spend" Surplus Accelerator Card
-        val targetDebt = remember(debts, selectedStrategy, surplusImpact) {
-            debts.firstOrNull { it.id == surplusImpact?.targetDebtId }
-                ?: debts.firstOrNull { it.name == surplusImpact?.targetDebtName }
-                ?: debts.filter { it.customPriorityRank > 0 }.minByOrNull { it.customPriorityRank }
-                ?: (if (selectedStrategy == PayoffStrategy.AVALANCHE) debts.maxByOrNull { it.interestRate } else debts.minByOrNull { it.balance })
-        }
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("cycle_surplus_acceleration_card"),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isDark) Color(0xFF04241B) else Color(0xFFECFDF5)
-            ),
-            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f))
-        ) {
-            Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("🔗", fontSize = 13.sp)
-                        Text(
-                            text = "Accelerate with Pay Cycle Surplus",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF047857)
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xFF10B981).copy(alpha = 0.2f)
-                    ) {
-                        Text(
-                            text = "SAFE-TO-SPEND BUFFER",
-                            fontSize = 8.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF047857),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Active Safe Surplus",
-                            fontSize = 9.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f", cycleSafeToSpend),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = if (cycleSafeToSpend > 0) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (surplusImpact != null && surplusImpact.surplusAmount > 0) {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "Projected Interest Saved",
-                                fontSize = 9.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = String.format(Locale.US, "+$%,.2f", surplusImpact.interestSaved),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF059669)
-                            )
-                        }
-                    }
-                }
-
-                val surplusAmt = surplusImpact?.surplusAmount ?: 0.0
-                val planItems = remember(debts, selectedStrategy, surplusAmt) {
-                    DebtPayoffCalculator.calculateSurplusAllocation(
-                        debts = debts,
-                        strategy = selectedStrategy,
-                        surplusAmount = surplusAmt
-                    )
-                }
-                val primaryItem = planItems.firstOrNull { it.isPrimaryTarget }
-                val rolloverItems = planItems.filter { !it.isPrimaryTarget && it.extraPayment > 0.0 }
-                val minOnlyItems = planItems.filter { !it.isPrimaryTarget && it.extraPayment == 0.0 && it.debt.balance > 0.0 }
-
-                if (primaryItem != null) {
-                    val targetDebt = primaryItem.debt
-                    val targetMinPay = primaryItem.minimumPayment
-                    val targetExtraPay = primaryItem.extraPayment
-                    val targetTotalPay = primaryItem.totalPayment
-                    val isTargetPaidOff = primaryItem.isPaidOffThisCycle
-
-                    val targetReasonBadge = when {
-                        targetDebt.customPriorityRank > 0 -> "Pinned Priority #${targetDebt.customPriorityRank}"
-                        targetDebt.promoApr != null && targetDebt.promoExpirationDate != null -> "0% Promo Expiring"
-                        selectedStrategy == PayoffStrategy.AVALANCHE -> "Highest APR (${String.format(Locale.US, "%.1f%%", targetDebt.interestRate)}) • Avalanche"
-                        selectedStrategy == PayoffStrategy.SNOWBALL -> "Lowest Balance ($${String.format(Locale.US, "%,.0f", targetDebt.balance)}) • Snowball"
-                        else -> "Primary Payoff Target"
-                    }
-
-                    // Detailed Bill Payment Plan
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isDark) Color(0xFF0F172A) else Color.White,
-                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.35f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(9.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("📋", fontSize = 11.sp)
-                                    Text(
-                                        text = "EXACT BILLS TO PAY THIS CYCLE",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = Color(0xFF047857),
-                                        letterSpacing = 0.4.sp
-                                    )
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = Color(0xFF10B981).copy(alpha = 0.15f)
-                                ) {
-                                    Text(
-                                        text = targetReasonBadge,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF047857),
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-
-                            // 1. Primary Target Debt Box (Never exceeds remaining balance)
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF10B981).copy(alpha = 0.08f),
-                                border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.3f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text("🎯", fontSize = 11.sp)
-                                                Text(
-                                                    text = targetDebt.name,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
-                                            }
-                                            Text(
-                                                text = "Balance: ${String.format(Locale.US, "$%,.2f", targetDebt.balance)} • ${String.format(Locale.US, "%.1f%% APR", targetDebt.interestRate)}${if (targetDebt.isLinkedToBills) " • Due day ${targetDebt.billDueDay}" else ""}",
-                                                fontSize = 9.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                        Column(horizontalAlignment = Alignment.End) {
-                                            Text(
-                                                text = String.format(Locale.US, "$%,.2f", targetTotalPay),
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                color = Color(0xFF059669)
-                                            )
-                                            Text(
-                                                text = if (isTargetPaidOff) "🎉 PAYS OFF IN FULL" else if (targetExtraPay > 0) "min + surplus" else "minimum due",
-                                                fontSize = 8.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isTargetPaidOff) Color(0xFF059669) else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-
-                                    Divider(color = Color(0xFF10B981).copy(alpha = 0.2f), thickness = 0.5.dp)
-                                    if (isTargetPaidOff) {
-                                        Text(
-                                            text = if (targetDebt.balance <= targetMinPay) {
-                                                "• Balance is only ${String.format(Locale.US, "$%,.2f", targetDebt.balance)}. Required minimum payment of ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates this card completely!"
-                                            } else {
-                                                "• Balance is only ${String.format(Locale.US, "$%,.2f", targetDebt.balance)}. Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} (${String.format(Locale.US, "$%,.2f", targetMinPay)} min + ${String.format(Locale.US, "$%,.2f", targetExtraPay)} surplus) clears this debt in full!"
-                                            },
-                                            fontSize = 9.sp,
-                                            lineHeight = 12.5.sp,
-                                            color = Color(0xFF047857),
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    } else {
-                                        Text(
-                                            text = "• Required Minimum: ${String.format(Locale.US, "$%,.2f", targetMinPay)}\n• Surplus Acceleration: +${String.format(Locale.US, "$%,.2f", targetExtraPay)}",
-                                            fontSize = 9.sp,
-                                            lineHeight = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-
-                            // 2. Rollover Debts Box (When primary debt needed less than full surplus)
-                            if (rolloverItems.isNotEmpty()) {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = Color(0xFF0EA5E9).copy(alpha = 0.08f),
-                                    border = BorderStroke(1.dp, Color(0xFF0EA5E9).copy(alpha = 0.35f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text("⚡", fontSize = 11.sp)
-                                                Text(
-                                                    text = "SURPLUS ROLLOVER CASCADE",
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF0284C7)
-                                                )
-                                            }
-                                            Surface(
-                                                shape = RoundedCornerShape(50),
-                                                color = Color(0xFF0EA5E9).copy(alpha = 0.15f)
-                                            ) {
-                                                Text(
-                                                    text = "+$${String.format(Locale.US, "%,.0f", rolloverItems.sumOf { it.extraPayment })} Rolled Over",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF0284C7),
-                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "Because ${targetDebt.name} only needed ${String.format(Locale.US, "$%,.2f", targetTotalPay)} to clear, your remaining surplus automatically rolls over to your next priority:",
-                                            fontSize = 8.5.sp,
-                                            lineHeight = 11.5.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        rolloverItems.forEach { roll ->
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(vertical = 2.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = "• ${roll.debt.name} (Bal: ${String.format(Locale.US, "$%,.2f", roll.debt.balance)})",
-                                                        fontSize = 9.5.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                    Text(
-                                                        text = "${String.format(Locale.US, "$%,.2f", roll.minimumPayment)} min + ${String.format(Locale.US, "$%,.2f", roll.extraPayment)} rollover surplus${if (roll.isPaidOffThisCycle) " (🎉 Pays off in full!)" else ""}",
-                                                        fontSize = 8.5.sp,
-                                                        color = Color(0xFF0284C7)
-                                                    )
-                                                }
-                                                Text(
-                                                    text = String.format(Locale.US, "$%,.2f", roll.totalPayment),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF0284C7)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 3. Other debts minimum obligations
-                            if (minOnlyItems.isNotEmpty()) {
-                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(
-                                        text = "Other bills to pay minimum only to avoid late fees:",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    minOnlyItems.forEach { otherItem ->
-                                        val other = otherItem.debt
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 2.dp, vertical = 1.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "• ${other.name}${if (other.isLinkedToBills) " (Due day ${other.billDueDay})" else ""}",
-                                                fontSize = 9.5.sp,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            Text(
-                                                text = String.format(Locale.US, "$%,.2f min", otherItem.minimumPayment),
-                                                fontSize = 9.5.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 4. Total cycle cash outlay (exact allocated sum)
-                            val totalOutlay = planItems.sumOf { it.totalPayment }
-                            Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), thickness = 0.5.dp)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Total Debt Payments This Cycle:",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = String.format(Locale.US, "$%,.2f", totalOutlay),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-
-                    if (surplusImpact != null && surplusImpact.surplusAmount > 0) {
-                        val daysSaved = surplusImpact.daysSaved
-                        val timelineAdvancementText = if (daysSaved > 0) "$daysSaved days" else "${surplusImpact.monthsSaved} months"
-                        val summaryText = if (isTargetPaidOff && rolloverItems.isNotEmpty()) {
-                            "Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates ${targetDebt.name} in full! The remaining ${String.format(Locale.US, "$%,.2f", rolloverItems.sumOf { it.extraPayment })} surplus rolls over to your next debt, advancing your debt-free date by $timelineAdvancementText and saving ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
-                        } else if (isTargetPaidOff) {
-                            "Paying ${String.format(Locale.US, "$%,.2f", targetTotalPay)} eliminates ${targetDebt.name} in full, advancing your debt-free date by $timelineAdvancementText and saving ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
-                        } else {
-                            "Putting ${String.format(Locale.US, "$%,.0f", targetExtraPay)} toward ${targetDebt.name} moves your debt-free date forward by $timelineAdvancementText and saves ${String.format(Locale.US, "$%,.2f", surplusImpact.interestSaved)} in interest."
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isDark) Color(0xFF0F172A) else Color.White,
-                            border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.3f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text("⚡", fontSize = 13.sp)
-                                Text(
-                                    text = summaryText,
-                                    fontSize = 10.sp,
-                                    lineHeight = 13.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            if (isTargetPaidOff) {
-                                Button(
-                                    onClick = {
-                                        debtForPaymentLog = targetDebt
-                                        prefilledPaymentAmount = targetTotalPay
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(13.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Pay Off ${targetDebt.name} in Full (${String.format(Locale.US, "$%,.2f", targetTotalPay)})",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1
-                                    )
-                                }
-                            } else {
-                                Button(
-                                    onClick = {
-                                        debtForPaymentLog = targetDebt
-                                        prefilledPaymentAmount = targetExtraPay
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(13.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Pay ${String.format(Locale.US, "$%,.0f", targetExtraPay)} Extra to ${targetDebt.name}",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-
-                            val firstRollover = rolloverItems.firstOrNull()
-                            if (firstRollover != null) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            debtForPaymentLog = firstRollover.debt
-                                            prefilledPaymentAmount = firstRollover.totalPayment
-                                        },
-                                        modifier = Modifier.weight(1.2f),
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Pay ${String.format(Locale.US, "$%,.0f", firstRollover.totalPayment)} to ${firstRollover.debt.name} (Rollover)",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1
-                                        )
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            extraPaymentInput = String.format(Locale.US, "%.0f", surplusImpact.surplusAmount)
-                                            isTargetTimelineMode = false
-                                        },
-                                        modifier = Modifier.weight(0.8f),
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text("⚡ Monthly Extra", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                    }
-                                }
-                            } else {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            debtForPaymentLog = targetDebt
-                                            prefilledPaymentAmount = targetTotalPay
-                                        },
-                                        modifier = Modifier.weight(1.1f),
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Pay Full ${String.format(Locale.US, "$%,.0f", targetTotalPay)} (Min + Extra)",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1
-                                        )
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            extraPaymentInput = String.format(Locale.US, "%.0f", surplusImpact.surplusAmount)
-                                            isTargetTimelineMode = false
-                                        },
-                                        modifier = Modifier.weight(0.9f),
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text("⚡ Set Monthly Extra", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Text(
-                            text = "Currently $0.00 safe surplus in this pay cycle. Pay minimums as scheduled above. Any surplus earned will accelerate ${targetDebt.name} first.",
-                            fontSize = 9.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    debtForPaymentLog = targetDebt
-                                    prefilledPaymentAmount = targetMinPay
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("Pay $${String.format(Locale.US, "%.0f", targetMinPay)} Min to ${targetDebt.name}", fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                            }
-                        }
-                    }
-                } else {
-                    Text(
-                        text = "Add at least one debt below to unlock one-tap pay cycle payoff acceleration and itemized bill instructions.",
-                        fontSize = 9.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        // 4. Payoff Strategy Selector Tabs
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                text = "Payoff Strategy",
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 2.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(
-                    PayoffStrategy.SNOWBALL to "❄️ Snowball",
-                    PayoffStrategy.AVALANCHE to "🌋 Avalanche",
-                    PayoffStrategy.MINIMUM_ONLY to "⌛ Minimums Only"
-                ).forEach { (strategy, label) ->
-                    val isSelected = selectedStrategy == strategy
-                    Card(
-                        onClick = { selectedStrategy = strategy },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("strategy_tab_${strategy.name.lowercase()}"),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else if (isDark) Color(0xFF18181B) else Color.White
-                        ),
-                        border = BorderStroke(
-                            1.dp,
-                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp, horizontal = 6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1
-                            )
-                            val res = strategyMap[strategy]
-                            if (res != null) {
-                                Text(
-                                    text = "${res.totalMonths} mos",
-                                    fontSize = 10.sp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. Active Strategy Comparison & Metrics Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isDark) Color(0xFF0F172A) else Color(0xFFEFF6FF)
-            ),
-            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.3f))
-        ) {
-            Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = when (selectedStrategy) {
-                                PayoffStrategy.SNOWBALL -> "❄️ Debt Snowball (Lowest Balance First)"
-                                PayoffStrategy.AVALANCHE -> "🌋 Debt Avalanche (Highest Interest First)"
-                                PayoffStrategy.MINIMUM_ONLY -> "⌛ Minimum Payments Only"
-                            },
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF1D4ED8)
-                        )
-                    }
-
-                    if (selectedStrategy != PayoffStrategy.MINIMUM_ONLY) {
-                        val interestSaved = minimumResult.totalInterestPaid - activeResult.totalInterestPaid
-                        val monthsSaved = minimumResult.totalMonths - activeResult.totalMonths
-                        if (interestSaved > 0) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = Color(0xFF10B981).copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    text = String.format(Locale.US, "Save $%,.0f & %d mos!", interestSaved, monthsSaved),
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF047857),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text("Debt Free Date", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            text = activeResult.payoffDate.format(monthYearFormatter),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF1D4ED8)
-                        )
-                    }
-
-                    Column {
-                        Text("Timeframe", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            text = "${activeResult.totalMonths} months",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text("Total Interest Paid", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f", activeResult.totalInterestPaid),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFD97706)
-                        )
-                    }
-                }
-
-                // Show/Hide Timeline Details Button
-                TextButton(
-                    onClick = { showTimelineDetails = !showTimelineDetails },
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                ) {
-                    Text(
-                        text = if (showTimelineDetails) "Hide Monthly Timeline Projection ▲" else "View Monthly Projection Schedule ▼",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                AnimatedVisibility(visible = showTimelineDetails) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 220.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Divider(color = Color(0xFF3B82F6).copy(alpha = 0.2f))
-                        Text(
-                            text = "Month-by-Month Projection",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        LazyColumn(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(activeResult.monthlyProgress.take(36)) { step ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            color = MaterialTheme.colorScheme.surface,
-                                            shape = RoundedCornerShape(6.dp)
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "Month ${step.monthIndex} (${step.monthDate.format(monthYearFormatter)})",
-                                        fontSize = 10.5.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            text = String.format(Locale.US, "Remaining: $%,.0f", step.totalRemainingBalance),
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (step.totalRemainingBalance <= 0) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            text = String.format(Locale.US, "Interest paid: $%,.0f", step.totalInterestPaidSoFar),
-                                            fontSize = 9.5.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-    }
-
-    val trackedDebtsList: @Composable () -> Unit = {
-        // 6. Tracked Debts List Section
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Tracked Debts (${debts.size})",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text = "Sorted by ${if (selectedStrategy == PayoffStrategy.AVALANCHE) "Highest APR" else "Lowest Balance"}",
-                    fontSize = 10.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (debts.isEmpty()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isDark) Color(0xFF18181B) else Color(0xFFF8FAFC),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("🏦", fontSize = 28.sp)
-                        Text(
-                            text = "No debts added yet",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Tap 'Add Debt' above or 'Import CSV' from Google Sheets to track your payoff timeline.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            } else {
-                val sortedDebts = remember(debts, selectedStrategy) {
-                    val pinned = debts.filter { it.customPriorityRank > 0 && !it.isPaidOff && it.balance > 0.0 }.sortedBy { it.customPriorityRank }
-                    val unpinned = debts.filter { it.customPriorityRank <= 0 || it.isPaidOff || it.balance <= 0.0 }
-                    val sortedUnpinned = when (selectedStrategy) {
-                        PayoffStrategy.AVALANCHE -> unpinned.sortedWith(
-                            compareBy<DebtEntity> { it.isPaidOff || it.balance <= 0.0 }
-                                .thenByDescending { it.interestRate }
-                                .thenBy { it.balance }
-                        )
-                        else -> unpinned.sortedWith(
-                            compareBy<DebtEntity> { it.isPaidOff || it.balance <= 0.0 }
-                                .thenBy { it.balance }
-                                .thenByDescending { it.interestRate }
-                        )
-                    }
-                    pinned + sortedUnpinned
-                }
-
-                sortedDebts.forEachIndexed { index, debt ->
-                    val paybackResult = activeResult.individualPayoffs.firstOrNull { it.debtId == debt.id }
-                    val originalBalance = if (debt.originalBalance > 0.0) debt.originalBalance else debt.balance
-                    val amountPaid = maxOf(0.0, originalBalance - debt.balance)
-                    val progressRatio = if (originalBalance > 0.0) (amountPaid / originalBalance).coerceIn(0.0, 1.0) else 0.0
-                    val progressPct = (progressRatio * 100.0).toInt()
-                    val debtPayments = remember(uiState.allDebtPayments, debt.id) {
-                        uiState.allDebtPayments.filter { it.debtId == debt.id }
-                    }
-                    val linkedAccount = remember(uiState.allAccounts, debt.linkedAccountName, debt.linkedAccountId) {
-                        debt.linkedAccountName?.takeIf { it.isNotBlank() }
-                            ?: debt.linkedAccountId?.let { accId -> uiState.allAccounts.getOrNull(accId) }
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("debt_item_${debt.id}"),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isDark) Color(0xFF18181B) else Color.White
-                        ),
-                        border = BorderStroke(
-                            if (debt.customPriorityRank > 0) 1.5.dp else 1.dp,
-                            if (debt.customPriorityRank > 0) Color(0xFF8B5CF6) else MaterialTheme.colorScheme.outlineVariant
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            // Header: Name, Priority Badge, Edit/Delete
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = if (debt.customPriorityRank > 0) Color(0xFF8B5CF6).copy(alpha = 0.2f) else MaterialTheme.colorScheme.secondaryContainer,
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text(
-                                                text = if (debt.customPriorityRank > 0) "📌" else "${index + 1}",
-                                                fontSize = if (debt.customPriorityRank > 0) 11.sp else 10.5.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                    Column {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                text = "${getCategoryEmoji(debt.category)} ${debt.name}",
-                                                fontSize = 12.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        if (linkedAccount != null) {
-                                            Text(
-                                                text = "🏦 $linkedAccount",
-                                                fontSize = 9.sp,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
-                                        if (debt.customPriorityRank > 0) {
-                                            Text(
-                                                text = "📌 Priority Target #${debt.customPriorityRank}",
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF7C3AED)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(
-                                        onClick = { debtToEdit = debt },
-                                        modifier = Modifier.size(28.dp).testTag("edit_debt_${debt.id}")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Edit,
-                                            contentDescription = "Edit",
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { onDeleteDebt(debt) },
-                                        modifier = Modifier.size(28.dp).testTag("delete_debt_${debt.id}")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "Delete",
-                                            modifier = Modifier.size(15.dp),
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Progress Bar & Milestone Tracker
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = String.format(Locale.US, "$%,.0f / $%,.0f paid", amountPaid, originalBalance),
-                                        fontSize = 9.5.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = "$progressPct%",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (progressPct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                                LinearProgressIndicator(
-                                    progress = { progressRatio.toFloat() },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp)),
-                                    color = if (progressPct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
-                                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-
-                                // Visual Milestones Row
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    when {
-                                        debt.balance <= 0.0 || progressPct >= 100 -> {
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = Color(0xFF10B981).copy(alpha = 0.2f)
-                                            ) {
-                                                Text(
-                                                    "🎉 PAID OFF / DEBT FREE",
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    color = Color(0xFF047857),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        progressPct >= 75 -> {
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = Color(0xFF8B5CF6).copy(alpha = 0.2f)
-                                            ) {
-                                                Text(
-                                                    "🏆 75% Mark Reached",
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF6D28D9),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        progressPct >= 50 -> {
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = Color(0xFF3B82F6).copy(alpha = 0.2f)
-                                            ) {
-                                                Text(
-                                                    "⭐ 50% Halfway Mark",
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF1D4ED8),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        progressPct >= 25 -> {
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = Color(0xFFF59E0B).copy(alpha = 0.2f)
-                                            ) {
-                                                Text(
-                                                    "🚀 25% Started Strong",
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFFB45309),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                    if (debt.balance in 0.01..999.99 && originalBalance >= 1000.0) {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = Color(0xFFEC4899).copy(alpha = 0.2f)
-                                        ) {
-                                            Text(
-                                                "🔥 Under $1,000 Milestone",
-                                                fontSize = 8.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFFBE185D),
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Balance, APR, Min Payment, Payoff Date
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column {
-                                    Text("Balance", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(
-                                        text = String.format(Locale.US, "$%,.2f", debt.balance),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFEF4444)
-                                    )
-                                }
-
-                                Column {
-                                    Text("APR", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(
-                                        text = String.format(Locale.US, "%.2f%%", debt.interestRate),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFF59E0B)
-                                    )
-                                }
-
-                                Column {
-                                    Text("Min Payment", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text(
-                                        text = String.format(Locale.US, "$%,.2f/mo", debt.minimumPayment),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-
-                                if (paybackResult != null) {
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text("Payoff Date", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        Text(
-                                            text = paybackResult.payoffDate.format(monthYearFormatter),
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF10B981)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // 0% Promo APR / Balance Transfer Badge
-                            if (debt.promoApr != null) {
-                                val promoAnalysis = remember(debt) { DebtPayoffCalculator.analyzePromoApr(debt) }
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (isDark) Color(0xFF2D2305) else Color(0xFFFEF3C7),
-                                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "⏳ ${debt.promoApr}% Promo APR until ${debt.promoExpirationDate ?: "N/A"}",
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isDark) Color(0xFFFBBF24) else Color(0xFF92400E)
-                                            )
-                                            if ((promoAnalysis?.monthsRemaining ?: 0) > 0) {
-                                                Text(
-                                                    text = "${promoAnalysis?.monthsRemaining} mos left",
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isDark) Color(0xFFFDE68A) else Color(0xFFB45309)
-                                                )
-                                            }
-                                        }
-                                        if (promoAnalysis != null && promoAnalysis.requiredMonthlyPayment > 0) {
-                                            Text(
-                                                text = "Pay $${String.format(Locale.US, "%,.2f", promoAnalysis.requiredMonthlyPayment)}/mo to clear before expiration and avoid retroactive ${debt.interestRate}% interest.",
-                                                fontSize = 9.sp,
-                                                color = if (isDark) Color(0xFFFCD34D) else Color(0xFF78350F)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Action Bar: Bill Link, Priority Pin, History & Log Payment
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Priority Pin Chip
-                                    FilterChip(
-                                        selected = debt.customPriorityRank > 0,
-                                        onClick = { onTogglePriorityPin?.invoke(debt) },
-                                        label = {
-                                            Text(
-                                                if (debt.customPriorityRank > 0) "📌 Pinned" else "📌 Pin",
-                                                fontSize = 9.sp
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.height(24.dp)
-                                    )
-
-                                    // Scheduled Bill Link Chip
-                                    FilterChip(
-                                        selected = debt.isLinkedToBills,
-                                        onClick = {
-                                            onToggleBillLink?.invoke(debt, !debt.isLinkedToBills, debt.billDueDay)
-                                        },
-                                        label = {
-                                            Text(
-                                                if (debt.isLinkedToBills) "📅 Linked (${debt.billDueDay}th)" else "📅 Link Bill",
-                                                fontSize = 9.sp
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.height(24.dp)
-                                    )
-
-                                    // Paid Off Status Toggle Chip
-                                    FilterChip(
-                                        selected = debt.isPaidOff || debt.balance <= 0.0,
-                                        onClick = { onTogglePaidOff?.invoke(debt) },
-                                        label = {
-                                            Text(
-                                                if (debt.isPaidOff || debt.balance <= 0.0) "✅ Paid Off" else "⭕ Active",
-                                                fontSize = 9.sp
-                                            )
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = Color(0xFF10B981).copy(alpha = 0.2f),
-                                            selectedLabelColor = Color(0xFF10B981)
-                                        ),
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.height(24.dp)
-                                    )
-                                }
-
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (debtPayments.isNotEmpty()) {
-                                        TextButton(
-                                            onClick = {
-                                                expandedPaymentHistoryDebtId = if (expandedPaymentHistoryDebtId == debt.id) null else debt.id
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                                            modifier = Modifier.height(24.dp)
-                                        ) {
-                                            Text(
-                                                text = "${debtPayments.size} logs ${if (expandedPaymentHistoryDebtId == debt.id) "▲" else "▼"}",
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                        }
-                                    }
-
-                                    FilledTonalButton(
-                                        onClick = {
-                                            debtForPaymentLog = debt
-                                            prefilledPaymentAmount = null
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                                        shape = RoundedCornerShape(6.dp),
-                                        modifier = Modifier.height(24.dp).testTag("log_payment_debt_${debt.id}")
-                                    ) {
-                                        Icon(imageVector = Icons.Default.Payment, contentDescription = null, modifier = Modifier.size(11.dp))
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text("Log Payment", fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-
-                            // Payment History dropdown
-                            AnimatedVisibility(visible = expandedPaymentHistoryDebtId == debt.id) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                            shape = RoundedCornerShape(6.dp)
-                                        )
-                                        .padding(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text("Payment Log & Principal vs Interest Breakdown", fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
-                                    debtPayments.forEach { pmt ->
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .background(if (isDark) Color(0xFF27272A) else Color.White, RoundedCornerShape(4.dp))
-                                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = String.format(Locale.US, "$%,.2f paid", pmt.paymentAmount) +
-                                                        if (pmt.note.isNotBlank()) " • ${pmt.note}" else "",
-                                                    fontSize = 9.5.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = String.format(Locale.US, "$%,.2f principal + $%,.2f interest", pmt.principalAmount, pmt.interestAmount) +
-                                                        " • " + java.time.Instant.ofEpochMilli(pmt.paymentDateMillis)
-                                                            .atZone(java.time.ZoneId.systemDefault())
-                                                            .toLocalDate()
-                                                            .format(DateTimeFormatter.ofPattern("MMM dd, yyyy", Locale.US)),
-                                                    fontSize = 8.5.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                            IconButton(
-                                                onClick = { onDeletePayment?.invoke(pmt) },
-                                                modifier = Modifier.size(20.dp)
-                                            ) {
-                                                Icon(imageVector = Icons.Default.Close, contentDescription = "Delete payment", modifier = Modifier.size(11.dp), tint = MaterialTheme.colorScheme.error)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (debt.notes.isNotBlank()) {
-                                Text(
-                                    text = "Note: ${debt.notes}",
-                                    fontSize = 9.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val useSplitColumns = isWideScreen && maxWidth >= 680.dp
-        if (useSplitColumns) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                    .testTag("debt_planner_view"),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top
-            ) {
-                Box(modifier = Modifier.weight(0.48f)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        plannerControls()
-                    }
-                }
-                Box(modifier = Modifier.weight(0.52f)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        trackedDebtsList()
-                    }
-                }
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                    .testTag("debt_planner_view"),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                plannerControls()
-                trackedDebtsList()
-            }
-        }
-    }
-
-    // Add Debt Dialog
-    if (showAddDialog) {
-        DebtEditDialog(
-            debt = null,
-            accounts = uiState.allAccounts,
-            accountBalances = uiState.accountBalances,
-            onDismiss = { showAddDialog = false },
-            onConfirmDebt = { newDebt ->
-                if (onAddFullDebt != null) {
-                    onAddFullDebt(newDebt)
-                } else {
-                    onAddDebt(newDebt.name, newDebt.balance, newDebt.interestRate, newDebt.minimumPayment, newDebt.category, newDebt.notes)
-                }
-                showAddDialog = false
-            }
-        )
-    }
-
-    // Edit Debt Dialog
-    if (debtToEdit != null) {
-        DebtEditDialog(
-            debt = debtToEdit,
-            accounts = uiState.allAccounts,
-            accountBalances = uiState.accountBalances,
-            onDismiss = { debtToEdit = null },
-            onConfirmDebt = { updated ->
-                onUpdateDebt(updated)
-                debtToEdit = null
-            }
-        )
-    }
-
-    // Log Debt Payment Dialog
-    if (debtForPaymentLog != null) {
-        LogDebtPaymentDialog(
-            debt = debtForPaymentLog!!,
-            prefilledAmount = prefilledPaymentAmount,
-            onDismiss = {
-                debtForPaymentLog = null
-                prefilledPaymentAmount = null
-            },
-            onConfirm = { pAmt, princ, intAmt, note, createExp ->
-                onLogPayment?.invoke(
-                    debtForPaymentLog!!.id,
-                    pAmt,
-                    princ,
-                    intAmt,
-                    note,
-                    createExp
-                )
-                debtForPaymentLog = null
-                prefilledPaymentAmount = null
-            }
-        )
-    }
-
-    // Debt CSV Import Dialog
-    if (showDebtCsvImportDialog) {
-        DebtCsvImportDialog(
-            onDismiss = { showDebtCsvImportDialog = false },
-            onImport = { csvInput ->
-                coroutineScope.launch {
-                    isImportingDebtsProgress = true
-                    val (success, msg) = onImportDebtsFromCsv?.invoke(csvInput) ?: Pair(false, "Import handler unavailable")
-                    isImportingDebtsProgress = false
-                    debtImportStatusMsg = msg
-                    if (success) {
-                        showDebtCsvImportDialog = false
-                    }
-                }
-            },
-            statusMsg = debtImportStatusMsg,
-            isImporting = isImportingDebtsProgress
-        )
-    }
-
-    // Debt CSV Export Dialog
-    if (showDebtCsvExportDialog) {
-        DebtCsvExportDialog(
-            csvData = debtCsvExportData,
-            onDismiss = { showDebtCsvExportDialog = false },
-            onCopied = {
-                showDebtCsvExportDialog = false
-                debtImportStatusMsg = "CSV copied to clipboard!"
-            }
-        )
-    }
-}
-
-private fun getCategoryEmoji(category: String): String {
-    return when (category.lowercase(Locale.US)) {
-        "credit card" -> "💳"
-        "auto loan", "car loan" -> "🚗"
-        "student loan" -> "🎓"
-        "personal loan" -> "💰"
-        "mortgage" -> "🏠"
-        "medical" -> "🩺"
-        else -> "🏦"
-    }
-}
-
-@Composable
-fun GoogleSheetsDebtSyncCard(
-    accountEmail: String?,
-    isSyncing: Boolean,
-    onSyncClick: () -> Unit,
-    onOpenImportDialog: () -> Unit,
-    onOpenExportDialog: () -> Unit,
-    onConnectDrive: () -> Unit,
-    statusMessage: String
-) {
-    var isExpanded by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("google_sheets_debt_sync_card"),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF0F766E).copy(alpha = 0.12f)
-        ),
-        border = BorderStroke(1.dp, Color(0xFF0D9488).copy(alpha = 0.4f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { isExpanded = !isExpanded },
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0xFF0F766E),
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("📊", fontSize = 14.sp)
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "Google Drive Debt Payoff Sheet",
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFF10B981).copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    text = "Drive Sync",
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF059669),
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.5.dp),
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                        Text(
-                            text = if (!accountEmail.isNullOrBlank()) "Account: $accountEmail" else "Creates 'Debt Payoff Sheet' in Google Drive to edit & sync balances/APR",
-                            fontSize = 10.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                Icon(
-                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
-                    tint = Color(0xFF0F766E),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-
-            AnimatedVisibility(visible = isExpanded) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Button(
-                            onClick = onSyncClick,
-                            enabled = !isSyncing,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF10B981)
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1.3f)
-                                .testTag("sync_debts_drive_button")
-                        ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = if (isSyncing) "Syncing Sheet..." else "Create & Sync Debt Sheet",
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-
-                        Button(
-                            onClick = onOpenImportDialog,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF0D9488)
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("import_debts_csv_button")
-                        ) {
-                            Text("Import CSV", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = onOpenExportDialog,
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("export_debts_csv_button")
-                        ) {
-                            Text("View/Copy CSV", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onConnectDrive,
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Authorize Drive", fontWeight = FontWeight.Medium, fontSize = 9.5.sp, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                try {
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://sheets.new"))
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {}
-                            },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("New Sheet", fontWeight = FontWeight.Medium, fontSize = 9.5.sp, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                try {
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://drive.google.com/drive/my-drive"))
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {}
-                            },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("My Drive", fontWeight = FontWeight.Medium, fontSize = 9.5.sp, maxLines = 1)
-                        }
-                    }
-
-                    if (statusMessage.isNotEmpty()) {
-                        Text(
-                            text = statusMessage,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF047857)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DebtCsvImportDialog(
+fun LogDebtPaymentDialog(
+    debt: DebtEntity,
+    prefilledAmount: Double = debt.minimumPayment,
     onDismiss: () -> Unit,
-    onImport: (String) -> Unit,
-    statusMsg: String,
-    isImporting: Boolean
+    onConfirm: (paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit
 ) {
-    var csvText by remember { mutableStateOf("") }
-    val placeholderText = "Debt Name,Balance,Interest Rate (APR),Minimum Payment,Category,Notes\n\"Chase Freedom\",2450.00,19.99,65.00,\"Credit Card\",\"0% promo ends Dec\"\n\"Auto Loan\",14200.00,4.50,320.00,\"Auto Loan\",\"\""
+    var amountText by remember { mutableStateOf(if (prefilledAmount > 0) String.format(Locale.US, "%.2f", prefilledAmount) else "") }
+    var principalText by remember { mutableStateOf("") }
+    var interestText by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var createExpense by remember { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import Debts from Google Sheets / CSV", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        title = { Text("Log Payment: ${debt.name}") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text(
-                    "Paste CSV data copied from Google Sheets or Excel. Header row is detected automatically:",
-                    fontSize = 11.5.sp,
+                    text = "Current balance: $${String.format(Locale.US, "%,.2f", debt.balance)} (APR: ${debt.interestRate}%)",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(
-                    value = csvText,
-                    onValueChange = { csvText = it },
-                    placeholder = { Text(placeholderText, fontSize = 10.sp) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .testTag("debt_csv_import_input"),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontSize = 11.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    ),
-                    maxLines = 100
+                    value = amountText,
+                    onValueChange = {
+                        amountText = it
+                        if (principalText.isBlank()) principalText = it
+                    },
+                    label = { Text("Payment Amount ($)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("payment_amount_input")
                 )
-                if (statusMsg.isNotEmpty()) {
+                OutlinedTextField(
+                    value = principalText,
+                    onValueChange = { principalText = it },
+                    label = { Text("Principal Portion ($) - optional") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("principal_amount_input")
+                )
+                OutlinedTextField(
+                    value = interestText,
+                    onValueChange = { interestText = it },
+                    label = { Text("Interest Portion ($) - optional") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("interest_amount_input")
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Note / Confirmation #") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("payment_note_input")
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Checkbox(
+                        checked = createExpense,
+                        onCheckedChange = { createExpense = it }
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = statusMsg,
-                        fontSize = 11.5.sp,
-                        color = if (statusMsg.contains("Success", ignoreCase = true)) Color(0xFF047857) else MaterialTheme.colorScheme.error
+                        text = "Add to cycle transactions",
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onImport(csvText) },
-                enabled = !isImporting && csvText.isNotBlank(),
-                modifier = Modifier.testTag("confirm_import_debts_button")
+                onClick = {
+                    val totalAmt = amountText.toDoubleOrNull() ?: 0.0
+                    if (totalAmt > 0) {
+                        val princ = principalText.toDoubleOrNull() ?: totalAmt
+                        val interest = interestText.toDoubleOrNull() ?: 0.0
+                        onConfirm(totalAmt, princ, interest, note.trim(), createExpense)
+                    }
+                },
+                modifier = Modifier.testTag("btn_confirm_payment")
             ) {
-                Text(if (isImporting) "Importing..." else "Import Debts")
+                Text("Record Payment")
             }
         },
         dismissButton = {
@@ -2183,463 +134,1554 @@ fun DebtCsvImportDialog(
     )
 }
 
-@Composable
-fun DebtCsvExportDialog(
-    csvData: String,
-    onDismiss: () -> Unit,
-    onCopied: () -> Unit
-) {
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Exported Debts CSV", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Copy this CSV data to paste into Google Sheets or Excel:",
-                    fontSize = 11.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = csvData,
-                    onValueChange = {},
-                    readOnly = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontSize = 11.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    ),
-                    maxLines = 100
-                )
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        try {
-                            val file = java.io.File(context.filesDir, "debts_google_sheets_sync.csv")
-                            file.writeText(csvData, Charsets.UTF_8)
-                            val uri = androidx.core.content.FileProvider.getUriForFile(
-                                context,
-                                "com.example.fileprovider",
-                                file
-                            )
-                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = "text/csv"
-                                putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                putExtra(android.content.Intent.EXTRA_SUBJECT, "debts_google_sheets_sync.csv")
-                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(android.content.Intent.createChooser(shareIntent, "Share or Save CSV File"))
-                        } catch (e: Exception) {
-                            android.widget.Toast.makeText(context, "CSV saved to storage", android.widget.Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                ) {
-                    Text("Share / Save", fontSize = 11.sp)
-                }
-
-                Button(
-                    onClick = {
-                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        val clip = android.content.ClipData.newPlainText("DebtsCSV", csvData)
-                        clipboard.setPrimaryClip(clip)
-                        onCopied()
-                    }
-                ) {
-                    Text("Copy CSV", fontSize = 11.sp)
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
-            }
-        }
-    )
+enum class DebtSortOption(val displayName: String, val shortLabel: String) {
+    SNOWBALL("Debt Snowball (Lowest Balance)", "Snowball"),
+    AVALANCHE("Debt Avalanche (Highest APR)", "Avalanche"),
+    BALANCE_DESC("Highest Balance First", "High Balance"),
+    NAME_ASC("Account Name (A to Z)", "Name (A-Z)"),
+    NAME_DESC("Account Name (Z to A)", "Name (Z-A)"),
+    APR_ASC("Lowest APR First", "Low APR"),
+    MIN_PAYMENT_DESC("Highest Min Payment", "High Min Pay"),
+    MIN_PAYMENT_ASC("Lowest Min Payment", "Low Min Pay"),
+    CUSTOM_PRIORITY("Custom Priority / Pinned", "Custom Priority")
 }
 
 @Composable
-fun DebtEditDialog(
-    debt: DebtEntity?,
-    accounts: List<String> = emptyList(),
-    accountBalances: Map<String, AccountBalance> = emptyMap(),
-    onDismiss: () -> Unit,
-    onConfirmDebt: (DebtEntity) -> Unit
+fun DebtPlannerView(
+    uiState: BudgetUiState,
+    onAddDebt: (name: String, balance: Double, interestRate: Double, minimumPayment: Double, category: String, notes: String, billDueDay: Int) -> Unit = { _, _, _, _, _, _, _ -> },
+    onDeleteDebt: (DebtEntity) -> Unit,
+    onUpdateDebt: (DebtEntity) -> Unit = {},
+    isWideScreen: Boolean = false,
+    onImportDebtsFromCsv: suspend (String) -> Pair<Boolean, String> = { Pair(true, "") },
+    onExportDebtsToCsv: () -> String = { "" },
+    onSyncGoogleDrive: () -> Unit = {},
+    onConnectGoogleDrive: () -> Unit = {},
+    isSyncing: Boolean = false,
+    accountEmail: String? = null,
+    onListDriveFiles: suspend () -> Pair<List<com.example.sync.DriveFileInfo>, String?> = { Pair(emptyList(), null) },
+    onImportSpecificDriveFile: suspend (com.example.sync.DriveFileInfo) -> Pair<Boolean, String> = { Pair(false, "") },
+    onImportGoogleSheetByUrlOrId: suspend (String) -> Pair<Boolean, String> = { Pair(false, "") },
+    onImportAnyDataDetailed: suspend (String) -> Pair<Boolean, String> = { Pair(false, "") },
+    onSaveCustomToken: (String) -> Unit = {},
+    onLogPayment: (debtId: Int, paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpense: Boolean) -> Unit = { _, _, _, _, _, _ -> },
+    onDeletePayment: (DebtPaymentEntity) -> Unit = {},
+    onToggleBillLink: (debt: DebtEntity, isLinked: Boolean, dueDay: Int) -> Unit = { _, _, _ -> },
+    onTogglePriorityPin: (DebtEntity) -> Unit = {},
+    onTogglePaidOff: (DebtEntity) -> Unit = {},
+    onAddFullDebt: (DebtEntity) -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
-    var name by remember { mutableStateOf(debt?.name ?: "") }
-    var balanceInput by remember { mutableStateOf(debt?.balance?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
-    var originalBalanceInput by remember {
-        mutableStateOf(debt?.let {
-            val orig = if (it.originalBalance > 0.0) it.originalBalance else it.balance
-            String.format(Locale.US, "%.2f", orig)
-        } ?: "")
-    }
-    var interestInput by remember { mutableStateOf(debt?.interestRate?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
-    var minPaymentInput by remember { mutableStateOf(debt?.minimumPayment?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
-    var selectedCategory by remember { mutableStateOf(debt?.category ?: "Credit Card") }
+    val debts = uiState.allDebts
+    var showAddDialog by remember { mutableStateOf(false) }
+    var editingDebt by remember { mutableStateOf<DebtEntity?>(null) }
+    var loggingPaymentDebt by remember { mutableStateOf<DebtEntity?>(null) }
+    var selectedCategoryFilter by remember { mutableStateOf("All") }
+    var selectedSortOption by remember { mutableStateOf(DebtSortOption.SNOWBALL) }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var showPaidOff by remember { mutableStateOf(true) }
+    var showImportDebtsDialog by remember { mutableStateOf(false) }
+    var debtsImportInput by remember { mutableStateOf("") }
+    var debtsImportError by remember { mutableStateOf("") }
+    var isImportingDebts by remember { mutableStateOf(false) }
 
-    // 0% Promo APR & Balance Transfer Fields
-    var hasPromoApr by remember { mutableStateOf(debt?.promoApr != null) }
-    var promoAprInput by remember { mutableStateOf(debt?.promoApr?.let { String.format(Locale.US, "%.2f", it) } ?: "0.0") }
-    var promoExpirationInput by remember { mutableStateOf(debt?.promoExpirationDate ?: "") }
+    var driveFileList by remember { mutableStateOf<List<com.example.sync.DriveFileInfo>>(emptyList()) }
+    var driveFileSearchQuery by remember { mutableStateOf("") }
+    var isDriveFilesLoading by remember { mutableStateOf(false) }
+    var driveFilesErrorMsg by remember { mutableStateOf<String?>(null) }
+    var importingDriveFileId by remember { mutableStateOf<String?>(null) }
+    var sheetUrlOrIdInput by remember { mutableStateOf("") }
+    var isImportingSheetUrl by remember { mutableStateOf(false) }
+    var showTokenBox by remember { mutableStateOf(false) }
+    var customTokenInput by remember { mutableStateOf("") }
 
-    // Scheduled Bill Sync Fields
-    var isLinkedToBills by remember { mutableStateOf(debt?.isLinkedToBills ?: false) }
-    var billDueDayInput by remember { mutableStateOf((debt?.billDueDay ?: 15).toString()) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Priority Pinning
-    var isPriorityPinned by remember { mutableStateOf((debt?.customPriorityRank ?: 0) > 0) }
-
-    // Link to Account
-    var selectedAccountName by remember {
-        mutableStateOf(
-            debt?.linkedAccountName
-                ?: debt?.linkedAccountId?.let { id -> accounts.getOrNull(id) }
+    val debtSpreadsheetMimeTypes = remember {
+        arrayOf(
+            "application/vnd.google-apps.spreadsheet",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv",
+            "text/comma-separated-values",
+            "text/tab-separated-values",
+            "text/plain",
+            "application/json",
+            "*/*"
         )
     }
-    var accountDropdownExpanded by remember { mutableStateOf(false) }
 
-    var notes by remember { mutableStateOf(debt?.notes ?: "") }
-    var errorMessage by remember { mutableStateOf("") }
+    LaunchedEffect(showImportDebtsDialog, accountEmail, uiState.driveAuthVersion) {
+        if (showImportDebtsDialog) {
+            isDriveFilesLoading = true
+            driveFilesErrorMsg = null
+            try {
+                val (files, err) = onListDriveFiles()
+                driveFileList = files
+                driveFilesErrorMsg = err
+            } catch (e: Exception) {
+                driveFilesErrorMsg = e.localizedMessage
+            } finally {
+                isDriveFilesLoading = false
+            }
+        }
+    }
 
-    val categories = listOf("Credit Card", "Auto Loan", "Student Loan", "Personal Loan", "Mortgage", "Medical", "Other")
+    val debtFilePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            coroutineScope.launch {
+                try {
+                    isImportingDebts = true
+                    debtsImportError = ""
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (debt == null) "Add Debt" else "Edit Debt") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    val (content, fileName) = com.example.sync.SpreadsheetFileParser.extractContentFromUri(context, uri)
+
+                    if (!content.isNullOrBlank()) {
+                        debtsImportInput = content
+                        val (ok, msg) = onImportDebtsFromCsv(content)
+                        isImportingDebts = false
+                        if (ok) {
+                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                            showImportDebtsDialog = false
+                        } else {
+                            val (ok2, msg2) = onImportAnyDataDetailed(content)
+                            if (ok2) {
+                                android.widget.Toast.makeText(context, msg2, android.widget.Toast.LENGTH_LONG).show()
+                                showImportDebtsDialog = false
+                            } else {
+                                debtsImportError = msg
+                            }
+                        }
+                    } else {
+                        // Attempt fallback to Google Sheet importer if document ID or file name is available
+                        val (sheetOk, sheetMsg) = onImportGoogleSheetByUrlOrId(fileName)
+                        isImportingDebts = false
+                        if (sheetOk) {
+                            android.widget.Toast.makeText(context, sheetMsg, android.widget.Toast.LENGTH_LONG).show()
+                            showImportDebtsDialog = false
+                        } else {
+                            debtsImportError = sheetMsg
+                        }
+                    }
+                } catch (e: Exception) {
+                    isImportingDebts = false
+                    debtsImportError = "Error reading file: ${e.localizedMessage}"
+                }
+            }
+        }
+    }
+
+    val categories = remember(debts) {
+        listOf("All") + debts.map { it.category }.distinct()
+    }
+
+    val filteredDebts = remember(debts, selectedCategoryFilter, showPaidOff, selectedSortOption) {
+        debts.filter { debt ->
+            (showPaidOff || debt.balance > 0.0) &&
+                    (selectedCategoryFilter == "All" || debt.category.equals(selectedCategoryFilter, ignoreCase = true))
+        }.sortedWith { d1, d2 ->
+            // First condition: move zero balance / paid off debts to bottom
+            val zero1 = if (d1.balance <= 0.0 || d1.isPaidOff) 1 else 0
+            val zero2 = if (d2.balance <= 0.0 || d2.isPaidOff) 1 else 0
+            if (zero1 != zero2) return@sortedWith zero1.compareTo(zero2)
+
+            when (selectedSortOption) {
+                DebtSortOption.SNOWBALL -> {
+                    val p1 = if (d1.customPriorityRank > 0) d1.customPriorityRank else Int.MAX_VALUE
+                    val p2 = if (d2.customPriorityRank > 0) d2.customPriorityRank else Int.MAX_VALUE
+                    if (p1 != p2) return@sortedWith p1.compareTo(p2)
+                    val bal = d1.balance.compareTo(d2.balance)
+                    if (bal != 0) bal
+                    else d2.interestRate.compareTo(d1.interestRate)
+                }
+                DebtSortOption.AVALANCHE -> {
+                    val p1 = if (d1.customPriorityRank > 0) d1.customPriorityRank else Int.MAX_VALUE
+                    val p2 = if (d2.customPriorityRank > 0) d2.customPriorityRank else Int.MAX_VALUE
+                    if (p1 != p2) return@sortedWith p1.compareTo(p2)
+                    val apr = d2.interestRate.compareTo(d1.interestRate)
+                    if (apr != 0) apr
+                    else d1.balance.compareTo(d2.balance)
+                }
+                DebtSortOption.BALANCE_DESC -> {
+                    val bal = d2.balance.compareTo(d1.balance)
+                    if (bal != 0) bal
+                    else d2.interestRate.compareTo(d1.interestRate)
+                }
+                DebtSortOption.NAME_ASC -> {
+                    d1.name.lowercase(Locale.US).compareTo(d2.name.lowercase(Locale.US))
+                }
+                DebtSortOption.NAME_DESC -> {
+                    d2.name.lowercase(Locale.US).compareTo(d1.name.lowercase(Locale.US))
+                }
+                DebtSortOption.APR_ASC -> {
+                    val apr = d1.interestRate.compareTo(d2.interestRate)
+                    if (apr != 0) apr
+                    else d1.balance.compareTo(d2.balance)
+                }
+                DebtSortOption.MIN_PAYMENT_DESC -> {
+                    val mp = d2.minimumPayment.compareTo(d1.minimumPayment)
+                    if (mp != 0) mp
+                    else d2.balance.compareTo(d1.balance)
+                }
+                DebtSortOption.MIN_PAYMENT_ASC -> {
+                    val mp = d1.minimumPayment.compareTo(d2.minimumPayment)
+                    if (mp != 0) mp
+                    else d1.balance.compareTo(d2.balance)
+                }
+                DebtSortOption.CUSTOM_PRIORITY -> {
+                    val p1 = if (d1.customPriorityRank > 0) d1.customPriorityRank else Int.MAX_VALUE
+                    val p2 = if (d2.customPriorityRank > 0) d2.customPriorityRank else Int.MAX_VALUE
+                    if (p1 != p2) p1.compareTo(p2)
+                    else d1.balance.compareTo(d2.balance)
+                }
+            }
+        }
+    }
+
+    val totalActiveBalance = remember(debts) {
+        debts.filter { !it.isPaidOff }.sumOf { it.balance }
+    }
+    val totalMinMonthly = remember(debts) {
+        debts.filter { !it.isPaidOff }.sumOf { it.minimumPayment }
+    }
+
+    val activeDebts = remember(filteredDebts) {
+        filteredDebts.filter { it.balance > 0.0 && !it.isPaidOff }
+    }
+    val zeroBalanceDebts = remember(filteredDebts) {
+        filteredDebts.filter { it.balance <= 0.0 || it.isPaidOff }
+    }
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Debt Overview Summary Card
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
+                    .testTag("debt_overview_card")
             ) {
-                if (errorMessage.isNotEmpty()) {
-                    Text(text = errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
-                }
-
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Debt Name") },
-                    placeholder = { Text("e.g. Chase Freedom Card") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("debt_name_field")
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = balanceInput,
-                        onValueChange = {
-                            balanceInput = it
-                            if (originalBalanceInput.isBlank()) {
-                                originalBalanceInput = it
-                            }
-                        },
-                        label = { Text("Current Balance ($)") },
-                        prefix = { Text("$ ") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f).testTag("debt_balance_field")
-                    )
-
-                    OutlinedTextField(
-                        value = originalBalanceInput,
-                        onValueChange = { originalBalanceInput = it },
-                        label = { Text("Starting Balance ($)") },
-                        prefix = { Text("$ ") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = interestInput,
-                        onValueChange = { interestInput = it },
-                        label = { Text("Regular APR (%)") },
-                        suffix = { Text("%") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f).testTag("debt_apr_field")
-                    )
-
-                    OutlinedTextField(
-                        value = minPaymentInput,
-                        onValueChange = { minPaymentInput = it },
-                        label = { Text("Min Payment ($)") },
-                        prefix = { Text("$ ") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f).testTag("debt_min_payment_field")
-                    )
-                }
-
-                // Category selection
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Category", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        categories.take(4).forEach { cat ->
-                            FilterChip(
-                                selected = selectedCategory == cat,
-                                onClick = { selectedCategory = cat },
-                                label = { Text(cat, fontSize = 10.5.sp) }
+                        Column {
+                            Text(
+                                text = "Total Active Debt",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "$${String.format(Locale.US, "%,.2f", totalActiveBalance)}",
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
-                    }
-                }
 
-                // 0% Promo APR & Balance Transfer Tracker
-                Card(
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("0% Promo APR / Balance Transfer", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text("Track promotional window to avoid retroactive interest", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    debtsImportInput = ""
+                                    debtsImportError = ""
+                                    showImportDebtsDialog = true
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier.testTag("btn_open_import_debts")
+                            ) {
+                                Icon(Icons.Default.FileOpen, contentDescription = "Import Debts", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Import", fontSize = 12.sp)
                             }
-                            Switch(
-                                checked = hasPromoApr,
-                                onCheckedChange = { hasPromoApr = it }
-                            )
-                        }
 
-                        if (hasPromoApr) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedTextField(
-                                    value = promoAprInput,
-                                    onValueChange = { promoAprInput = it },
-                                    label = { Text("Promo APR (%)") },
-                                    suffix = { Text("%") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OutlinedTextField(
-                                    value = promoExpirationInput,
-                                    onValueChange = { promoExpirationInput = it },
-                                    label = { Text("Expiration Date") },
-                                    placeholder = { Text("YYYY-MM-DD") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1.3f)
-                                )
+                            Button(
+                                onClick = { showAddDialog = true },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.testTag("btn_add_debt")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "Add Debt", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Add Debt", fontSize = 12.sp)
                             }
                         }
                     }
-                }
 
-                // Scheduled Bill Sync Toggle
-                Card(
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Link to Scheduled Bills", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text("Auto-syncs minimum payment as upcoming bill in your pay cycle", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(
-                                checked = isLinkedToBills,
-                                onCheckedChange = { isLinkedToBills = it }
-                            )
-                        }
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                        if (isLinkedToBills) {
-                            OutlinedTextField(
-                                value = billDueDayInput,
-                                onValueChange = { billDueDayInput = it },
-                                label = { Text("Monthly Due Day (1-28)") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Monthly Minimums: $${String.format(Locale.US, "%,.2f", totalMinMonthly)}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${debts.count { !it.isPaidOff }} active accounts",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
+            }
+        }
 
-                // Priority Pinning
+        item {
+            // Filters, Sorting and Toggles
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Pin as #1 Priority Payoff Target", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text("Overrides strategy to tackle this debt first", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(
-                        checked = isPriorityPinned,
-                        onCheckedChange = { isPriorityPinned = it }
-                    )
-                }
-
-                // Link to Account Selector
-                if (accounts.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "Linked Account (Optional)",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        OutlinedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { accountDropdownExpanded = !accountDropdownExpanded }
-                                .testTag("debt_account_selector"),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(
-                                        text = selectedAccountName ?: "None (Unlinked)",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    if (selectedAccountName != null) {
-                                        val bal = accountBalances[selectedAccountName]?.remainingBalance
-                                        if (bal != null) {
-                                            Text(
-                                                text = "Balance: $${String.format(Locale.US, "%.2f", bal)}",
-                                                fontSize = 9.5.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                                Icon(
-                                    imageVector = if (accountDropdownExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Select Account",
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                        DropdownMenu(
-                            expanded = accountDropdownExpanded,
-                            onDismissRequest = { accountDropdownExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("None (Unlinked)", fontSize = 12.sp) },
-                                onClick = {
-                                    selectedAccountName = null
-                                    accountDropdownExpanded = false
-                                }
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        items(categories) { cat ->
+                            FilterChip(
+                                selected = selectedCategoryFilter == cat,
+                                onClick = { selectedCategoryFilter = cat },
+                                label = { Text(cat, fontSize = 11.sp) },
+                                modifier = Modifier.height(32.dp)
                             )
-                            accounts.forEach { accName ->
-                                val bal = accountBalances[accName]?.remainingBalance
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Box {
+                        AssistChip(
+                            onClick = { showSortMenu = true },
+                            label = { Text("Sort: ${selectedSortOption.shortLabel}", fontSize = 11.sp) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Sort,
+                                    contentDescription = "Sort Debts",
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowDropDown,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            modifier = Modifier
+                                .height(32.dp)
+                                .testTag("btn_sort_debts")
+                        )
+
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            DebtSortOption.entries.forEach { option ->
                                 DropdownMenuItem(
                                     text = {
-                                        Column {
-                                            Text(accName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                            if (bal != null) {
-                                                Text(
-                                                    "Balance: $${String.format(Locale.US, "%.2f", bal)}",
-                                                    fontSize = 9.5.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
+                                        Text(
+                                            text = option.displayName,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (option == selectedSortOption) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (option == selectedSortOption) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        if (option == selectedSortOption) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.size(16.dp))
                                         }
                                     },
                                     onClick = {
-                                        selectedAccountName = accName
-                                        accountDropdownExpanded = false
+                                        selectedSortOption = option
+                                        showSortMenu = false
                                     }
                                 )
                             }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    TextButton(
+                        onClick = { showPaidOff = !showPaidOff },
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = if (showPaidOff) "Hide Zero/Paid" else "Show Zero/Paid",
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        if (filteredDebts.isEmpty()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (debts.isEmpty()) "No debts added yet! Click 'Add Debt' above." else "No debts in this filter.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        } else {
+            // Active positive balance debts on top
+            items(activeDebts, key = { it.id }) { debt ->
+                DebtItemCard(
+                    debt = debt,
+                    onLogPayment = { loggingPaymentDebt = debt },
+                    onEdit = { editingDebt = debt },
+                    onDelete = { onDeleteDebt(debt) },
+                    onTogglePin = { onTogglePriorityPin(debt) },
+                    onTogglePaidOff = { onTogglePaidOff(debt) },
+                    onToggleBillLink = { isLinked, dueDay -> onToggleBillLink(debt, isLinked, dueDay) }
+                )
+            }
+
+            // Zero balance debts moved to the bottom of the section
+            if (zeroBalanceDebts.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp, bottom = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Zero Balance Debts (${zeroBalanceDebts.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            color = Color(0xFF10B981).copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "Paid Off • Bottom",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF10B981),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                items(zeroBalanceDebts, key = { it.id }) { debt ->
+                    DebtItemCard(
+                        debt = debt,
+                        onLogPayment = { loggingPaymentDebt = debt },
+                        onEdit = { editingDebt = debt },
+                        onDelete = { onDeleteDebt(debt) },
+                        onTogglePin = { onTogglePriorityPin(debt) },
+                        onTogglePaidOff = { onTogglePaidOff(debt) },
+                        onToggleBillLink = { isLinked, dueDay -> onToggleBillLink(debt, isLinked, dueDay) }
+                    )
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(64.dp))
+        }
+    }
+
+    if (showAddDialog) {
+        AddOrEditDebtDialog(
+            debt = null,
+            onDismiss = { showAddDialog = false },
+            onConfirm = { name, bal, rate, minPay, cat, notes, dueDay ->
+                onAddDebt(name, bal, rate, minPay, cat, notes, dueDay)
+                showAddDialog = false
+            }
+        )
+    }
+
+    editingDebt?.let { debt ->
+        AddOrEditDebtDialog(
+            debt = debt,
+            onDismiss = { editingDebt = null },
+            onConfirm = { name, bal, rate, minPay, cat, notes, dueDay ->
+                onUpdateDebt(
+                    debt.copy(
+                        name = name,
+                        balance = bal,
+                        interestRate = rate,
+                        minimumPayment = minPay,
+                        category = cat,
+                        notes = notes,
+                        billDueDay = dueDay
+                    )
+                )
+                editingDebt = null
+            }
+        )
+    }
+
+    loggingPaymentDebt?.let { debt ->
+        LogDebtPaymentDialog(
+            debt = debt,
+            prefilledAmount = debt.minimumPayment,
+            onDismiss = { loggingPaymentDebt = null },
+            onConfirm = { paymentAmount, principalAmount, interestAmount, note, createExpense ->
+                onLogPayment(debt.id, paymentAmount, principalAmount, interestAmount, note, createExpense)
+                loggingPaymentDebt = null
+            }
+        )
+    }
+
+    if (showImportDebtsDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isImportingDebts && importingDriveFileId == null && !isImportingSheetUrl) showImportDebtsDialog = false },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Sync & Import Debts", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    IconButton(
+                        onClick = { showImportDebtsDialog = false },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                    }
+                }
+            },
+            text = {
+                val clipboardManager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 500.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val triggerConnectAndReload: () -> Unit = {
+                        isDriveFilesLoading = true
+                        driveFilesErrorMsg = null
+                        onConnectGoogleDrive()
+                    }
+
+                    // 1. Direct Google Sheet Link / ID (Primary 1-Tap Option)
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)),
+                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Default.TableChart, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                                    Text("📊 Permanent Google Sheet Link (Never Expires)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                                TextButton(
+                                    onClick = {
+                                        try {
+                                            val clipData = clipboardManager?.primaryClip
+                                            if (clipData != null && clipData.itemCount > 0) {
+                                                val text = clipData.getItemAt(0)?.text?.toString() ?: ""
+                                                if (text.isNotBlank()) {
+                                                    sheetUrlOrIdInput = text.trim()
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Paste Link", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Text("Set sharing on your Google Sheet to 'Anyone with link can view'. This link syncs permanently without expiring or needing Playground OAuth.", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = sheetUrlOrIdInput,
+                                    onValueChange = { sheetUrlOrIdInput = it },
+                                    placeholder = { Text("https://docs.google.com/spreadsheets/d/...", fontSize = 10.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f).testTag("debt_sheet_url_input"),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                                )
+                                Button(
+                                    onClick = {
+                                        val input = sheetUrlOrIdInput.trim()
+                                        if (input.isBlank()) {
+                                            debtsImportError = "Please paste a Google Sheet link or ID"
+                                            return@Button
+                                        }
+                                        isImportingSheetUrl = true
+                                        coroutineScope.launch {
+                                            try {
+                                                val (ok, msg) = onImportGoogleSheetByUrlOrId(input)
+                                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                                if (ok) {
+                                                    showImportDebtsDialog = false
+                                                    sheetUrlOrIdInput = ""
+                                                } else {
+                                                    debtsImportError = msg
+                                                }
+                                            } catch (e: Exception) {
+                                                debtsImportError = "Import failed: ${e.localizedMessage}"
+                                                android.widget.Toast.makeText(context, debtsImportError, android.widget.Toast.LENGTH_LONG).show()
+                                            } finally {
+                                                isImportingSheetUrl = false
+                                            }
+                                        }
+                                    },
+                                    enabled = sheetUrlOrIdInput.isNotBlank() && !isImportingSheetUrl,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(48.dp).testTag("btn_import_debt_sheet")
+                                ) {
+                                    if (isImportingSheetUrl) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                                    } else {
+                                        Text("Import Sheet", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Google Drive & Cloud Files
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("☁️ Google Drive & Cloud Files", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    val emailDisplay = accountEmail ?: "86brancan@gmail.com"
+                                    Text(emailDisplay, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    OutlinedButton(
+                                        onClick = { showTokenBox = !showTokenBox },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(13.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text("Token", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = triggerConnectAndReload,
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(13.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text("Sign In", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                isDriveFilesLoading = true
+                                                driveFilesErrorMsg = null
+                                                try {
+                                                    val (files, err) = onListDriveFiles()
+                                                    driveFileList = files
+                                                    driveFilesErrorMsg = err
+                                                } catch (e: Exception) {
+                                                    driveFilesErrorMsg = e.localizedMessage
+                                                } finally {
+                                                    isDriveFilesLoading = false
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(28.dp).testTag("refresh_debt_drive_files_button")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh Drive Files", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+
+                            if (showTokenBox || (!driveFilesErrorMsg.isNullOrBlank() && driveFileList.isEmpty())) {
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            "🔑 OAuth Access Token or Auth Code:",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            OutlinedTextField(
+                                                value = customTokenInput,
+                                                onValueChange = { customTokenInput = it },
+                                                placeholder = { Text("Paste ya29... token or 4/... code", fontSize = 10.sp) },
+                                                singleLine = true,
+                                                modifier = Modifier.weight(1f),
+                                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    val input = customTokenInput.trim()
+                                                    if (input.isNotBlank()) {
+                                                        onSaveCustomToken(input)
+                                                        coroutineScope.launch {
+                                                            isDriveFilesLoading = true
+                                                            driveFilesErrorMsg = null
+                                                            try {
+                                                                val (files, err) = onListDriveFiles()
+                                                                driveFileList = files
+                                                                driveFilesErrorMsg = err
+                                                            } catch (e: Exception) {
+                                                                driveFilesErrorMsg = e.localizedMessage
+                                                            } finally {
+                                                                isDriveFilesLoading = false
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                enabled = customTokenInput.isNotBlank(),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                modifier = Modifier.height(38.dp)
+                                            ) {
+                                                Text("Connect", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!driveFilesErrorMsg.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                        Text(driveFilesErrorMsg ?: "", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f))
+                                        Button(
+                                            onClick = triggerConnectAndReload,
+                                            shape = RoundedCornerShape(6.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(13.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("Authorize Drive & Sheets", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (isDriveFilesLoading) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Loading files from Google Drive...", fontSize = 11.sp)
+                                }
+                            } else if (driveFileList.isEmpty()) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text("No files found yet in Drive / Cloud Sync.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Save files in 'PayCycle Budget' folder, import a sheet above, or tap 'Sign In with Google' below.", fontSize = 10.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    ) {
+                                        Button(
+                                            onClick = triggerConnectAndReload,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Sign In with Google", fontSize = 11.sp)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    isDriveFilesLoading = true
+                                                    driveFilesErrorMsg = null
+                                                    try {
+                                                        val (files, err) = onListDriveFiles()
+                                                        driveFileList = files
+                                                        driveFilesErrorMsg = err
+                                                    } catch (e: Exception) {
+                                                        driveFilesErrorMsg = e.localizedMessage
+                                                    } finally {
+                                                        isDriveFilesLoading = false
+                                                    }
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Refresh", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            } else {
+                                Text("Tap 'Import' on any debt payoff file or spreadsheet to load (${driveFileList.size} files found):", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                OutlinedTextField(
+                                    value = driveFileSearchQuery,
+                                    onValueChange = { driveFileSearchQuery = it },
+                                    placeholder = { Text("Search ${driveFileList.size} Drive files...", fontSize = 11.sp) },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                    trailingIcon = {
+                                        if (driveFileSearchQuery.isNotEmpty()) {
+                                            IconButton(onClick = { driveFileSearchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(14.dp))
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+                                )
+                                val filteredDriveFiles = remember(driveFileList, driveFileSearchQuery) {
+                                    if (driveFileSearchQuery.isBlank()) driveFileList
+                                    else driveFileList.filter { it.name.contains(driveFileSearchQuery.trim(), ignoreCase = true) }
+                                }
+                                if (filteredDriveFiles.isEmpty()) {
+                                    Text("No files matching \"$driveFileSearchQuery\"", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    filteredDriveFiles.forEach { file ->
+                                        val isCurrentImporting = importingDriveFileId == file.id
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.surface,
+                                            tonalElevation = 2.dp,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable(enabled = importingDriveFileId == null && !isImportingDebts) {
+                                                    importingDriveFileId = file.id
+                                                    coroutineScope.launch {
+                                                        try {
+                                                            val (ok, msg) = onImportSpecificDriveFile(file)
+                                                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                                            if (ok) {
+                                                                showImportDebtsDialog = false
+                                                            } else {
+                                                                debtsImportError = msg
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            debtsImportError = "Import failed: ${e.localizedMessage}"
+                                                            android.widget.Toast.makeText(context, debtsImportError, android.widget.Toast.LENGTH_LONG).show()
+                                                        } finally {
+                                                            importingDriveFileId = null
+                                                        }
+                                                    }
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                val iconColor = when {
+                                                    file.isGoogleSheet -> Color(0xFF0F9D58)
+                                                    file.isCsv -> Color(0xFF1E88E5)
+                                                    file.isJson -> Color(0xFFF59E0B)
+                                                    else -> Color(0xFF6B7280)
+                                                }
+                                                Icon(
+                                                    when {
+                                                        file.isGoogleSheet -> Icons.Default.TableChart
+                                                        file.isJson -> Icons.Default.Code
+                                                        else -> Icons.Default.Description
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = iconColor,
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(file.name, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        Text(
+                                                            if (file.location == "PayCycle Budget") "📁 PayCycle Folder" else "☁️ My Drive",
+                                                            fontSize = 9.sp,
+                                                            color = if (file.location == "PayCycle Budget") Color(0xFF059669) else Color(0xFF4B5563),
+                                                            fontWeight = FontWeight.Medium
+                                                        )
+                                                        if (file.sizeString.isNotBlank()) {
+                                                            Text("• ${file.sizeString}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                        }
+                                                    }
+                                                    if (file.formattedDate.isNotBlank()) {
+                                                        Text(file.formattedDate, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    }
+                                                }
+
+                                                Button(
+                                                    onClick = {
+                                                        importingDriveFileId = file.id
+                                                        coroutineScope.launch {
+                                                            try {
+                                                                val (ok, msg) = onImportSpecificDriveFile(file)
+                                                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                                                if (ok) {
+                                                                    showImportDebtsDialog = false
+                                                                } else {
+                                                                    debtsImportError = msg
+                                                                }
+                                                            } catch (e: Exception) {
+                                                                debtsImportError = "Import error: ${e.localizedMessage}"
+                                                                android.widget.Toast.makeText(context, debtsImportError, android.widget.Toast.LENGTH_LONG).show()
+                                                            } finally {
+                                                                importingDriveFileId = null
+                                                            }
+                                                        }
+                                                    },
+                                                    enabled = importingDriveFileId == null && !isImportingDebts,
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    modifier = Modifier.height(28.dp)
+                                                ) {
+                                                    if (isCurrentImporting) {
+                                                        CircularProgressIndicator(modifier = Modifier.size(12.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                                    } else {
+                                                        Text("Import", fontSize = 10.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. Pick from Device or Paste CSV
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("📁 Pick File from Device or Paste Data", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            debtFilePickerLauncher.launch(debtSpreadsheetMimeTypes)
+                                        } catch (e: Exception) {
+                                            debtsImportError = "File picker error: ${e.localizedMessage}"
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f).testTag("btn_select_debt_file_dialog")
+                                ) {
+                                    Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Pick from Device", fontSize = 11.sp)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            val clipData = clipboardManager?.primaryClip
+                                            if (clipData != null && clipData.itemCount > 0) {
+                                                val text = clipData.getItemAt(0)?.text?.toString() ?: ""
+                                                if (text.isNotBlank()) {
+                                                    debtsImportInput = text
+                                                    debtsImportError = ""
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                    },
+                                    modifier = Modifier.weight(1f).testTag("btn_paste_debts_dialog")
+                                ) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Paste Clipboard", fontSize = 11.sp)
+                                }
+                            }
+
+                            Text("Or paste debt CSV rows below (e.g. Debt Name,Balance,APR,MinPay):", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedTextField(
+                                value = debtsImportInput,
+                                onValueChange = {
+                                    debtsImportInput = it
+                                    debtsImportError = ""
+                                },
+                                placeholder = { Text("Debt Name,Balance,APR,Minimum Payment", fontSize = 10.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(110.dp),
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                ),
+                                maxLines = 100
+                            )
+
+                            if (debtsImportInput.isNotBlank()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            isImportingDebts = true
+                                            coroutineScope.launch {
+                                                try {
+                                                    val (ok, msg) = onImportDebtsFromCsv(debtsImportInput)
+                                                    isImportingDebts = false
+                                                    if (ok) {
+                                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                                                        showImportDebtsDialog = false
+                                                    } else {
+                                                        debtsImportError = msg
+                                                    }
+                                                } catch (e: Exception) {
+                                                    isImportingDebts = false
+                                                    debtsImportError = "Error: ${e.localizedMessage}"
+                                                }
+                                            }
+                                        },
+                                        enabled = !isImportingDebts
+                                    ) {
+                                        if (isImportingDebts) {
+                                            CircularProgressIndicator(modifier = Modifier.size(14.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Importing...", fontSize = 11.sp)
+                                        } else {
+                                            Text("Import & Merge", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (debtsImportError.isNotEmpty()) {
+                        Text(
+                            text = debtsImportError,
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = { showImportDebtsDialog = false },
+                    enabled = !isImportingDebts && importingDriveFileId == null && !isImportingSheetUrl
+                ) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun DebtItemCard(
+    debt: DebtEntity,
+    onLogPayment: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onTogglePin: () -> Unit,
+    onTogglePaidOff: () -> Unit,
+    onToggleBillLink: ((Boolean, Int) -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val isZeroBalance = debt.balance <= 0.0 || debt.isPaidOff
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isZeroBalance) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(
+            1.dp,
+            if (debt.customPriorityRank > 0 && !isZeroBalance) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("debt_card_${debt.id}")
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = debt.name,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = debt.category,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (isZeroBalance) {
+                        Surface(
+                            color = Color(0xFF10B981).copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "Zero Balance",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF10B981),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else if (debt.customPriorityRank > 0) {
+                        Icon(
+                            Icons.Default.PushPin,
+                            contentDescription = "Pinned Focus Debt",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                Text(
+                    text = "$${String.format(Locale.US, "%,.2f", debt.balance)}",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isZeroBalance) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Progress bar
+            val progress = (debt.progressPercentage / 100f).coerceIn(0f, 1f)
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = if (isZeroBalance) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "APR: ${debt.interestRate}%  •  Min: $${String.format(Locale.US, "%,.0f", debt.minimumPayment)}/mo  •  Due: ${debt.dueDayOrdinal}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = if (isZeroBalance) "100% paid off" else "${debt.progressPercentage}% paid",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isZeroBalance) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Due Date Indicator & Bill Link Status
+            val today = remember { LocalDate.now() }
+            val nextDueDate = remember(debt.billDueDay) { debt.getNextDueDate(today) }
+            val daysUntilDue = remember(nextDueDate, today) { ChronoUnit.DAYS.between(today, nextDueDate) }
+            val isDueSoon = daysUntilDue in 0..3 && !isZeroBalance
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = when {
+                        isZeroBalance -> Color(0xFF10B981).copy(alpha = 0.12f)
+                        isDueSoon -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                        daysUntilDue <= 7 -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.65f)
+                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        when {
+                            isZeroBalance -> Color(0xFF10B981).copy(alpha = 0.35f)
+                            isDueSoon -> MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                        }
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarToday,
+                            contentDescription = "Due Date",
+                            tint = when {
+                                isZeroBalance -> Color(0xFF10B981)
+                                isDueSoon -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = if (isZeroBalance) "Due ${debt.dueDayOrdinal} • Paid Off ($0.00)" else "Due: ${debt.formatNextDueDate(today)}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = when {
+                                isZeroBalance -> Color(0xFF10B981)
+                                isDueSoon -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+
+                if (debt.isLinkedToBills) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Link,
+                                contentDescription = "Bills Linked",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = "Bills Linked",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = onTogglePin,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            if (debt.customPriorityRank > 0) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                            contentDescription = "Pin Priority",
+                            tint = if (debt.customPriorityRank > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onTogglePaidOff,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            if (debt.isPaidOff) Icons.Default.CheckCircle else Icons.Outlined.CheckCircle,
+                            contentDescription = "Toggle Paid",
+                            tint = if (debt.isPaidOff) Color(0xFF10B981) else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "Edit",
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                if (!debt.isPaidOff) {
+                    Button(
+                        onClick = onLogPayment,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp).testTag("btn_log_payment_${debt.id}")
+                    ) {
+                        Text("Log Payment", fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddOrEditDebtDialog(
+    debt: DebtEntity?,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, balance: Double, interestRate: Double, minimumPayment: Double, category: String, notes: String, billDueDay: Int) -> Unit
+) {
+    var name by remember { mutableStateOf(debt?.name ?: "") }
+    var balanceText by remember { mutableStateOf(if (debt != null) String.format(Locale.US, "%.2f", debt.balance) else "") }
+    var rateText by remember { mutableStateOf(if (debt != null) debt.interestRate.toString() else "") }
+    var minPayText by remember { mutableStateOf(if (debt != null) String.format(Locale.US, "%.2f", debt.minimumPayment) else "") }
+    var dueDayText by remember { mutableStateOf(debt?.billDueDay?.toString() ?: "15") }
+    var category by remember { mutableStateOf(debt?.category ?: "Credit Card") }
+    var notes by remember { mutableStateOf(debt?.notes ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (debt == null) "Add Debt Account" else "Edit Debt Account") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Account Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_debt_name")
+                )
+                OutlinedTextField(
+                    value = balanceText,
+                    onValueChange = { balanceText = it },
+                    label = { Text("Current Balance ($)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_debt_balance")
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = rateText,
+                        onValueChange = { rateText = it },
+                        label = { Text("APR (%)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("input_debt_rate")
+                    )
+                    OutlinedTextField(
+                        value = minPayText,
+                        onValueChange = { minPayText = it },
+                        label = { Text("Min Pay ($)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("input_debt_min_pay")
+                    )
+                }
+
+                // Due Day of Month Section
+                val parsedDueDay = dueDayText.toIntOrNull()?.coerceIn(1, 31) ?: 15
+                val previewDate = remember(parsedDueDay) {
+                    val ref = LocalDate.now()
+                    val targetDay = parsedDueDay.coerceAtMost(ref.lengthOfMonth())
+                    val d = ref.withDayOfMonth(targetDay)
+                    if (!ref.isAfter(d)) d else {
+                        val next = ref.plusMonths(1)
+                        next.withDayOfMonth(parsedDueDay.coerceAtMost(next.lengthOfMonth()))
+                    }
+                }
+                val previewFormatted = remember(previewDate) {
+                    previewDate.format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US))
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedTextField(
+                        value = dueDayText,
+                        onValueChange = { input ->
+                            val digits = input.filter { it.isDigit() }.take(2)
+                            dueDayText = digits
+                        },
+                        label = { Text("Payment Due Day (1 - 31)") },
+                        leadingIcon = {
+                            Icon(Icons.Default.CalendarToday, contentDescription = "Due Date", modifier = Modifier.size(18.dp))
+                        },
+                        supportingText = {
+                            Text("Next due: $previewFormatted (Day ${parsedDueDay})", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("input_debt_due_day")
+                    )
+
+                    // Quick day presets
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(1, 5, 10, 15, 20, 25, 28).forEach { day ->
+                            FilterChip(
+                                selected = parsedDueDay == day,
+                                onClick = { dueDayText = day.toString() },
+                                label = { Text("${day}th", fontSize = 10.5.sp) },
+                                modifier = Modifier.height(28.dp)
+                            )
                         }
                     }
                 }
 
                 OutlinedTextField(
+                    value = category,
+                    onValueChange = { category = it },
+                    label = { Text("Category (Credit Card, Loan, etc.)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_debt_category")
+                )
+                OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("Notes (Optional)") },
+                    label = { Text("Notes (optional)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().testTag("input_debt_notes")
                 )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    val b = balanceInput.toDoubleOrNull()
-                    val origB = originalBalanceInput.toDoubleOrNull() ?: b
-                    val r = interestInput.toDoubleOrNull()
-                    val m = minPaymentInput.toDoubleOrNull()
-                    val pApr = if (hasPromoApr) promoAprInput.toDoubleOrNull() else null
-                    val dueDay = billDueDayInput.toIntOrNull()?.coerceIn(1, 28) ?: 15
-
-                    if (name.isBlank()) {
-                        errorMessage = "Please enter a debt name."
-                    } else if (b == null || b <= 0) {
-                        errorMessage = "Please enter a valid balance."
-                    } else if (r == null || r < 0) {
-                        errorMessage = "Please enter a valid APR percentage."
-                    } else if (m == null || m <= 0) {
-                        errorMessage = "Please enter a valid minimum monthly payment."
-                    } else {
-                        val selAccIdx = selectedAccountName?.let { name -> accounts.indexOf(name).takeIf { it >= 0 } }
-                        val resultDebt = debt?.copy(
-                            name = name.trim(),
-                            balance = b,
-                            originalBalance = origB ?: b,
-                            interestRate = r,
-                            minimumPayment = m,
-                            category = selectedCategory,
-                            notes = notes.trim(),
-                            promoApr = pApr,
-                            promoExpirationDate = if (hasPromoApr && promoExpirationInput.isNotBlank()) promoExpirationInput.trim() else null,
-                            customPriorityRank = if (isPriorityPinned) 1 else 0,
-                            isLinkedToBills = isLinkedToBills,
-                            billDueDay = dueDay,
-                            linkedAccountId = selAccIdx,
-                            linkedAccountName = selectedAccountName
-                        ) ?: DebtEntity(
-                            name = name.trim(),
-                            balance = b,
-                            originalBalance = origB ?: b,
-                            interestRate = r,
-                            minimumPayment = m,
-                            category = selectedCategory,
-                            notes = notes.trim(),
-                            promoApr = pApr,
-                            promoExpirationDate = if (hasPromoApr && promoExpirationInput.isNotBlank()) promoExpirationInput.trim() else null,
-                            customPriorityRank = if (isPriorityPinned) 1 else 0,
-                            isLinkedToBills = isLinkedToBills,
-                            billDueDay = dueDay,
-                            linkedAccountId = selAccIdx,
-                            linkedAccountName = selectedAccountName
-                        )
-                        onConfirmDebt(resultDebt)
+                    val bal = balanceText.toDoubleOrNull() ?: 0.0
+                    val rate = rateText.toDoubleOrNull() ?: 0.0
+                    val min = minPayText.toDoubleOrNull() ?: 0.0
+                    val dueDay = dueDayText.toIntOrNull()?.coerceIn(1, 31) ?: 15
+                    if (name.isNotBlank() && bal >= 0) {
+                        onConfirm(name.trim(), bal, rate, min, category.trim(), notes.trim(), dueDay)
                     }
                 },
-                modifier = Modifier.testTag("save_debt_button")
+                modifier = Modifier.testTag("btn_save_debt")
             ) {
                 Text("Save")
             }
@@ -2652,227 +1694,71 @@ fun DebtEditDialog(
     )
 }
 
+// Backward-compatible overload for DebtItem
 @Composable
-fun LogDebtPaymentDialog(
-    debt: DebtEntity,
-    prefilledAmount: Double? = null,
-    onDismiss: () -> Unit,
-    onConfirm: (paymentAmount: Double, principalAmount: Double, interestAmount: Double, note: String, createExpenseTransaction: Boolean) -> Unit
+fun DebtPlannerView(
+    debts: List<DebtItem>,
+    onAddDebt: (DebtItem) -> Unit,
+    onDeleteDebt: (String) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val initialPayment = prefilledAmount ?: debt.minimumPayment
-    var paymentInput by remember { mutableStateOf(String.format(Locale.US, "%.2f", initialPayment)) }
+    var showAddDialog by remember { mutableStateOf(false) }
 
-    // Calculate default interest and principal based on APR
-    val estimatedMonthlyInterest = remember(debt) {
-        (debt.balance * (debt.interestRate / 100.0) / 12.0).coerceAtLeast(0.0)
-    }
-
-    var isManualSplit by remember { mutableStateOf(false) }
-    var principalInput by remember {
-        val initialPrinc = (initialPayment - estimatedMonthlyInterest).coerceAtLeast(0.0).coerceAtMost(debt.balance)
-        mutableStateOf(String.format(Locale.US, "%.2f", initialPrinc))
-    }
-    var interestInput by remember {
-        val initialInt = (initialPayment - (initialPayment - estimatedMonthlyInterest).coerceAtLeast(0.0)).coerceAtLeast(0.0)
-        mutableStateOf(String.format(Locale.US, "%.2f", minOf(estimatedMonthlyInterest, initialPayment)))
-    }
-    var note by remember { mutableStateOf("") }
-    var createExpenseTransaction by remember { mutableStateOf(true) }
-    var errorMessage by remember { mutableStateOf("") }
-
-    // When paymentInput changes and not in manual split, auto-calculate
-    LaunchedEffect(paymentInput, isManualSplit) {
-        if (!isManualSplit) {
-            val p = paymentInput.toDoubleOrNull() ?: 0.0
-            val estInt = minOf(p, estimatedMonthlyInterest)
-            val estPrinc = (p - estInt).coerceAtLeast(0.0).coerceAtMost(debt.balance)
-            principalInput = String.format(Locale.US, "%.2f", estPrinc)
-            interestInput = String.format(Locale.US, "%.2f", estInt)
-        }
-    }
-
-    val currentPrinc = principalInput.toDoubleOrNull() ?: 0.0
-    val projectedBalance = maxOf(0.0, debt.balance - currentPrinc)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Column {
-                Text("💳 Log Payment", fontWeight = FontWeight.Bold)
-                Text(
-                    text = "${debt.name} • Current Balance: ${String.format(Locale.US, "$%,.2f", debt.balance)}",
-                    fontSize = 11.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Total Debt: $${String.format(Locale.US, "%,.2f", debts.sumOf { it.balance })}",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Button(onClick = { showAddDialog = true }) {
+                Text("Add")
             }
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (errorMessage.isNotEmpty()) {
-                    Text(text = errorMessage, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
-                }
+        }
 
-                OutlinedTextField(
-                    value = paymentInput,
-                    onValueChange = { paymentInput = it },
-                    label = { Text("Total Payment Amount ($)") },
-                    prefix = { Text("$ ") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("payment_amount_input")
-                )
+        Spacer(modifier = Modifier.height(10.dp))
 
-                // Quick buttons for Minimum and Full Payoff
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    SuggestionChip(
-                        onClick = {
-                            paymentInput = String.format(Locale.US, "%.2f", debt.minimumPayment)
-                        },
-                        label = { Text("Min ($${String.format(Locale.US, "%.0f", debt.minimumPayment)})", fontSize = 10.sp) }
-                    )
-                    SuggestionChip(
-                        onClick = {
-                            paymentInput = String.format(Locale.US, "%.2f", debt.balance)
-                        },
-                        label = { Text("Payoff in Full", fontSize = 10.sp) }
-                    )
-                }
+        val sortedDebts = remember(debts) {
+            debts.sortedWith(
+                compareBy<DebtItem> { if (it.balance <= 0.0) 1 else 0 }.thenBy { it.balance }
+            )
+        }
 
-                // Principal vs Interest Breakdown Card
-                Card(
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Principal vs. Interest Breakdown", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            TextButton(
-                                onClick = { isManualSplit = !isManualSplit },
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                                modifier = Modifier.height(24.dp)
-                            ) {
-                                Text(if (isManualSplit) "Auto-Split" else "Edit Split", fontSize = 9.5.sp)
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(sortedDebts, key = { it.id }) { debt ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(debt.name, fontWeight = FontWeight.Bold)
+                            Text("APR: ${debt.apr}% • Min: $${debt.minPayment}")
+                            if (debt.dueDate.isNotBlank()) {
+                                Text("📅 Due: ${debt.dueDate}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                             }
                         }
-
-                        if (!isManualSplit) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Principal Paid:", fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
-                                Text(String.format(Locale.US, "$%,.2f", currentPrinc), fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("$${String.format(Locale.US, "%,.2f", debt.balance)}", fontWeight = FontWeight.Bold)
+                            IconButton(onClick = { onDeleteDebt(debt.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete")
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("Interest Portion:", fontSize = 10.sp, color = Color(0xFFEF4444))
-                                Text(String.format(Locale.US, "$%,.2f", interestInput.toDoubleOrNull() ?: 0.0), fontSize = 10.sp, color = Color(0xFFEF4444))
-                            }
-                        } else {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedTextField(
-                                    value = principalInput,
-                                    onValueChange = { principalInput = it },
-                                    label = { Text("Principal ($)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OutlinedTextField(
-                                    value = interestInput,
-                                    onValueChange = { interestInput = it },
-                                    label = { Text("Interest ($)") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("New Balance Preview:", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
-                            Text(
-                                String.format(Locale.US, "$%,.2f", projectedBalance),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (projectedBalance <= 0) Color(0xFF10B981) else Color(0xFFEF4444)
-                            )
                         }
                     }
                 }
-
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("Note / Confirmation (Optional)") },
-                    placeholder = { Text("e.g. Cycle surplus extra, Conf #1234") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Checkbox(
-                        checked = createExpenseTransaction,
-                        onCheckedChange = { createExpenseTransaction = it },
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Record as Expense in Budget Ledger",
-                        fontSize = 10.5.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val p = paymentInput.toDoubleOrNull()
-                    val princ = principalInput.toDoubleOrNull() ?: 0.0
-                    val intAmt = interestInput.toDoubleOrNull() ?: 0.0
-
-                    if (p == null || p <= 0) {
-                        errorMessage = "Please enter a valid payment amount."
-                    } else {
-                        onConfirm(p, princ, intAmt, note.trim(), createExpenseTransaction)
-                    }
-                },
-                modifier = Modifier.testTag("confirm_log_payment_button")
-            ) {
-                Text("Log Payment")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
             }
         }
-    )
+    }
 }

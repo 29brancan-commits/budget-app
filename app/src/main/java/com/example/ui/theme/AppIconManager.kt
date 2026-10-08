@@ -93,54 +93,71 @@ enum class AppIcon(
             return values().firstOrNull { it.id.equals(id, ignoreCase = true) } ?: DEFAULT
         }
 
+        private fun getValidComponent(context: Context, aliasName: String): ComponentName {
+            val pm = context.packageManager
+            val packageName = context.packageName
+            val cleanAlias = aliasName.substringAfterLast(".")
+            val candidates = listOf(
+                ComponentName(packageName, "com.example.$cleanAlias"),
+                ComponentName(packageName, "$packageName.$cleanAlias"),
+                ComponentName(packageName, aliasName)
+            )
+            for (candidate in candidates) {
+                try {
+                    val state = pm.getComponentEnabledSetting(candidate)
+                    if (state != PackageManager.COMPONENT_ENABLED_STATE_DEFAULT || candidates.first() == candidate) {
+                        return candidate
+                    }
+                } catch (_: Exception) {}
+            }
+            return candidates.first()
+        }
+
         fun getCurrentIcon(context: Context): AppIcon {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val savedId = prefs.getString(KEY_SELECTED_ICON, null)
-            if (savedId != null) {
-                return fromId(savedId)
-            }
-            // Otherwise check PackageManager state
-            val pm = context.packageManager
-            val packageName = context.packageName
-            for (icon in values()) {
-                val component = ComponentName(packageName, icon.aliasName)
-                val state = try {
-                    pm.getComponentEnabledSetting(component)
-                } catch (e: Exception) {
-                    PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                }
-                if (state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
-                    return icon
-                }
-            }
-            return DEFAULT
+            return fromId(savedId)
         }
 
         fun setAppIcon(context: Context, targetIcon: AppIcon): Boolean {
             return try {
-                val pm = context.packageManager
-                val packageName = context.packageName
-
-                // Enable target alias, disable all other aliases
-                for (icon in values()) {
-                    val component = ComponentName(packageName, icon.aliasName)
-                    val newState = if (icon == targetIcon) {
-                        PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                    } else {
-                        PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-                    }
-                    pm.setComponentEnabledSetting(
-                        component,
-                        newState,
-                        PackageManager.DONT_KILL_APP
-                    )
-                }
-
-                // Save in SharedPreferences
                 context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_SELECTED_ICON, targetIcon.id)
                     .apply()
+
+                val pm = context.packageManager
+                val packageName = context.packageName
+
+                // Ensure MainActivity is ALWAYS enabled
+                val mainComp = ComponentName(packageName, "com.example.MainActivity")
+                try {
+                    pm.setComponentEnabledSetting(
+                        mainComp,
+                        PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                        PackageManager.DONT_KILL_APP
+                    )
+                } catch (_: Exception) {}
+
+                // Explicitly disable any legacy activity aliases so no duplicate icons ever appear
+                val aliasNames = listOf(
+                    "com.example.MainActivityAliasDefault",
+                    "com.example.MainActivityAliasSapphire",
+                    "com.example.MainActivityAliasOnyx",
+                    "com.example.MainActivityAliasSunset",
+                    "com.example.MainActivityAliasAmethyst",
+                    "com.example.MainActivityAliasRetro"
+                )
+                for (alias in aliasNames) {
+                    try {
+                        val comp = ComponentName(packageName, alias)
+                        pm.setComponentEnabledSetting(
+                            comp,
+                            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                            PackageManager.DONT_KILL_APP
+                        )
+                    } catch (_: Exception) {}
+                }
 
                 true
             } catch (e: Exception) {

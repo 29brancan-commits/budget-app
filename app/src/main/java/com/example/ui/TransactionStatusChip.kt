@@ -64,7 +64,7 @@ enum class TxStatus(val key: String, val label: String, val icon: String) {
 fun TransactionStatusChip(
     status: String,
     isIncome: Boolean = false,
-    fontSize: TextUnit = 9.5.sp,
+    fontSize: TextUnit = 7.sp,
     onStatusChange: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
     testTag: String = ""
@@ -103,11 +103,11 @@ fun TransactionStatusChip(
 
     Box(modifier = modifier) {
         Surface(
-            shape = RoundedCornerShape(5.dp),
+            shape = RoundedCornerShape(3.dp),
             color = containerColor,
-            border = BorderStroke(0.9.dp, borderColor),
+            border = BorderStroke(0.6.dp, borderColor),
             modifier = Modifier
-                .clip(RoundedCornerShape(5.dp))
+                .clip(RoundedCornerShape(3.dp))
                 .clickable(enabled = onStatusChange != null) {
                     menuExpanded = true
                 }
@@ -118,7 +118,7 @@ fun TransactionStatusChip(
                 fontSize = fontSize,
                 fontWeight = FontWeight.Bold,
                 color = contentColor,
-                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                 maxLines = 1,
                 softWrap = false
             )

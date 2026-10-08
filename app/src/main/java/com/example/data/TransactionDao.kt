@@ -38,6 +38,9 @@ interface TransactionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertIncomeSource(incomeSource: IncomeSourceEntity)
 
+    @Update
+    suspend fun updateIncomeSource(incomeSource: IncomeSourceEntity)
+
     @Delete
     suspend fun deleteIncomeSource(incomeSource: IncomeSourceEntity)
 
@@ -71,7 +74,7 @@ interface TransactionDao {
     @Query("DELETE FROM planned_expenses")
     suspend fun clearPlannedExpenses()
 
-    @Query("SELECT * FROM debts ORDER BY balance ASC")
+    @Query("SELECT * FROM debts ORDER BY CASE WHEN balance <= 0.0 OR isPaidOff != 0 THEN 1 ELSE 0 END ASC, CASE WHEN customPriorityRank > 0 THEN customPriorityRank ELSE 999999 END ASC, balance ASC")
     fun getAllDebts(): Flow<List<DebtEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -82,7 +82,8 @@ fun AiFinancialHubView(
     uiState: BudgetUiState,
     onOpenQuickEntry: () -> Unit,
     onOpenReceiptScanner: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isWideScreen: Boolean = false
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf(
@@ -221,9 +222,9 @@ fun AiFinancialHubView(
         }
 
         when (selectedTab) {
-            0 -> CashFlowForecasterSection(uiState = uiState)
-            1 -> WhatIfSimulatorSection(uiState = uiState)
-            2 -> SubscriptionAuditorSection(uiState = uiState)
+            0 -> CashFlowForecasterSection(uiState = uiState, isWideScreen = isWideScreen)
+            1 -> WhatIfSimulatorSection(uiState = uiState, isWideScreen = isWideScreen)
+            2 -> SubscriptionAuditorSection(uiState = uiState, isWideScreen = isWideScreen)
         }
     }
 }
@@ -233,7 +234,7 @@ fun AiFinancialHubView(
 // ------------------------------------------------------------------------------------------------
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun CashFlowForecasterSection(uiState: BudgetUiState) {
+fun CashFlowForecasterSection(uiState: BudgetUiState, isWideScreen: Boolean = false) {
     val coroutineScope = rememberCoroutineScope()
     val currentPeriod = uiState.currentPayPeriod ?: uiState.payPeriods.firstOrNull()
 
@@ -350,310 +351,331 @@ fun CashFlowForecasterSection(uiState: BudgetUiState) {
         }
 
         forecastResult?.let { res ->
-            // Safe-to-Spend Metric Cards
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Card(
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+            val safeToSpendCards: @Composable () -> Unit = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text("Safe to Spend / Day", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f", res.safeToSpendPerDay),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                }
-
-                Card(
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
-                            Text("Weekly Safe Budget", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f", res.safeToSpendPerWeek),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
-            }
-
-            // Executive Summary Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
                     ) {
-                        Text("Risk Diagnosis:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = when (res.riskLevel.uppercase()) {
-                                "LOW" -> Color(0xFF10B981).copy(alpha = 0.2f)
-                                "MODERATE" -> Color(0xFFF59E0B).copy(alpha = 0.2f)
-                                else -> Color(0xFFEF4444).copy(alpha = 0.2f)
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text("Safe to Spend / Day", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                             }
-                        ) {
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "${res.riskLevel} RISK",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = when (res.riskLevel.uppercase()) {
-                                    "LOW" -> Color(0xFF059669)
-                                    "MODERATE" -> Color(0xFFD97706)
-                                    else -> Color(0xFFDC2626)
-                                },
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                text = String.format(Locale.US, "$%,.2f", res.safeToSpendPerDay),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
 
-                    Text(res.summary, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                    Text("Strategic Action Items:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    res.recommendations.forEach { rec ->
-                        Row(
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("•", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                            Text(rec, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-
-                    if (res.criticalDates.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(14.dp))
-                            Text("High-impact dates to monitor:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
-                        }
-                        res.criticalDates.forEach { cd ->
-                            Text("⚠️ $cd", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+                                Text("Weekly Safe Budget", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = String.format(Locale.US, "$%,.2f", res.safeToSpendPerWeek),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
                         }
                     }
                 }
             }
 
-            // ------------------------------------------------------------------------------------
-            // 3-MONTH FINANCIAL INTELLIGENCE & REMAINING SPEND GUIDANCE
-            // ------------------------------------------------------------------------------------
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+            val diagnosisCard: @Composable () -> Unit = {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "How to Spend Remaining Amounts",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
+                            Text("Risk Diagnosis:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = when (res.riskLevel.uppercase()) {
+                                    "LOW" -> Color(0xFF10B981).copy(alpha = 0.2f)
+                                    "MODERATE" -> Color(0xFFF59E0B).copy(alpha = 0.2f)
+                                    else -> Color(0xFFEF4444).copy(alpha = 0.2f)
+                                }
+                            ) {
+                                Text(
+                                    text = "${res.riskLevel} RISK",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when (res.riskLevel.uppercase()) {
+                                        "LOW" -> Color(0xFF059669)
+                                        "MODERATE" -> Color(0xFFD97706)
+                                        else -> Color(0xFFDC2626)
+                                    },
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
-                        ) {
-                            Text(
-                                text = "3-Month Horizon",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+
+                        Text(res.summary, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        Text("Strategic Action Items:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        res.recommendations.forEach { rec ->
+                            Row(
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("•", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                Text(rec, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+
+                        if (res.criticalDates.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(14.dp))
+                                Text("High-impact dates to monitor:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
+                            }
+                            res.criticalDates.forEach { cd ->
+                                Text("⚠️ $cd", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
+                }
+            }
 
-                    // Allocation distribution guidelines
-                    if (res.spendingAllocationTips.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            res.spendingAllocationTips.forEach { tip ->
-                                Row(
-                                    verticalAlignment = Alignment.Top,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = Color(0xFF10B981),
-                                        modifier = Modifier.size(14.dp).padding(top = 2.dp)
-                                    )
+            val horizonCard: @Composable () -> Unit = {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "How to Spend Remaining Amounts",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
+                            ) {
+                                Text(
+                                    text = "3-Month Horizon",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (res.spendingAllocationTips.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                res.spendingAllocationTips.forEach { tip ->
+                                    Row(
+                                        verticalAlignment = Alignment.Top,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = Color(0xFF10B981),
+                                            modifier = Modifier.size(14.dp).padding(top = 2.dp)
+                                        )
+                                        Text(
+                                            text = tip,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text("3-Mo Income", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text(
-                                        text = tip,
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        text = String.format(Locale.US, "$%,.0f", res.threeMonthIncome),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF10B981)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text("3-Mo Expenses", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f", res.threeMonthExpenses),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    Text("3-Mo Net", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f", res.threeMonthNetSavings),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (res.threeMonthNetSavings >= 0) Color(0xFF10B981) else Color(0xFFDC2626)
                                     )
                                 }
                             }
                         }
-                    }
 
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-                    // 3-Month Metrics Snapshot (Income, Expenses, Net)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // Projected 3M Income
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Text("3-Mo Income", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", res.threeMonthIncome),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF10B981)
-                                )
-                            }
-                        }
-
-                        // Projected 3M Expenses
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Text("3-Mo Expenses", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", res.threeMonthExpenses),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-
-                        // Projected 3M Net
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Text("3-Mo Net", fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", res.threeMonthNetSavings),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (res.threeMonthNetSavings >= 0) Color(0xFF10B981) else Color(0xFFDC2626)
-                                )
-                            }
-                        }
-                    }
-
-                    if (res.threeMonthOutlook.isNotBlank()) {
-                        Text(
-                            text = res.threeMonthOutlook,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // Monthly breakdown list if present
-                    if (res.monthlyBreakdown.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (res.threeMonthOutlook.isNotBlank()) {
                             Text(
-                                text = "Monthly Horizon Breakdown:",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                text = res.threeMonthOutlook,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            res.monthlyBreakdown.forEach { mb ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = mb.monthName,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                        }
+
+                        if (res.monthlyBreakdown.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "Monthly Horizon Breakdown:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                res.monthlyBreakdown.forEach { mb ->
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "Inc: $${String.format(Locale.US, "%,.0f", mb.projectedIncome)} | Exp: $${String.format(Locale.US, "%,.0f", mb.projectedExpenses)}",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = "${if (mb.projectedNet >= 0) "+" else ""}$${String.format(Locale.US, "%,.0f", mb.projectedNet)}",
+                                            text = mb.monthName,
                                             fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (mb.projectedNet >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Inc: $${String.format(Locale.US, "%,.0f", mb.projectedIncome)} | Exp: $${String.format(Locale.US, "%,.0f", mb.projectedExpenses)}",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "${if (mb.projectedNet >= 0) "+" else ""}$${String.format(Locale.US, "%,.0f", mb.projectedNet)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (mb.projectedNet >= 0) Color(0xFF059669) else Color(0xFFDC2626)
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if (isWideScreen) {
+                // Galaxy Z Fold 8 Unfolded: Side-by-Side Dual Column View
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        safeToSpendCards()
+                        diagnosisCard()
+                    }
+                    Column(
+                        modifier = Modifier.weight(1.05f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        horizonCard()
+                    }
+                }
+            } else {
+                safeToSpendCards()
+                diagnosisCard()
+                horizonCard()
             }
         }
     }
@@ -664,7 +686,7 @@ fun CashFlowForecasterSection(uiState: BudgetUiState) {
 // ------------------------------------------------------------------------------------------------
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun WhatIfSimulatorSection(uiState: BudgetUiState) {
+fun WhatIfSimulatorSection(uiState: BudgetUiState, isWideScreen: Boolean = false) {
     val coroutineScope = rememberCoroutineScope()
     var scenarioInput by remember { mutableStateOf("") }
     var simulationResult by remember { mutableStateOf<WhatIfSimulationResult?>(null) }
@@ -700,214 +722,246 @@ fun WhatIfSimulatorSection(uiState: BudgetUiState) {
         }
     }
 
+    val inputSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Model hypothetical financial decisions, pay adjustments, spending cuts, or unexpected bills to see their compounded impact on your cash flow and debt freedom.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = scenarioInput,
+                onValueChange = { scenarioInput = it },
+                placeholder = { Text("e.g., What if I save $100 on groceries each pay period?", fontSize = 13.sp) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("what_if_input_field"),
+                trailingIcon = {
+                    if (scenarioInput.isNotBlank()) {
+                        IconButton(
+                            onClick = { runScenario(scenarioInput) },
+                            enabled = !isLoading,
+                            modifier = Modifier.testTag("what_if_submit_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Simulate",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            // Preset chips
+            Text(
+                text = "Quick Inspiration Scenarios:",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                presetScenarios.forEach { sc ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.clickable {
+                            scenarioInput = sc
+                            runScenario(sc)
+                        }
+                    ) {
+                        Text(
+                            text = sc,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val resultSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (isLoading) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Running financial simulation models...", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            if (errorMessage != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f))
+                ) {
+                    Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+
+            simulationResult?.let { sim ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize()
+                        .testTag("what_if_result_card"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(sim.scenario, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Text(
+                                    text = sim.feasibilityAssessment,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        // Metrics row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.background
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("Monthly", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f", sim.monthlyImpact),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (sim.monthlyImpact >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.background
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("3-Months", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f", sim.threeMonthImpact),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (sim.threeMonthImpact >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.background
+                            ) {
+                                Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("Annual Compounded", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = String.format(Locale.US, "$%,.0f", sim.annualSavings),
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (sim.annualSavings >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                        Text("Key Simulation Findings:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        sim.keyTakeaways.forEach { tk ->
+                            Row(
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("💡", fontSize = 11.sp)
+                                Text(tk, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Science, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                Text(sim.strategicAdvice, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "Model hypothetical financial decisions, pay adjustments, spending cuts, or unexpected bills to see their compounded impact on your cash flow and debt freedom.",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        OutlinedTextField(
-            value = scenarioInput,
-            onValueChange = { scenarioInput = it },
-            placeholder = { Text("e.g., What if I save $100 on groceries each pay period?", fontSize = 13.sp) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("what_if_input_field"),
-            trailingIcon = {
-                if (scenarioInput.isNotBlank()) {
-                    IconButton(
-                        onClick = { runScenario(scenarioInput) },
-                        enabled = !isLoading,
-                        modifier = Modifier.testTag("what_if_submit_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Simulate",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            },
-            shape = RoundedCornerShape(12.dp)
-        )
-
-        // Preset chips
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            presetScenarios.forEach { sc ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.clickable {
-                        scenarioInput = sc
-                        runScenario(sc)
-                    }
-                ) {
-                    Text(
-                        text = sc,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-            }
-        }
-
-        if (isLoading) {
-            Card(
+        if (isWideScreen) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp))
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text("Running financial simulation models...", fontSize = 12.sp)
+                Box(modifier = Modifier.weight(1f)) {
+                    inputSection()
+                }
+                Box(modifier = Modifier.weight(1.15f)) {
+                    resultSection()
                 }
             }
-        }
-
-        if (errorMessage != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f))
-            ) {
-                Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-            }
-        }
-
-        simulationResult?.let { sim ->
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .animateContentSize()
-                    .testTag("what_if_result_card"),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(sim.scenario, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Text(
-                                text = sim.feasibilityAssessment,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-
-                    // Metrics row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.background
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Monthly", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", sim.monthlyImpact),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (sim.monthlyImpact >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
-                                )
-                            }
-                        }
-
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.background
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("3-Months", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", sim.threeMonthImpact),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (sim.threeMonthImpact >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
-                                )
-                            }
-                        }
-
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.background
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Annual Compounded", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = String.format(Locale.US, "$%,.0f", sim.annualSavings),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = if (sim.annualSavings >= 0) Color(0xFF10B981) else Color(0xFFEF4444)
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-                    Text("Key Simulation Findings:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    sim.keyTakeaways.forEach { tk ->
-                        Row(
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text("💡", fontSize = 11.sp)
-                            Text(tk, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.Default.Science, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-                            Text(sim.strategicAdvice, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
-                        }
-                    }
-                }
-            }
+        } else {
+            inputSection()
+            resultSection()
         }
     }
 }
@@ -916,7 +970,7 @@ fun WhatIfSimulatorSection(uiState: BudgetUiState) {
 // SECTION 3: Subscription & Price Creep Auditor
 // ------------------------------------------------------------------------------------------------
 @Composable
-fun SubscriptionAuditorSection(uiState: BudgetUiState) {
+fun SubscriptionAuditorSection(uiState: BudgetUiState, isWideScreen: Boolean = false) {
     val coroutineScope = rememberCoroutineScope()
     var auditResult by remember { mutableStateOf<SubscriptionAuditResult?>(null) }
     var isLoading by remember { mutableStateOf(false) }
@@ -942,95 +996,110 @@ fun SubscriptionAuditorSection(uiState: BudgetUiState) {
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("Subscription & Recurring Auditor", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Text("Identifies hidden bills, duplicates, & price creep", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            IconButton(
-                onClick = { runAudit() },
-                enabled = !isLoading,
-                modifier = Modifier.testTag("ai_refresh_audit_button")
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = "Run Audit")
-            }
-        }
-
-        if (isLoading) {
-            Card(
+    val headerAndSummary: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                Column {
+                    Text("Subscription & Recurring Auditor", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("Identifies hidden bills, duplicates, & price creep", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                IconButton(
+                    onClick = { runAudit() },
+                    enabled = !isLoading,
+                    modifier = Modifier.testTag("ai_refresh_audit_button")
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Auditing recurring transactions and price changes...", fontSize = 12.sp)
+                    Icon(Icons.Default.Refresh, contentDescription = "Run Audit")
+                }
+            }
+
+            if (isLoading) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Auditing recurring transactions and price changes...", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            if (errorMessage != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f))
+                ) {
+                    Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+
+            auditResult?.let { audit ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Monthly Recurring Drain", fontSize = 11.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            Text(
+                                text = String.format(Locale.US, "$%,.2f/mo", audit.totalMonthlySubscriptionSpend),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
+
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Annual Total", fontSize = 11.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                            Text(
+                                text = String.format(Locale.US, "$%,.2f/yr", audit.totalAnnualSubscriptionSpend),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "📋 " + audit.overallInsights,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(12.dp)
+                    )
                 }
             }
         }
+    }
 
-        if (errorMessage != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f))
-            ) {
-                Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-            }
-        }
-
+    val itemsList: @Composable () -> Unit = {
         auditResult?.let { audit ->
-            // Spend summary banner
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Monthly Recurring Drain", fontSize = 11.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f/mo", audit.totalMonthlySubscriptionSpend),
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
-
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text("Annual Total", fontSize = 11.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                        Text(
-                            text = String.format(Locale.US, "$%,.2f/yr", audit.totalAnnualSubscriptionSpend),
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
-                }
-            }
-
             if (audit.items.isEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1044,9 +1113,9 @@ fun SubscriptionAuditorSection(uiState: BudgetUiState) {
                     )
                 }
             } else {
-                Text("Detected Subscriptions & Recurring Bills (${audit.items.size}):", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Detected Subscriptions & Recurring Bills (${audit.items.size}):", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
                     audit.items.forEach { item ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -1114,20 +1183,29 @@ fun SubscriptionAuditorSection(uiState: BudgetUiState) {
                         }
                     }
                 }
+            }
+        }
+    }
 
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "📋 " + audit.overallInsights,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(12.dp)
-                    )
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (isWideScreen) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    headerAndSummary()
+                }
+                Box(modifier = Modifier.weight(1.25f)) {
+                    itemsList()
                 }
             }
+        } else {
+            headerAndSummary()
+            itemsList()
         }
     }
 }

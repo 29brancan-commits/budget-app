@@ -9,9 +9,11 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.widget.RemoteViews
+import android.widget.Toast
 import com.example.MainActivity
 import com.example.R
 import com.example.data.BudgetDatabase
+import com.example.data.DateUtils
 import com.example.data.PayCycleCalculator
 import com.example.data.PlannedExpenseEntity
 import com.example.data.TransactionEntity
@@ -20,8 +22,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
@@ -30,6 +34,7 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
         const val ACTION_REFRESH_CYCLE_WIDGET = "com.example.widget.ACTION_REFRESH_CYCLE_WIDGET"
         const val ACTION_PREV_ACCOUNT = "com.example.widget.ACTION_PREV_ACCOUNT"
         const val ACTION_NEXT_ACCOUNT = "com.example.widget.ACTION_NEXT_ACCOUNT"
+        const val ACTION_WIDGET_ITEM_CLICK = "com.example.widget.ACTION_WIDGET_ITEM_CLICK"
 
         fun sendUpdateBroadcast(context: Context) {
             val intent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
@@ -77,9 +82,74 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
             }
             ACTION_REFRESH_CYCLE_WIDGET, AppWidgetManager.ACTION_APPWIDGET_UPDATE -> {
                 val componentName = ComponentName(context, CurrentPayCycleWidgetProvider::class.java)
-                val appWidgetIds = appWidgetManager.getAppWidgetIds(componentName)
-                for (appWidgetId in appWidgetIds) {
+                val allIds = appWidgetManager.getAppWidgetIds(componentName).toMutableSet()
+                val extraId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+                if (extraId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                    allIds.add(extraId)
+                }
+                val extraIds = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS)
+                if (extraIds != null) {
+                    allIds.addAll(extraIds.toList())
+                }
+                for (appWidgetId in allIds) {
+                    appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_pay_cycle_expense_list)
                     updateAppWidget(context, appWidgetManager, appWidgetId)
+                }
+            }
+            ACTION_WIDGET_ITEM_CLICK -> {
+                val itemAction = intent.getStringExtra("extra_item_action") ?: "open_app"
+                if (itemAction == "mark_paid") {
+                    val txId = intent.getIntExtra("extra_tx_id", -1)
+                    val title = intent.getStringExtra("extra_bill_title") ?: "Bill"
+                    val amount = intent.getDoubleExtra("extra_bill_amount", 0.0)
+                    val dueDateStr = intent.getStringExtra("extra_bill_due_date") ?: ""
+                    val account = intent.getStringExtra("extra_bill_account") ?: "Primary Account"
+                    val category = intent.getStringExtra("extra_bill_category") ?: "Planned Bill"
+                    val isAutoPay = intent.getBooleanExtra("extra_bill_is_autopay", false)
+
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val db = BudgetDatabase.getDatabase(context)
+                            val dao = db.transactionDao()
+                            val allTxs = dao.getAllTransactions().first()
+                            val existing = if (txId > 0) allTxs.firstOrNull { it.id == txId } else null
+
+                            if (existing != null) {
+                                dao.updateTransaction(existing.copy(status = "paid", isCompleted = true))
+                            } else {
+                                val dueDateMillis = try {
+                                    DateUtils.localDateToMillis(LocalDate.parse(dueDateStr))
+                                } catch (e: Exception) {
+                                    System.currentTimeMillis()
+                                }
+                                val newTx = TransactionEntity(
+                                    id = 0,
+                                    title = title,
+                                    amount = amount,
+                                    dateMillis = dueDateMillis,
+                                    category = category,
+                                    accountName = account,
+                                    isIncome = false,
+                                    isCompleted = true,
+                                    isAutoPay = isAutoPay,
+                                    status = "paid"
+                                )
+                                dao.insertTransaction(newTx)
+                            }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "✓ '$title' marked as paid", Toast.LENGTH_SHORT).show()
+                            }
+                            sendUpdateBroadcast(context)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                } else {
+                    val launchIntent = Intent(context, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtras(intent)
+                    }
+                    context.startActivity(launchIntent)
                 }
             }
         }
@@ -154,16 +224,16 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
         // Set up the RemoteViewsService intent for the scrollable ListView of expenses
         val serviceIntent = Intent(context, CurrentPayCycleWidgetService::class.java).apply {
             putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-            data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
+            data = Uri.parse("widget://pay_cycle_widget_expenses/$appWidgetId/${System.currentTimeMillis()}")
         }
         views.setRemoteAdapter(R.id.widget_pay_cycle_expense_list, serviceIntent)
         views.setEmptyView(R.id.widget_pay_cycle_expense_list, R.id.widget_pay_cycle_empty_expenses)
 
         // PendingIntent template for items in the expenses ListView
-        val itemClickIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        val itemClickIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
+            action = ACTION_WIDGET_ITEM_CLICK
         }
-        val pendingItemClick = PendingIntent.getActivity(
+        val pendingItemClick = PendingIntent.getBroadcast(
             context,
             appWidgetId * 10 + 6,
             itemClickIntent,
@@ -239,7 +309,25 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
                     today = today,
                     payPeriodStart = summary.startDate,
                     payPeriodEnd = summary.endDate
-                )
+                ).filter { item ->
+                    val tx = item.transactionRef
+                    if (tx != null && (tx.isCompleted || tx.isPaidOrCleared || tx.isPaid || tx.isCleared || tx.status.lowercase().trim() in listOf("paid", "cleared", "completed", "settled", "done"))) {
+                        return@filter false
+                    }
+                    val isPaidInDb = allTransactions.any { existing ->
+                        !existing.isIncome &&
+                        !existing.isStartingBalanceOrAdjustment &&
+                        (existing.isCompleted || existing.isPaidOrCleared || existing.isPaid || existing.isCleared || existing.status.lowercase().trim() in listOf("paid", "cleared", "completed", "settled", "done")) &&
+                        (existing.title.equals(item.title, ignoreCase = true) ||
+                         existing.title.equals(item.title.replace(" (Planned)", ""), ignoreCase = true) ||
+                         existing.title.contains(item.title, ignoreCase = true) ||
+                         item.title.contains(existing.title, ignoreCase = true)) &&
+                        (DateUtils.millisToLocalDate(existing.dateMillis) == item.dueDate ||
+                         Math.abs(ChronoUnit.DAYS.between(DateUtils.millisToLocalDate(existing.dateMillis), item.dueDate)) <= 15 ||
+                         (!DateUtils.millisToLocalDate(existing.dateMillis).isBefore(summary.startDate) && !DateUtils.millisToLocalDate(existing.dateMillis).isAfter(summary.endDate)))
+                    }
+                    !isPaidInDb
+                }
                 val countText = "${currentExpenses.size} due"
                 views.setTextViewText(R.id.widget_expenses_section_count, countText)
 
