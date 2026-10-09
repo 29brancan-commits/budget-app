@@ -119,11 +119,16 @@ object MonthlySummaryCalculator {
         }
 
         // 1b. Scheduled Paydays / Income Sources falling into this month
+        // Previous months past the current cycle's month without cycles should not factor in projected income or expenses
+        val earliestCycleMonth = uiState.allCalculatedPayPeriods.map { YearMonth.from(it.payday) }.minOrNull() ?: YearMonth.now()
+        val isPastMonthWithoutCycles = month.isBefore(YearMonth.now()) && month.isBefore(earliestCycleMonth)
+
         val anchor = uiState.anchorPayday
         val primaryAccountName = uiState.allAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account"
 
-        if (uiState.incomeSources.isNotEmpty()) {
-            uiState.incomeSources.forEach { src ->
+        if (!isPastMonthWithoutCycles) {
+            if (uiState.incomeSources.isNotEmpty()) {
+                uiState.incomeSources.forEach { src ->
                 when (src.frequency.lowercase(java.util.Locale.US)) {
                     "weekly" -> {
                         // Project weekly income for every 7 days in month
@@ -221,6 +226,7 @@ object MonthlySummaryCalculator {
                 d = d.plusDays(14)
             }
         }
+        }
 
         val totalIncome = incomeList.sumOf { it.amount }
 
@@ -230,8 +236,9 @@ object MonthlySummaryCalculator {
         val billList = mutableListOf<MonthlyBillItem>()
         val accountedTransactionIds = mutableSetOf<Int>()
 
-        // 2a. Planned Expenses / Bills configured in database
-        uiState.plannedExpenses.filter { isAccountMatching(it.targetAccount) }.forEach { bill ->
+        if (!isPastMonthWithoutCycles) {
+            // 2a. Planned Expenses / Bills configured in database
+            uiState.plannedExpenses.filter { isAccountMatching(it.targetAccount) }.forEach { bill ->
             val dueDay = try {
                 LocalDate.parse(bill.dueDate).dayOfMonth
             } catch (e: Exception) {
@@ -297,7 +304,7 @@ object MonthlySummaryCalculator {
                 it.title.equals(debt.name, ignoreCase = true) ||
                 it.title.contains(debt.name, ignoreCase = true)
             }
-            if (!alreadyCovered && isAccountMatching(debt.linkedAccountName ?: "All Accounts")) {
+            if (!alreadyCovered && isAccountMatching(debt.linkedAccountName ?: "")) {
                 val dueDay = debt.billDueDay.coerceIn(1, 28)
                 val dueDateInMonth = LocalDate.of(month.year, month.month, minOf(dueDay, daysInMonth))
 
@@ -331,6 +338,7 @@ object MonthlySummaryCalculator {
                     )
                 )
             }
+        }
         }
 
         // 2c. All Expense Transactions in DB for this month (one-time or recurring items)

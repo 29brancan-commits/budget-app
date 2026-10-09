@@ -8,6 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
+import android.util.Log
+import android.view.View
 import android.widget.RemoteViews
 import android.widget.Toast
 import com.example.MainActivity
@@ -92,7 +95,6 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
                     allIds.addAll(extraIds.toList())
                 }
                 for (appWidgetId in allIds) {
-                    appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_pay_cycle_expense_list)
                     updateAppWidget(context, appWidgetManager, appWidgetId)
                 }
             }
@@ -156,92 +158,10 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
     }
 
     private fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int) {
-        val views = RemoteViews(context.packageName, R.layout.widget_current_pay_cycle)
+        if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return
+        val appWidgetInfo = appWidgetManager.getAppWidgetInfo(appWidgetId)
+        if (appWidgetInfo == null) return
 
-        // Set pending intent to launch MainActivity on tapping the widget background/root
-        val launchIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingLaunch = PendingIntent.getActivity(
-            context,
-            appWidgetId * 10 + 1,
-            launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        views.setOnClickPendingIntent(R.id.widget_pay_cycle_root, pendingLaunch)
-
-        // Set pending intent for Refresh Button
-        val refreshIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
-            action = ACTION_REFRESH_CYCLE_WIDGET
-        }
-        val pendingRefresh = PendingIntent.getBroadcast(
-            context,
-            appWidgetId * 10 + 2,
-            refreshIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        views.setOnClickPendingIntent(R.id.widget_btn_refresh_cycle, pendingRefresh)
-
-        // Set pending intent for Previous Account Button (◀)
-        val prevAccIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
-            action = ACTION_PREV_ACCOUNT
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        }
-        val pendingPrevAcc = PendingIntent.getBroadcast(
-            context,
-            appWidgetId * 10 + 3,
-            prevAccIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        )
-        views.setOnClickPendingIntent(R.id.widget_btn_prev_account, pendingPrevAcc)
-
-        // Set pending intent for Next Account Button (▶)
-        val nextAccIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
-            action = ACTION_NEXT_ACCOUNT
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        }
-        val pendingNextAcc = PendingIntent.getBroadcast(
-            context,
-            appWidgetId * 10 + 4,
-            nextAccIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        )
-        views.setOnClickPendingIntent(R.id.widget_btn_next_account, pendingNextAcc)
-
-        // Set pending intent for Account Badge / Picker Activity
-        val pickAccIntent = Intent(context, WidgetAccountSelectionActivity::class.java).apply {
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingPickAcc = PendingIntent.getActivity(
-            context,
-            appWidgetId * 10 + 5,
-            pickAccIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        views.setOnClickPendingIntent(R.id.widget_account_badge_container, pendingPickAcc)
-
-        // Set up the RemoteViewsService intent for the scrollable ListView of expenses
-        val serviceIntent = Intent(context, CurrentPayCycleWidgetService::class.java).apply {
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-            data = Uri.parse("widget://pay_cycle_widget_expenses/$appWidgetId/${System.currentTimeMillis()}")
-        }
-        views.setRemoteAdapter(R.id.widget_pay_cycle_expense_list, serviceIntent)
-        views.setEmptyView(R.id.widget_pay_cycle_expense_list, R.id.widget_pay_cycle_empty_expenses)
-
-        // PendingIntent template for items in the expenses ListView
-        val itemClickIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
-            action = ACTION_WIDGET_ITEM_CLICK
-        }
-        val pendingItemClick = PendingIntent.getBroadcast(
-            context,
-            appWidgetId * 10 + 6,
-            itemClickIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        )
-        views.setPendingIntentTemplate(R.id.widget_pay_cycle_expense_list, pendingItemClick)
-
-        // Asynchronously load database and calculate pay cycle stats for this widget's chosen account
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = BudgetDatabase.getDatabase(context)
@@ -275,32 +195,6 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
                     today = today
                 )
 
-                val dateFmt = DateTimeFormatter.ofPattern("MMM d", Locale.US)
-                val rangeStr = "${summary.startDate.format(dateFmt)} – ${summary.endDate.format(dateFmt)}"
-                views.setTextViewText(R.id.widget_pay_cycle_range, rangeStr)
-
-                val daysBadge = "${summary.daysRemaining}d left"
-                views.setTextViewText(R.id.widget_days_left_badge, daysBadge)
-
-                views.setTextViewText(R.id.widget_remaining_label, "SELECTED ACCOUNT")
-                views.setTextViewText(R.id.widget_remaining_balance, summary.accountName)
-                views.setTextColor(R.id.widget_remaining_balance, Color.parseColor("#38BDF8")) // Sky Blue accent
-
-                val spentPercentStr = "${summary.spentPercentage}% spent"
-                views.setTextViewText(R.id.widget_spent_percent_text, spentPercentStr)
-                views.setProgressBar(R.id.widget_budget_progress, 100, summary.spentPercentage, false)
-
-                val clearedFormatted = String.format(Locale.US, "Cleared: $%,.2f", summary.clearedBalance)
-                views.setTextViewText(R.id.widget_cleared_subtext, clearedFormatted)
-
-                val incomeFormatted = String.format(Locale.US, "+$%,.2f", summary.totalAvailable)
-                views.setTextViewText(R.id.widget_total_income, incomeFormatted)
-
-                val expensesFormatted = String.format(Locale.US, "-$%,.2f", summary.totalExpenses)
-                views.setTextViewText(R.id.widget_total_expenses, expensesFormatted)
-
-                views.setTextViewText(R.id.widget_account_badge, summary.accountName)
-
                 // Calculate number of expenses due in this cycle
                 val currentExpenses = UpcomingExpenseCalculator.getUpcomingExpenses(
                     allTransactions = allTransactions,
@@ -328,13 +222,147 @@ class CurrentPayCycleWidgetProvider : AppWidgetProvider() {
                     }
                     !isPaidInDb
                 }
+
+                val views = RemoteViews(context.packageName, R.layout.widget_current_pay_cycle)
+
+                // Set pending intent to launch MainActivity on tapping the widget background/root
+                val launchIntent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val pendingLaunch = PendingIntent.getActivity(
+                    context,
+                    appWidgetId * 10 + 1,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_pay_cycle_root, pendingLaunch)
+
+                // Set pending intent for Refresh Button
+                val refreshIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
+                    action = ACTION_REFRESH_CYCLE_WIDGET
+                }
+                val pendingRefresh = PendingIntent.getBroadcast(
+                    context,
+                    appWidgetId * 10 + 2,
+                    refreshIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_btn_refresh_cycle, pendingRefresh)
+
+                // Set pending intent for Previous Account Button (◀)
+                val prevAccIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
+                    action = ACTION_PREV_ACCOUNT
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                }
+                val pendingPrevAcc = PendingIntent.getBroadcast(
+                    context,
+                    appWidgetId * 10 + 3,
+                    prevAccIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_btn_prev_account, pendingPrevAcc)
+
+                // Set pending intent for Next Account Button (▶)
+                val nextAccIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
+                    action = ACTION_NEXT_ACCOUNT
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                }
+                val pendingNextAcc = PendingIntent.getBroadcast(
+                    context,
+                    appWidgetId * 10 + 4,
+                    nextAccIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_btn_next_account, pendingNextAcc)
+
+                // Set pending intent for Account Badge / Picker Activity
+                val pickAccIntent = Intent(context, WidgetAccountSelectionActivity::class.java).apply {
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val pendingPickAcc = PendingIntent.getActivity(
+                    context,
+                    appWidgetId * 10 + 5,
+                    pickAccIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_account_badge_container, pendingPickAcc)
+
+                val dateFmt = DateTimeFormatter.ofPattern("MMM d", Locale.US)
+                val rangeStr = "${summary.startDate.format(dateFmt)} – ${summary.endDate.format(dateFmt)}"
+                views.setTextViewText(R.id.widget_pay_cycle_range, rangeStr)
+
+                val daysBadge = "${summary.daysRemaining}d left"
+                views.setTextViewText(R.id.widget_days_left_badge, daysBadge)
+
+                views.setTextViewText(R.id.widget_remaining_label, "SELECTED ACCOUNT")
+                views.setTextViewText(R.id.widget_remaining_balance, summary.accountName)
+                views.setTextColor(R.id.widget_remaining_balance, Color.parseColor("#38BDF8")) // Sky Blue accent
+
+                val spentPercentStr = "${summary.spentPercentage}% spent"
+                views.setTextViewText(R.id.widget_spent_percent_text, spentPercentStr)
+                views.setProgressBar(R.id.widget_budget_progress, 100, summary.spentPercentage, false)
+
+                val clearedFormatted = String.format(Locale.US, "Cleared: $%,.2f", summary.clearedBalance)
+                views.setTextViewText(R.id.widget_cleared_subtext, clearedFormatted)
+
+                views.setTextViewText(R.id.widget_account_badge, summary.accountName)
+
                 val countText = "${currentExpenses.size} due"
                 views.setTextViewText(R.id.widget_expenses_section_count, countText)
 
+                // Handle collections based on Android platform version
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val collectionBuilder = RemoteViews.RemoteCollectionItems.Builder()
+                    currentExpenses.forEachIndexed { _, item ->
+                        collectionBuilder.addItem(
+                            item.id.hashCode().toLong(),
+                            CurrentPayCycleWidgetService.buildExpenseItemRemoteViews(context, item, dateFmt)
+                        )
+                    }
+                    views.setRemoteAdapter(R.id.widget_pay_cycle_expense_list, collectionBuilder.build())
+                } else {
+                    val serviceIntent = Intent(context, CurrentPayCycleWidgetService::class.java).apply {
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                        data = Uri.parse("widget://pay_cycle_widget_expenses/$appWidgetId/${System.currentTimeMillis()}")
+                    }
+                    views.setRemoteAdapter(R.id.widget_pay_cycle_expense_list, serviceIntent)
+                }
+
+                views.setEmptyView(R.id.widget_pay_cycle_expense_list, R.id.widget_pay_cycle_empty_expenses)
+                views.setViewVisibility(
+                    R.id.widget_pay_cycle_empty_expenses,
+                    if (currentExpenses.isEmpty()) View.VISIBLE else View.GONE
+                )
+                views.setViewVisibility(
+                    R.id.widget_pay_cycle_expense_list,
+                    if (currentExpenses.isEmpty()) View.GONE else View.VISIBLE
+                )
+
+                // PendingIntent template for items in the expenses ListView
+                val itemClickIntent = Intent(context, CurrentPayCycleWidgetProvider::class.java).apply {
+                    action = ACTION_WIDGET_ITEM_CLICK
+                }
+                val pendingItemClick = PendingIntent.getBroadcast(
+                    context,
+                    appWidgetId * 10 + 6,
+                    itemClickIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                views.setPendingIntentTemplate(R.id.widget_pay_cycle_expense_list, pendingItemClick)
+
+                // Update AppWidget synchronously and atomically
                 appWidgetManager.updateAppWidget(appWidgetId, views)
-                appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_pay_cycle_expense_list)
+
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                    try {
+                        appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_pay_cycle_expense_list)
+                    } catch (e: Throwable) {
+                        Log.w("PayCycleWidget", "Error notifying collection change: ${e.message}")
+                    }
+                }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("PayCycleWidget", "Error updating widget: ${e.message}", e)
             }
         }
     }

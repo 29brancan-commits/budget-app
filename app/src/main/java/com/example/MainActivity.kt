@@ -586,7 +586,8 @@ fun BudgetAppMain(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background)
-                        .padding(top = 4.dp)
+                        .statusBarsPadding()
+                        .padding(top = 8.dp, bottom = 4.dp)
                 ) {
                     if (isWideScreen) {
                         // Spacious single-line header for Fold 8 Inner Screen
@@ -604,9 +605,14 @@ fun BudgetAppMain(
                             ) {
                                 IconButton(
                                     onClick = { viewModel.prevMonth() },
+                                    enabled = uiState.canGoToPreviousPayCycle,
                                     modifier = Modifier.testTag("prev_month_button")
                                 ) {
-                                    Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle")
+                                    Icon(
+                                        Icons.Default.ArrowBack,
+                                        contentDescription = "Previous Pay Cycle",
+                                        tint = if (uiState.canGoToPreviousPayCycle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                    )
                                 }
                                 Button(
                                     onClick = { viewModel.selectMonth(YearMonth.now()) },
@@ -639,21 +645,30 @@ fun BudgetAppMain(
                                 "${pStart.format(payCycleTitleYearFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
                             }
 
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = payCycleText,
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = "Pay Cycle • ${uiState.selectedMonth.format(monthTitleFormatter)}",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = payCycleText,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Text(
+                                        text = "Pay Cycle • ${uiState.selectedMonth.format(monthTitleFormatter)}",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
 
                             // Right: Utility Actions for Galaxy Z Fold 8 Unfolded
@@ -731,42 +746,55 @@ fun BudgetAppMain(
                         ) {
                             IconButton(
                                 onClick = { viewModel.prevMonth() },
+                                enabled = uiState.canGoToPreviousPayCycle,
                                 modifier = Modifier.size(36.dp).testTag("prev_month_button")
                             ) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Previous Pay Cycle", modifier = Modifier.size(18.dp))
+                                Icon(
+                                    Icons.Default.ArrowBack,
+                                    contentDescription = "Previous Pay Cycle",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = if (uiState.canGoToPreviousPayCycle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                )
                             }
 
-                            val payCycleTitleFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
-                            val payCycleTitleYearFormatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
+                            val payCycleShortFormatter = remember { DateTimeFormatter.ofPattern("MMM d", Locale.US) }
+                            val payCycleFullFormatter = remember { DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US) }
                             val pStart = uiState.currentPayPeriodStart
                             val pEnd = uiState.currentPayPeriodEnd
                             val payCycleText = if (pStart.year == pEnd.year) {
-                                "${pStart.format(payCycleTitleFormatter)} – ${pEnd.format(payCycleTitleFormatter)}"
+                                "${pStart.format(payCycleShortFormatter)} – ${pEnd.format(payCycleFullFormatter)}"
                             } else {
-                                "${pStart.format(payCycleTitleYearFormatter)} – ${pEnd.format(payCycleTitleYearFormatter)}"
+                                "${pStart.format(payCycleFullFormatter)} – ${pEnd.format(payCycleFullFormatter)}"
                             }
 
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
                                 modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                             ) {
-                                Text(
-                                    text = payCycleText,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = "Cycle • ${uiState.selectedMonth.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.US))}",
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    textAlign = TextAlign.Center
-                                )
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = payCycleText,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Text(
+                                        text = "Pay Cycle • ${uiState.selectedMonth.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.US))}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
 
                             IconButton(
@@ -914,45 +942,21 @@ fun BudgetAppMain(
             },
             floatingActionButtonPosition = FabPosition.End,
             floatingActionButton = {
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    AnimatedVisibility(
-                        visible = uiState.canUndo,
-                        enter = fadeIn() + slideInVertically { it / 2 },
-                        exit = fadeOut() + slideOutVertically { it / 2 }
+                if (selectedTab != 4 && selectedTab != 6 && selectedTab != 7) {
+                    SmallFloatingActionButton(
+                        onClick = {
+                            preselectedDateForAdd = null
+                            showAddDialog = true
+                        },
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.testTag("add_transaction_fab")
                     ) {
-                        SmallFloatingActionButton(
-                            onClick = { viewModel.undo() },
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.testTag("floating_undo_button")
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Undo,
-                                contentDescription = "Undo",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-
-                    if (selectedTab != 4 && selectedTab != 6 && selectedTab != 7) {
-                        SmallFloatingActionButton(
-                            onClick = {
-                                preselectedDateForAdd = null
-                                showAddDialog = true
-                            },
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.testTag("add_transaction_fab")
-                        ) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "Add Transaction",
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "Add Transaction",
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             }
@@ -1184,7 +1188,7 @@ fun BudgetAppMain(
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                                 }
 
                                 // Center Fold Crease Buffer Divider
@@ -1243,9 +1247,17 @@ fun BudgetAppMain(
                                         },
                                         onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
                                         onManualSyncDrive = { viewModel.performDriveSync() },
+                                        onAddSavingsGoal = { title, target, cat, cur, emoji, col, date, notes ->
+                                            viewModel.addSavingsGoal(title, target, cat, cur, emoji, col, date, notes)
+                                        },
+                                        onUpdateSavingsGoal = { goal -> viewModel.updateSavingsGoal(goal) },
+                                        onDeleteSavingsGoal = { id -> viewModel.deleteSavingsGoal(id) },
+                                        onContributeToSavingsGoal = { id, amt, asTx ->
+                                            viewModel.contributeToSavingsGoal(id, amt, asTx, uiState.activeAccountName)
+                                        },
                                         isWideScreen = true
                                     )
-                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                                 }
                             }
                         } else {
@@ -1534,6 +1546,14 @@ fun BudgetAppMain(
                                                 },
                                                 onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
                                                 onManualSyncDrive = { viewModel.performDriveSync() },
+                                                onAddSavingsGoal = { title, target, cat, cur, emoji, col, date, notes ->
+                                                    viewModel.addSavingsGoal(title, target, cat, cur, emoji, col, date, notes)
+                                                },
+                                                onUpdateSavingsGoal = { goal -> viewModel.updateSavingsGoal(goal) },
+                                                onDeleteSavingsGoal = { id -> viewModel.deleteSavingsGoal(id) },
+                                                onContributeToSavingsGoal = { id, amt, asTx ->
+                                                    viewModel.contributeToSavingsGoal(id, amt, asTx, uiState.activeAccountName)
+                                                },
                                                 isWideScreen = isWideScreen
                                             )
                                         }
@@ -1592,7 +1612,7 @@ fun BudgetAppMain(
                                 onUpdateDefaultPaycheck = { amt -> viewModel.updateDefaultPaycheckAmount(amt) },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     2 -> {
@@ -1642,9 +1662,17 @@ fun BudgetAppMain(
                                 onUpdateExpenseStatus = { tx, st -> viewModel.updateTransactionStatus(tx, st) },
                                 onToggleReminder = { tx, days -> viewModel.toggleTransactionReminder(tx, days) },
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
+                                onAddSavingsGoal = { title, target, cat, cur, emoji, col, date, notes ->
+                                    viewModel.addSavingsGoal(title, target, cat, cur, emoji, col, date, notes)
+                                },
+                                onUpdateSavingsGoal = { goal -> viewModel.updateSavingsGoal(goal) },
+                                onDeleteSavingsGoal = { id -> viewModel.deleteSavingsGoal(id) },
+                                onContributeToSavingsGoal = { id, amt, asTx ->
+                                    viewModel.contributeToSavingsGoal(id, amt, asTx, uiState.activeAccountName)
+                                },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     3 -> {
@@ -1689,7 +1717,7 @@ fun BudgetAppMain(
                                 onUndo = { viewModel.undo() },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     4 -> {
@@ -1818,7 +1846,7 @@ fun BudgetAppMain(
                                 onSyncCsvDrive = { onComplete -> viewModel.performCsvDriveSync(onComplete) },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     6 -> {
@@ -1838,7 +1866,7 @@ fun BudgetAppMain(
                                 onOpenReceiptScanner = { showAiReceiptScannerDialog = true },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     7 -> {
@@ -1899,10 +1927,14 @@ fun BudgetAppMain(
                                 onImportAnyDataDetailed = { viewModel.importAnyDataDetailed(it) },
                                 onExportWebCompanionToGoogleDrive = { htmlContent -> viewModel.exportWebCompanionToGoogleDrive(htmlContent) },
                                 onRestoreFinancialData = { viewModel.restoreFinancialDataManually() },
+                                onBackupAllDataToDrive = { onResult -> viewModel.backupAllDataToDriveManually(onResult) },
+                                onRestoreFromDriveBackup = { onResult -> viewModel.restoreAllDataFromDriveBackup(onResult) },
+                                onCheckAndRepairDatabase = { onResult -> viewModel.checkAndRepairDatabaseIntegrity(onResult) },
+                                hasValidDriveToken = { viewModel.hasValidDriveToken() },
                                 onClearDatabase = { viewModel.clearDatabase() },
                                 isWideScreen = isWideScreen
                             )
-                            Spacer(modifier = Modifier.height(if (isCompactHeight) 16.dp else if (isWideScreen) 24.dp else 56.dp))
+                            Spacer(modifier = Modifier.height(if (isCompactHeight) 32.dp else if (isWideScreen) 48.dp else 120.dp))
                         }
                     }
                     8 -> {
@@ -3537,6 +3569,10 @@ fun EnterExpensesView(
     onUpdateExpenseStatus: ((TransactionEntity, String) -> Unit)? = null,
     onToggleReminder: ((TransactionEntity, Int) -> Unit)? = null,
     onSyncCsvDrive: (((String) -> Unit) -> Unit)? = null,
+    onAddSavingsGoal: ((String, Double, String, Double, String, Long, String?, String) -> Unit)? = null,
+    onUpdateSavingsGoal: ((com.example.model.SavingsGoal) -> Unit)? = null,
+    onDeleteSavingsGoal: ((String) -> Unit)? = null,
+    onContributeToSavingsGoal: ((String, Double, Boolean) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     val isDark = uiState.isDarkMode
@@ -4125,11 +4161,25 @@ fun EnterExpensesView(
     }
 
     val expenseListContent: @Composable () -> Unit = {
-        // Expense Spreadsheet Cards View
+        // Expense Spreadsheet Cards View with Spending Breakdown Chart
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Data Visualization: Spending breakdown by category over the current pay cycle/filtered expenses
+            if (displayedExpensesList.isNotEmpty()) {
+                val cycleTitle = when (filterScope) {
+                    1 -> "Full Month"
+                    2 -> "Current Pay Cycle (${uiState.currentPayPeriodStart} - ${uiState.currentPayPeriodEnd})"
+                    3 -> "Pay Week"
+                    else -> "Current Pay Cycle & Month"
+                }
+                com.example.ui.CycleSpendingBreakdownChart(
+                    transactions = displayedExpensesList,
+                    cycleLabel = cycleTitle
+                )
+            }
+
             if (displayedExpensesList.isEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -4549,6 +4599,22 @@ fun EnterExpensesView(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Savings Goals Component: all the way to the bottom and collapsable
+            com.example.ui.SavingsGoalComponent(
+                savingsGoals = uiState.savingsGoals,
+                transactions = displayedExpensesList,
+                onAddGoal = { title, target, cat, cur, emoji, col, date, notes ->
+                    onAddSavingsGoal?.invoke(title, target, cat, cur, emoji, col, date, notes)
+                },
+                onUpdateGoal = { goal -> onUpdateSavingsGoal?.invoke(goal) },
+                onDeleteGoal = { id -> onDeleteSavingsGoal?.invoke(id) },
+                onContribute = { id, amt, asTx -> onContributeToSavingsGoal?.invoke(id, amt, asTx) },
+                defaultExpanded = false,
+                isCompact = isWideScreen
+            )
         }
     }
 
@@ -6253,6 +6319,10 @@ fun PayCyclesListView(
     onDeduplicate: (() -> Unit)? = null,
     onRestoreFinancialData: (() -> Unit)? = null,
     onManualSyncDrive: (() -> Unit)? = null,
+    onAddSavingsGoal: ((String, Double, String, Double, String, Long, String?, String) -> Unit)? = null,
+    onUpdateSavingsGoal: ((com.example.model.SavingsGoal) -> Unit)? = null,
+    onDeleteSavingsGoal: ((String) -> Unit)? = null,
+    onContributeToSavingsGoal: ((String, Double, Boolean) -> Unit)? = null,
     isWideScreen: Boolean = false
 ) {
     var isSyncingSheets by remember { mutableStateOf(false) }
@@ -6535,6 +6605,22 @@ fun PayCyclesListView(
                                         }
                                     }
                                 }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // Savings Goals Component: all the way to the bottom and collapsable
+                                com.example.ui.SavingsGoalComponent(
+                                    savingsGoals = uiState.savingsGoals,
+                                    transactions = uiState.allTransactions,
+                                    onAddGoal = { title, target, cat, cur, emoji, col, date, notes ->
+                                        onAddSavingsGoal?.invoke(title, target, cat, cur, emoji, col, date, notes)
+                                    },
+                                    onUpdateGoal = { goal -> onUpdateSavingsGoal?.invoke(goal) },
+                                    onDeleteGoal = { id -> onDeleteSavingsGoal?.invoke(id) },
+                                    onContribute = { id, amt, asTx -> onContributeToSavingsGoal?.invoke(id, amt, asTx) },
+                                    defaultExpanded = false,
+                                    isCompact = isWideScreen
+                                )
                             }
                         }
     }
@@ -6881,6 +6967,112 @@ fun PayCycleCard(
                                 },
                                 trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
                             )
+
+                            if (period.nextCycleDeficitToSave > 0.0) {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .testTag("dynamic_deficit_reserve_banner_${period.payday}"),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF0284C7).copy(alpha = 0.12f),
+                                    border = BorderStroke(0.8.dp, Color(0xFF0284C7).copy(alpha = 0.45f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("🛡️", fontSize = 12.sp)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(
+                                                    text = "Next Cycle Deficit Protection",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF0284C7)
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape(3.dp),
+                                                    color = Color(0xFF0284C7).copy(alpha = 0.2f)
+                                                ) {
+                                                    Text(
+                                                        text = "Dynamic",
+                                                        fontSize = 7.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFF0284C7),
+                                                        modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = String.format(Locale.US, "$%,.2f needed to be saved to bring next cycle deficit to $0.00", period.nextCycleDeficitToSave),
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Text(
+                                            text = String.format(Locale.US, "$%,.2f", period.nextCycleDeficitToSave),
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF0284C7)
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (period.savedFromPreviousCycle > 0.0) {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .testTag("saved_from_previous_banner_${period.payday}"),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.12f),
+                                    border = BorderStroke(0.8.dp, Color(0xFF10B981).copy(alpha = 0.45f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("💰", fontSize = 12.sp)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(
+                                                    text = "Saved From Previous Cycle",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF059669)
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape(3.dp),
+                                                    color = Color(0xFF10B981).copy(alpha = 0.2f)
+                                                ) {
+                                                    Text(
+                                                        text = "Income",
+                                                        fontSize = 7.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFF059669),
+                                                        modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = String.format(Locale.US, "$%,.2f received from previous cycle offsets deficit to $0.00", period.savedFromPreviousCycle),
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Text(
+                                            text = String.format(Locale.US, "+$%,.2f", period.savedFromPreviousCycle),
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF059669)
+                                        )
+                                    }
+                                }
+                            }
 
                             // Cycle Breakdown Metrics Row
                             val startFunds = period.startingBalance + period.carryoverFromPrevious
@@ -7691,6 +7883,15 @@ fun PayCycleCard(
                                 Text("Add Bill / Income", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
+
+                        // Data Visualization: Spending breakdown by category at the bottom of the cycle card
+                        if (cycleExpenses.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            com.example.ui.CycleSpendingBreakdownChart(
+                                transactions = cycleExpenses,
+                                cycleLabel = "${period.startDate.format(df)} – ${period.endDate.format(df)}"
+                            )
+                        }
                     }
                 }
             }
@@ -7800,13 +8001,31 @@ fun TransactionItemRow(
                     }
                 }
 
+                val isDynamicReserve = transaction.category.equals("Savings Reserve", ignoreCase = true) || transaction.title.contains("Needed to Save", ignoreCase = true)
+                val isSavedFromPrev = transaction.title.contains("Saved from Previous", ignoreCase = true) || transaction.id == -999887
+                val isDebtMin = transaction.category.equals("Debt Payment", ignoreCase = true) || transaction.title.contains("Minimum Payment", ignoreCase = true)
+                val iconBgColor = when {
+                    isSavedFromPrev -> Color(0xFF10B981).copy(alpha = 0.22f)
+                    isDynamicReserve -> Color(0xFF0284C7).copy(alpha = 0.18f)
+                    isDebtMin -> Color(0xFFD97706).copy(alpha = 0.18f)
+                    transaction.isIncome -> Color(0xFF10B981).copy(alpha = 0.15f)
+                    else -> Color(0xFFEF4444).copy(alpha = 0.15f)
+                }
+                val iconEmoji = when {
+                    isSavedFromPrev -> "💰"
+                    isDynamicReserve -> "🛡️"
+                    isDebtMin -> "💳"
+                    transaction.isIncome -> "💰"
+                    else -> CategoryTheme.getEmoji(transaction.category)
+                }
+
                 Surface(
                     shape = CircleShape,
-                    color = if (transaction.isIncome) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFFEF4444).copy(alpha = 0.15f),
+                    color = iconBgColor,
                     modifier = Modifier.size(24.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(if (transaction.isIncome) "💰" else CategoryTheme.getEmoji(transaction.category), fontSize = 12.sp)
+                        Text(iconEmoji, fontSize = 12.sp)
                     }
                 }
 
@@ -7897,6 +8116,60 @@ fun TransactionItemRow(
                                 fontSize = 7.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF7C3AED),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    if (transaction.title.contains("Needed to Save", ignoreCase = true) || transaction.id == -999888 || transaction.category.equals("Savings Reserve", ignoreCase = true)) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color(0xFF0284C7).copy(alpha = 0.18f),
+                            border = BorderStroke(0.5.dp, Color(0xFF0284C7).copy(alpha = 0.6f))
+                        ) {
+                            Text(
+                                text = "🛡️ Dynamic Deficit Reserve",
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0284C7),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    if (transaction.title.contains("Saved from Previous", ignoreCase = true) || transaction.id == -999887) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.18f),
+                            border = BorderStroke(0.5.dp, Color(0xFF10B981).copy(alpha = 0.6f))
+                        ) {
+                            Text(
+                                text = "💰 Saved from Previous Cycle",
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF059669),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    if (transaction.title.contains("Minimum Payment", ignoreCase = true) || transaction.category.equals("Debt Payment", ignoreCase = true)) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = Color(0xFFD97706).copy(alpha = 0.15f),
+                            border = BorderStroke(0.5.dp, Color(0xFFD97706).copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "💳 Debt Minimum",
+                                fontSize = 7.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFD97706),
                                 modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp),
                                 maxLines = 1,
                                 softWrap = false
@@ -8312,6 +8585,9 @@ fun CalendarGridView(
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             ) {
+                val realCurrentPayday = remember(anchor) { DateUtils.getPaydayOnOrBefore(LocalDate.now(), anchor) }
+                val currentCycleMonth = remember(realCurrentPayday) { YearMonth.from(realCurrentPayday) }
+                val canGoPrevMonth = displayMonth.isAfter(currentCycleMonth)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -8320,10 +8596,15 @@ fun CalendarGridView(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = { displayMonth = displayMonth.minusMonths(1) },
+                        onClick = { if (canGoPrevMonth) displayMonth = displayMonth.minusMonths(1) },
+                        enabled = canGoPrevMonth,
                         modifier = Modifier.size(36.dp)
                     ) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Previous Month")
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = "Previous Month",
+                            tint = if (canGoPrevMonth) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        )
                     }
 
                     Column(
@@ -9242,6 +9523,10 @@ fun SettingsView(
     onImportAnyDataDetailed: suspend (String) -> Pair<Boolean, String> = { Pair(false, "") },
     onExportWebCompanionToGoogleDrive: (suspend (String) -> Pair<Boolean, String>)? = null,
     onRestoreFinancialData: () -> Unit = {},
+    onBackupAllDataToDrive: (((Boolean, String) -> Unit) -> Unit)? = null,
+    onRestoreFromDriveBackup: (((Boolean, String) -> Unit) -> Unit)? = null,
+    onCheckAndRepairDatabase: (((Boolean, String) -> Unit) -> Unit)? = null,
+    hasValidDriveToken: () -> Boolean = { false },
     onClearDatabase: () -> Unit = {},
     isWideScreen: Boolean = false
 ) {
@@ -11417,17 +11702,130 @@ fun SettingsView(
                                 }
                             }
 
-                            Button(
-                                onClick = { onRestoreFinancialData() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                modifier = Modifier.fillMaxWidth().testTag("restore_financial_data_button")
+                            // Automatic All Data Backup & Corruption Recovery Section
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Text("Restore From Cloud Backup", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = "Automatic All Data Backup",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+
+                                    Text(
+                                        text = "📁 Saved in: My Drive/PayCycle Budget/paycycle_budget_backup.json",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+
+                                    Text(
+                                        text = "Automatic backup runs in the background and can restore all transactions, debts, bills, and cycle settings in case of data corruption.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                if (onBackupAllDataToDrive != null) {
+                                                    onBackupAllDataToDrive { success, msg ->
+                                                        if (!success && (msg.contains("sign in", ignoreCase = true) || msg.contains("authoriz", ignoreCase = true) || msg.contains("consent", ignoreCase = true) || msg.contains("permission", ignoreCase = true) || msg.contains("expired", ignoreCase = true))) {
+                                                            showAuthorizeDriveDialog = true
+                                                            onConnectGoogleDrive()
+                                                        }
+                                                        Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                    }
+                                                } else if (hasValidDriveToken()) {
+                                                    onManualSyncDrive()
+                                                } else {
+                                                    Toast.makeText(localContext, "Please authorize your Google account to save backup to My Drive/PayCycle Budget/", Toast.LENGTH_LONG).show()
+                                                    showAuthorizeDriveDialog = true
+                                                    onConnectGoogleDrive()
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f).testTag("backup_all_data_to_drive_button")
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Text("Backup to Drive", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                if (onRestoreFromDriveBackup != null) {
+                                                    onRestoreFromDriveBackup { success, msg ->
+                                                        if (!success && (msg.contains("sign in", ignoreCase = true) || msg.contains("authoriz", ignoreCase = true) || msg.contains("consent", ignoreCase = true))) {
+                                                            showAuthorizeDriveDialog = true
+                                                            onConnectGoogleDrive()
+                                                        }
+                                                        Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                    }
+                                                } else if (hasValidDriveToken()) {
+                                                    onRestoreFinancialData()
+                                                } else {
+                                                    Toast.makeText(localContext, "Please authorize your Google account to restore from My Drive/PayCycle Budget/", Toast.LENGTH_LONG).show()
+                                                    showAuthorizeDriveDialog = true
+                                                    onConnectGoogleDrive()
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                            modifier = Modifier.weight(1f).testTag("restore_from_drive_backup_button")
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                Text("Restore Drive", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (onCheckAndRepairDatabase != null) {
+                                                onCheckAndRepairDatabase { success, msg ->
+                                                    Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("verify_repair_corruption_button")
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
+                                            Text("Verify Data Integrity & Repair Corruption", fontSize = 11.5.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -12634,6 +13032,57 @@ fun SettingsView(
                             ) {
                                 Text("Restore Backup", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
+                        }
+
+                        Button(
+                            onClick = {
+                                if (onBackupAllDataToDrive != null) {
+                                    onBackupAllDataToDrive { success, msg ->
+                                        if (!success && (msg.contains("sign in", ignoreCase = true) || msg.contains("authoriz", ignoreCase = true) || msg.contains("consent", ignoreCase = true) || msg.contains("permission", ignoreCase = true) || msg.contains("expired", ignoreCase = true))) {
+                                            showAuthorizeDriveDialog = true
+                                            onConnectGoogleDrive()
+                                        }
+                                        Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                    }
+                                } else if (hasValidDriveToken()) {
+                                    onManualSyncDrive()
+                                } else {
+                                    Toast.makeText(localContext, "Please authorize your Google account to save backup to My Drive/PayCycle Budget/", Toast.LENGTH_LONG).show()
+                                    showAuthorizeDriveDialog = true
+                                    onConnectGoogleDrive()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth().testTag("backup_to_drive_vault_button")
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Backup All Data to My Drive/PayCycle Budget/", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                if (onRestoreFromDriveBackup != null) {
+                                    onRestoreFromDriveBackup { success, msg ->
+                                        if (!success && (msg.contains("sign in", ignoreCase = true) || msg.contains("authoriz", ignoreCase = true) || msg.contains("consent", ignoreCase = true))) {
+                                            showAuthorizeDriveDialog = true
+                                            onConnectGoogleDrive()
+                                        }
+                                        Toast.makeText(localContext, msg, Toast.LENGTH_LONG).show()
+                                    }
+                                } else if (hasValidDriveToken()) {
+                                    onRestoreFinancialData()
+                                } else {
+                                    Toast.makeText(localContext, "Please authorize your Google account to restore from My Drive/PayCycle Budget/", Toast.LENGTH_LONG).show()
+                                    showAuthorizeDriveDialog = true
+                                    onConnectGoogleDrive()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("restore_from_drive_vault_button")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Restore from My Drive/PayCycle Budget/ Backup", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
 
                         OutlinedButton(

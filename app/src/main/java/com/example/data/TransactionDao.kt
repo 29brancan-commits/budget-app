@@ -106,4 +106,7 @@ interface TransactionDao {
 
     @Query("DELETE FROM debt_payments WHERE debtId = :debtId")
     suspend fun deletePaymentsForDebt(debtId: Int)
+
+    @Query("DELETE FROM debt_payments")
+    suspend fun clearDebtPayments()
 }

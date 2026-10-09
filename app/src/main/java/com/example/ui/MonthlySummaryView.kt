@@ -57,6 +57,22 @@ fun MonthlySummaryView(
     var billStatusFilter by rememberSaveable { mutableStateOf("All") } // "All", "Due", "Paid", "AutoPay"
     var showMonthPickerModal by remember { mutableStateOf(false) }
 
+    val currentCycleMonth = remember(uiState.anchorPayday) {
+        val realCurrentPayday = DateUtils.getPaydayOnOrBefore(LocalDate.now(), uiState.anchorPayday)
+        YearMonth.from(realCurrentPayday)
+    }
+
+    val earliestMonthWithCycles = remember(uiState.allCalculatedPayPeriods, currentCycleMonth) {
+        val minMonth = uiState.allCalculatedPayPeriods.map { YearMonth.from(it.payday) }.minOrNull() ?: currentCycleMonth
+        maxOf(minMonth, currentCycleMonth)
+    }
+
+    androidx.compose.runtime.LaunchedEffect(earliestMonthWithCycles) {
+        if (selectedMonth.isBefore(earliestMonthWithCycles)) {
+            selectedMonth = earliestMonthWithCycles
+        }
+    }
+
     val report = remember(selectedMonth, uiState, activeAccountFilter) {
         MonthlySummaryCalculator.calculate(
             month = selectedMonth,
@@ -136,18 +152,21 @@ fun MonthlySummaryView(
                     }
 
                     // Month Switcher Controls
+                    val canGoPrevMonth = selectedMonth.isAfter(earliestMonthWithCycles)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         IconButton(
-                            onClick = { selectedMonth = selectedMonth.minusMonths(1) },
+                            onClick = { if (canGoPrevMonth) selectedMonth = selectedMonth.minusMonths(1) },
+                            enabled = canGoPrevMonth,
                             modifier = Modifier.size(32.dp).testTag("monthly_prev_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Previous Month",
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(16.dp),
+                                tint = if (canGoPrevMonth) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                             )
                         }
 
@@ -370,8 +389,16 @@ fun MonthlySummaryView(
                     modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val availableMonths = remember {
-                        (-6..12).map { offset -> YearMonth.now().plusMonths(offset.toLong()) }
+                    val availableMonths = remember(earliestMonthWithCycles) {
+                        val start = earliestMonthWithCycles
+                        val end = YearMonth.now().plusMonths(12)
+                        val list = mutableListOf<YearMonth>()
+                        var curr = start
+                        while (!curr.isAfter(end)) {
+                            list.add(curr)
+                            curr = curr.plusMonths(1)
+                        }
+                        list
                     }
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
                         items(availableMonths) { m ->

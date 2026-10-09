@@ -22,6 +22,83 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 class CurrentPayCycleWidgetService : RemoteViewsService() {
+    companion object {
+        fun buildExpenseItemRemoteViews(
+            context: Context,
+            expense: UpcomingExpenseItem,
+            dateFmt: DateTimeFormatter
+        ): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_expense_item)
+
+            views.setTextViewText(R.id.widget_item_title, expense.title)
+
+            // AutoPay indicator
+            views.setViewVisibility(
+                R.id.widget_item_autopay,
+                if (expense.isAutoPay) View.VISIBLE else View.GONE
+            )
+
+            // Account label
+            val accText = if (expense.accountName.isNotBlank() &&
+                !expense.accountName.equals("Primary Account", ignoreCase = true) &&
+                !expense.accountName.equals("Primary", ignoreCase = true)
+            ) {
+                "• ${expense.accountName}"
+            } else {
+                ""
+            }
+            views.setTextViewText(R.id.widget_item_account, accText)
+            views.setViewVisibility(
+                R.id.widget_item_account,
+                if (accText.isNotEmpty()) View.VISIBLE else View.GONE
+            )
+
+            // Due date countdown & styling
+            val today = LocalDate.now()
+            val formattedDueDate = expense.dueDate.format(dateFmt)
+            val daysBetween = ChronoUnit.DAYS.between(today, expense.dueDate)
+
+            val (dateLabel, dateTextColor) = when {
+                daysBetween < 0 -> Pair("Overdue ($formattedDueDate)", Color.parseColor("#EF4444"))
+                daysBetween == 0L -> Pair("Due Today", Color.parseColor("#EF4444"))
+                daysBetween == 1L -> Pair("Due Tomorrow", Color.parseColor("#F59E0B"))
+                daysBetween in 2..7 -> Pair("Due in $daysBetween days ($formattedDueDate)", Color.parseColor("#9CA3AF"))
+                else -> Pair("Due $formattedDueDate", Color.parseColor("#9CA3AF"))
+            }
+
+            views.setTextViewText(R.id.widget_item_date, dateLabel)
+            views.setTextColor(R.id.widget_item_date, dateTextColor)
+
+            views.setTextViewText(
+                R.id.widget_item_amount,
+                String.format(Locale.US, "-$%,.2f", expense.amount)
+            )
+
+            // Fill-in intent to open app on item click
+            val fillInIntent = Intent().apply {
+                putExtra("extra_item_action", "open_app")
+                putExtra("extra_tx_id", expense.transactionRef?.id ?: -1)
+                putExtra("extra_bill_title", expense.title)
+            }
+            views.setOnClickFillInIntent(R.id.widget_expense_item_root, fillInIntent)
+
+            // Fill-in intent to directly mark bill as paid from checkmark button without opening app!
+            val checkFillInIntent = Intent().apply {
+                putExtra("extra_item_action", "mark_paid")
+                putExtra("extra_tx_id", expense.transactionRef?.id ?: -1)
+                putExtra("extra_bill_title", expense.title)
+                putExtra("extra_bill_amount", expense.amount)
+                putExtra("extra_bill_due_date", expense.dueDate.toString())
+                putExtra("extra_bill_account", expense.accountName)
+                putExtra("extra_bill_category", expense.category)
+                putExtra("extra_bill_is_autopay", expense.isAutoPay)
+            }
+            views.setOnClickFillInIntent(R.id.widget_item_check_btn, checkFillInIntent)
+
+            return views
+        }
+    }
+
     override fun onGetViewFactory(intent: Intent): RemoteViewsFactory {
         val appWidgetId = intent.getIntExtra(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
@@ -119,73 +196,7 @@ class CurrentPayCycleRemoteViewsFactory(
 
     override fun getViewAt(position: Int): RemoteViews? {
         if (position < 0 || position >= items.size) return null
-
-        val expense = items[position]
-        val views = RemoteViews(context.packageName, R.layout.widget_expense_item)
-
-        views.setTextViewText(R.id.widget_item_title, expense.title)
-
-        // AutoPay indicator
-        views.setViewVisibility(
-            R.id.widget_item_autopay,
-            if (expense.isAutoPay) View.VISIBLE else View.GONE
-        )
-
-        // Account label
-        val accText = if (expense.accountName.isNotBlank() && !expense.accountName.equals("Primary Account", ignoreCase = true) && !expense.accountName.equals("Primary", ignoreCase = true)) {
-            "• ${expense.accountName}"
-        } else {
-            ""
-        }
-        views.setTextViewText(R.id.widget_item_account, accText)
-        views.setViewVisibility(
-            R.id.widget_item_account,
-            if (accText.isNotEmpty()) View.VISIBLE else View.GONE
-        )
-
-        // Due date countdown & styling
-        val today = LocalDate.now()
-        val formattedDueDate = expense.dueDate.format(dateFmt)
-        val daysBetween = ChronoUnit.DAYS.between(today, expense.dueDate)
-
-        val (dateLabel, dateTextColor) = when {
-            daysBetween < 0 -> Pair("Overdue ($formattedDueDate)", Color.parseColor("#EF4444"))
-            daysBetween == 0L -> Pair("Due Today", Color.parseColor("#EF4444"))
-            daysBetween == 1L -> Pair("Due Tomorrow", Color.parseColor("#F59E0B"))
-            daysBetween in 2..7 -> Pair("Due in $daysBetween days ($formattedDueDate)", Color.parseColor("#9CA3AF"))
-            else -> Pair("Due $formattedDueDate", Color.parseColor("#9CA3AF"))
-        }
-
-        views.setTextViewText(R.id.widget_item_date, dateLabel)
-        views.setTextColor(R.id.widget_item_date, dateTextColor)
-
-        views.setTextViewText(
-            R.id.widget_item_amount,
-            String.format(Locale.US, "-$%,.2f", expense.amount)
-        )
-
-        // Fill-in intent to open app on item click
-        val fillInIntent = Intent().apply {
-            putExtra("extra_item_action", "open_app")
-            putExtra("extra_tx_id", expense.transactionRef?.id ?: -1)
-            putExtra("extra_bill_title", expense.title)
-        }
-        views.setOnClickFillInIntent(R.id.widget_expense_item_root, fillInIntent)
-
-        // Fill-in intent to directly mark bill as paid from checkmark button without opening app!
-        val checkFillInIntent = Intent().apply {
-            putExtra("extra_item_action", "mark_paid")
-            putExtra("extra_tx_id", expense.transactionRef?.id ?: -1)
-            putExtra("extra_bill_title", expense.title)
-            putExtra("extra_bill_amount", expense.amount)
-            putExtra("extra_bill_due_date", expense.dueDate.toString())
-            putExtra("extra_bill_account", expense.accountName)
-            putExtra("extra_bill_category", expense.category)
-            putExtra("extra_bill_is_autopay", expense.isAutoPay)
-        }
-        views.setOnClickFillInIntent(R.id.widget_item_check_btn, checkFillInIntent)
-
-        return views
+        return CurrentPayCycleWidgetService.buildExpenseItemRemoteViews(context, items[position], dateFmt)
     }
 
     override fun getLoadingView(): RemoteViews? = null

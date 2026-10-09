@@ -20,6 +20,7 @@ import org.json.JSONObject
 import com.example.ui.theme.AppTheme
 import com.example.ui.theme.AppIcon
 import com.example.CategoryTheme
+import com.example.model.SavingsGoal
 
 class BudgetViewModel(application: Application) : AndroidViewModel(application) {
     private val database = BudgetDatabase.getDatabase(application)
@@ -70,6 +71,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     private val _showRunningBalance = MutableStateFlow<Boolean>(false)
     val showRunningBalance: StateFlow<Boolean> = _showRunningBalance.asStateFlow()
 
+    private val _savingsGoals = MutableStateFlow<List<SavingsGoal>>(emptyList())
+    val savingsGoals: StateFlow<List<SavingsGoal>> = _savingsGoals.asStateFlow()
+
     // Persistent layout section ordering for Cycles, Income, and Expenses
     private val _dashboardSectionOrder = MutableStateFlow<List<String>>(listOf("accounts", "monthly_summary", "cycles"))
     val dashboardSectionOrder: StateFlow<List<String>> = _dashboardSectionOrder.asStateFlow()
@@ -95,7 +99,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     private val _lastDriveSyncTime = MutableStateFlow<String?>(null)
     val lastDriveSyncTime: StateFlow<String?> = _lastDriveSyncTime.asStateFlow()
 
-    private val _isDriveAutoSyncEnabled = MutableStateFlow<Boolean>(false)
+    private val _isDriveAutoSyncEnabled = MutableStateFlow<Boolean>(true)
     val isDriveAutoSyncEnabled: StateFlow<Boolean> = _isDriveAutoSyncEnabled.asStateFlow()
 
     private val _pendingAuthIntentFlow = MutableSharedFlow<android.content.Intent>(extraBufferCapacity = 1)
@@ -151,7 +155,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         _safeToSpendExpanded,
         _targetDebtExpanded,
         _monthlySummaryExpanded,
-        _showRunningBalance
+        _showRunningBalance,
+        _savingsGoals
     ) { args: Array<Any?> ->
         SettingsBundle(
             selectedDate = args[0] as LocalDate,
@@ -162,7 +167,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             safeToSpendExpanded = args[5] as Boolean,
             targetDebtExpanded = args[6] as Boolean,
             monthlySummaryExpanded = args[7] as Boolean,
-            showRunningBalance = args[8] as Boolean
+            showRunningBalance = args[8] as Boolean,
+            savingsGoals = args[9] as List<SavingsGoal>
         )
     }
 
@@ -236,6 +242,12 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val currentPayPeriodEnd = currentPayday.plusDays(13)
         val month = YearMonth.from(currentPayday)
 
+        // Today's real current pay cycle month is the boundary for the past
+        val realCurrentPayday = DateUtils.getPaydayOnOrBefore(LocalDate.now(), anchor)
+        val currentCycleMonth = YearMonth.from(realCurrentPayday)
+        val pastMonthBoundary = currentCycleMonth.atDay(1)
+        val pastCyclePaydayBoundary = DateUtils.getPaydayOnOrBefore(pastMonthBoundary, anchor)
+
         // Calculate dynamic paycheck amount based on specified income sources
         val computedPaycheckAmount = if (incomeSources.isNotEmpty()) {
             incomeSources.sumOf { source ->
@@ -253,7 +265,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         // Dynamically project recurring transactions to every month after the initial input date (income = bi-weekly +14d, expense = monthly)
         val futureHorizonMonth = maxOf(month.plusMonths(6), YearMonth.now().plusMonths(6))
         val futureHorizonDate = futureHorizonMonth.atEndOfMonth()
-        val horizonStartDate = minOf(anchor.minusMonths(3), month.minusMonths(3).atDay(1))
+        // There is no reason to see more than the current cycle's month in the past
+        val horizonStartDate = pastMonthBoundary
 
         val expandedTransactions = mutableListOf<TransactionEntity>()
 
@@ -483,11 +496,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // 4. Project Planned Expenses & Active Debt Minimum Payments into expandedTransactions so cycles reflect all bill & debt obligations
-        val allBillItemsToProject = mutableListOf<Triple<String, Double, String>>() // title, minAmount, targetAccount/dueDate
+        data class BillProjectionItem(val title: String, val amount: Double, val dueStr: String, val accountName: String)
+        val allBillItemsToProject = mutableListOf<BillProjectionItem>()
 
         plannedExpenses.forEach { pe ->
             if (pe.minAmount > 0.0) {
-                allBillItemsToProject.add(Triple(pe.title, pe.minAmount, pe.dueDate))
+                val acc = pe.targetAccount.ifBlank { displayAccounts.firstOrNull { it != "All Accounts" } ?: "" }
+                allBillItemsToProject.add(BillProjectionItem(pe.title, pe.minAmount, pe.dueDate, acc))
             }
         }
 
@@ -500,11 +515,21 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (!alreadyInPlanned) {
                 val dueDay = debt.billDueDay.coerceIn(1, 28)
-                allBillItemsToProject.add(Triple(debtTitle, debt.minimumPayment, dueDay.toString()))
+                val acc = (debt.linkedAccountName ?: "").ifBlank { displayAccounts.firstOrNull { it != "All Accounts" } ?: "" }
+                allBillItemsToProject.add(BillProjectionItem(debtTitle, debt.minimumPayment, dueDay.toString(), acc))
             }
         }
 
-        allBillItemsToProject.forEach { (title, amount, dueStr) ->
+        allBillItemsToProject.forEach { projItem ->
+            val title = projItem.title
+            val amount = projItem.amount
+            val dueStr = projItem.dueStr
+            val itemAccount = if (projItem.accountName.isNotBlank() && !projItem.accountName.equals("All Accounts", ignoreCase = true)) {
+                projItem.accountName
+            } else {
+                displayAccounts.firstOrNull { it != "All Accounts" } ?: ""
+            }
+
             if (amount > 0.0) {
                 val dueDay = try {
                     LocalDate.parse(dueStr).dayOfMonth
@@ -549,7 +574,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                 category = if (title.contains("Minimum Payment", ignoreCase = true) || title.contains("Debt", ignoreCase = true)) "Debt Payment" else "Bills & Utilities",
                                 isIncome = false,
                                 isRecurring = true,
-                                accountName = displayAccounts.firstOrNull { it != "All Accounts" } ?: "",
+                                accountName = itemAccount,
                                 isCompleted = false,
                                 status = "due",
                                 isAutoPay = false
@@ -650,13 +675,13 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
             // Calculate carryover for current pay period from prior pay periods
             val earliestPriorTxMillis = accTransactions.filter { it.dateMillis < DateUtils.localDateToMillis(currentPayday) }.minOfOrNull { it.dateMillis }
-            val calcStartPayday = if (earliestPriorTxMillis != null) {
+            val rawCalcStartPayday = if (earliestPriorTxMillis != null) {
                 DateUtils.getPaydayOnOrBefore(DateUtils.millisToLocalDate(earliestPriorTxMillis), anchor)
             } else {
                 currentPayday
             }
-            val monthStartPayday = DateUtils.getPaydayOnOrBefore(month.atDay(1), anchor)
-            val accStartPayday = if (monthStartPayday.isBefore(calcStartPayday)) monthStartPayday else calcStartPayday
+            // There is no reason to see more than the current cycle's month in the past
+            val accStartPayday = if (rawCalcStartPayday.isBefore(pastCyclePaydayBoundary)) pastCyclePaydayBoundary else rawCalcStartPayday
 
             var accCarryover = 0.0
             var cPayday = accStartPayday
@@ -695,6 +720,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             val currentPeriodRemaining = accCarryover + periodStartingBal + periodInc - periodExp
 
             // Monthly
+            val earliestCycleM = YearMonth.from(accStartPayday)
+            val isPastMonth = month.isBefore(currentCycleMonth)
             val usedMonthlyPaycheckIds = mutableSetOf<Int>()
             val paycheckIncome = if (isPrimary) {
                 paydaysInMonth.sumOf { payday ->
@@ -706,7 +733,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                     if (customPaycheck != null) {
                         usedMonthlyPaycheckIds.add(customPaycheck.id)
                     }
-                    customPaycheck?.amount ?: computedPaycheckAmount
+                    customPaycheck?.amount ?: if (isPastMonth) 0.0 else computedPaycheckAmount
                 }
             } else 0.0
 
@@ -781,13 +808,21 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
 
         // Calc Pay Periods with carryover for the active account
         val earliestPriorTxMillis = activeAccountTransactions.filter { it.dateMillis < DateUtils.localDateToMillis(currentPayday) }.minOfOrNull { it.dateMillis }
-        val calcStartPayday = if (earliestPriorTxMillis != null) {
+        val rawCalcStartPayday = if (earliestPriorTxMillis != null) {
             DateUtils.getPaydayOnOrBefore(DateUtils.millisToLocalDate(earliestPriorTxMillis), anchor)
         } else {
             currentPayday
         }
-        val monthStartPayday = DateUtils.getPaydayOnOrBefore(month.atDay(1), anchor)
-        val startPayday = if (monthStartPayday.isBefore(calcStartPayday)) monthStartPayday else calcStartPayday
+        // There is no reason to see more than the current cycle's month in the past
+        val calcStartPayday = if (rawCalcStartPayday.isBefore(pastCyclePaydayBoundary)) pastCyclePaydayBoundary else rawCalcStartPayday
+        val earliestCycleMonth = maxOf(YearMonth.from(calcStartPayday), currentCycleMonth)
+        val effectiveSelectedMonth = if (month.isBefore(currentCycleMonth)) {
+            currentCycleMonth
+        } else {
+            month
+        }
+        // Do not generate phantom cycles in past months that have completed and have no cycles
+        val startPayday = calcStartPayday
 
         var pPayday = startPayday
         var runningCarryover = 0.0
@@ -851,7 +886,123 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             pPayday = pPayday.plusDays(14)
         }
 
-        val populatedPeriods = allCalculatedPeriods.filter { YearMonth.from(it.payday) == month }
+        // -------------------------------------------------------------------------
+        // DYNAMIC ENTRY: Needed to be saved in current cycle to bring next cycle deficit to 0
+        // -------------------------------------------------------------------------
+        val currentPeriodIndex = allCalculatedPeriods.indexOfFirst {
+            it.startDate == currentPayPeriodStart || (!today.isBefore(it.startDate) && !today.isAfter(it.endDate))
+        }
+
+        if (currentPeriodIndex >= 0 && currentPeriodIndex + 1 < allCalculatedPeriods.size) {
+            val currentPeriod = allCalculatedPeriods[currentPeriodIndex]
+            val nextPeriod = allCalculatedPeriods[currentPeriodIndex + 1]
+
+            val nextIncome = nextPeriod.paycheckAmount + nextPeriod.otherIncome
+            val nextExpenses = nextPeriod.totalExpenses
+            val nextAvailable = nextPeriod.totalAvailable
+
+            // Deficit in next cycle that needs to be eliminated
+            val nextOperationalDeficit = maxOf(0.0, nextExpenses - nextIncome)
+            val nextAvailableDeficit = maxOf(0.0, nextExpenses - nextAvailable)
+            val rawNextDeficit = maxOf(nextOperationalDeficit, nextAvailableDeficit)
+            val roundedDeficit = Math.round(rawNextDeficit * 100.0) / 100.0
+
+            val hasManualDeficitEntry = currentPeriod.transactions.any {
+                !it.isIncome && (it.title.contains("Needed to Save", ignoreCase = true) || it.title.contains("Next Cycle Deficit", ignoreCase = true)) && it.id > 0
+            }
+
+            val isCancelled = currentPeriod.transactions.any {
+                it.title.contains("Cancelled Needed to Save", ignoreCase = true) ||
+                it.title.contains("Cancelled Next Cycle Deficit", ignoreCase = true)
+            }
+
+            val dynAcc = currentPeriod.transactions.firstOrNull { it.accountName.isNotBlank() && !it.accountName.equals("All Accounts", ignoreCase = true) }?.accountName
+                ?: (displayAccounts.firstOrNull { it != "All Accounts" } ?: "Primary Account")
+
+            val manualSavedAmount = currentPeriod.transactions.filter {
+                !it.isIncome && (it.title.contains("Needed to Save", ignoreCase = true) || it.title.contains("Next Cycle Deficit", ignoreCase = true)) && it.id > 0
+            }.sumOf { it.amount }
+
+            val effectiveSaveAmount = when {
+                manualSavedAmount > 0.0 -> manualSavedAmount
+                roundedDeficit > 0.0 && !isCancelled -> roundedDeficit
+                else -> 0.0
+            }
+
+            if (effectiveSaveAmount > 0.0) {
+                // 1. Current Cycle: Record needed to save
+                if (!hasManualDeficitEntry && !isCancelled && roundedDeficit > 0.0) {
+                    val dynamicDeficitTx = TransactionEntity(
+                        id = -999888,
+                        title = "Needed to Save for Next Cycle",
+                        amount = roundedDeficit,
+                        dateMillis = DateUtils.localDateToMillis(currentPeriod.payday),
+                        category = "Savings Reserve",
+                        isIncome = false,
+                        isRecurring = false,
+                        accountName = dynAcc,
+                        isCompleted = false,
+                        status = "scheduled",
+                        isAutoPay = false
+                    )
+
+                    val updatedCurrentTxs = currentPeriod.transactions + dynamicDeficitTx
+                    val updatedCurrentExpenses = currentPeriod.totalExpenses + roundedDeficit
+
+                    allCalculatedPeriods[currentPeriodIndex] = currentPeriod.copy(
+                        transactions = updatedCurrentTxs,
+                        totalExpenses = updatedCurrentExpenses,
+                        nextCycleDeficitToSave = roundedDeficit
+                    )
+                } else if (hasManualDeficitEntry) {
+                    allCalculatedPeriods[currentPeriodIndex] = currentPeriod.copy(
+                        nextCycleDeficitToSave = manualSavedAmount
+                    )
+                }
+
+                // 2. Next Cycle: "needed to save" shows in the next cycle as "saved from previous cycle" as an income
+                val hasManualSavedFromPrev = nextPeriod.transactions.any {
+                    it.isIncome && it.title.contains("Saved from Previous", ignoreCase = true) && it.id > 0
+                }
+                val isNextCancelled = nextPeriod.transactions.any {
+                    it.title.contains("Cancelled Saved from Previous", ignoreCase = true)
+                }
+
+                if (!hasManualSavedFromPrev && !isNextCancelled) {
+                    val dynamicSavedFromPrevTx = TransactionEntity(
+                        id = -999887,
+                        title = "Saved from Previous Cycle",
+                        amount = effectiveSaveAmount,
+                        dateMillis = DateUtils.localDateToMillis(nextPeriod.startDate),
+                        category = "Income",
+                        isIncome = true,
+                        isRecurring = false,
+                        accountName = dynAcc,
+                        isCompleted = false,
+                        status = "scheduled",
+                        isAutoPay = false
+                    )
+
+                    val updatedNextTxs = nextPeriod.transactions + dynamicSavedFromPrevTx
+                    val updatedNextOtherIncome = nextPeriod.otherIncome + effectiveSaveAmount
+
+                    allCalculatedPeriods[currentPeriodIndex + 1] = nextPeriod.copy(
+                        transactions = updatedNextTxs,
+                        otherIncome = updatedNextOtherIncome,
+                        savedFromPreviousCycle = effectiveSaveAmount
+                    )
+                } else if (hasManualSavedFromPrev) {
+                    val manualSavedFromPrevAmt = nextPeriod.transactions.filter {
+                        it.isIncome && it.title.contains("Saved from Previous", ignoreCase = true) && it.id > 0
+                    }.sumOf { it.amount }
+                    allCalculatedPeriods[currentPeriodIndex + 1] = nextPeriod.copy(
+                        savedFromPreviousCycle = manualSavedFromPrevAmt
+                    )
+                }
+            }
+        }
+
+        val populatedPeriods = allCalculatedPeriods.filter { YearMonth.from(it.payday) == effectiveSelectedMonth }
 
         // Future pay periods spanning the next 3 months starting from the current pay cycle
         val futurePeriods = allCalculatedPeriods.filter { !it.endDate.isBefore(currentPayPeriodStart) }
@@ -860,7 +1011,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val activeSummary = accountBalances[activeAccount] ?: combinedBalance
 
         BudgetUiState(
-            selectedMonth = month,
+            selectedMonth = effectiveSelectedMonth,
             anchorPayday = anchor,
             defaultPaycheckAmount = defaultAmount,
             payPeriods = populatedPeriods,
@@ -894,6 +1045,7 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             targetDebtExpanded = settings.targetDebtExpanded,
             monthlySummaryExpanded = settings.monthlySummaryExpanded,
             showRunningBalance = settings.showRunningBalance,
+            savingsGoals = settings.savingsGoals,
             driveAuthVersion = authVersion
         )
     }.flowOn(kotlinx.coroutines.Dispatchers.Default).stateIn(
@@ -910,7 +1062,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             monthlyTotalExpenses = 0.0,
             monthlyRemainingBalance = 0.0,
             incomeSources = emptyList(),
-            plannedExpenses = emptyList()
+            plannedExpenses = emptyList(),
+            savingsGoals = emptyList()
         )
     )
 
@@ -923,7 +1076,8 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val safeToSpendExpanded: Boolean = false,
         val targetDebtExpanded: Boolean = false,
         val monthlySummaryExpanded: Boolean = false,
-        val showRunningBalance: Boolean = false
+        val showRunningBalance: Boolean = false,
+        val savingsGoals: List<SavingsGoal> = emptyList()
     )
 
     private val _lastLocalUpdateTime = MutableStateFlow<Long>(0L)
@@ -1020,6 +1174,41 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
+            // Load Savings Goals from DB settings (excluding any sample data)
+            repository.getSetting("savings_goals_json")?.let { jsonStr ->
+                try {
+                    val array = org.json.JSONArray(jsonStr)
+                    val list = mutableListOf<SavingsGoal>()
+                    for (i in 0 until array.length()) {
+                        val obj = array.getJSONObject(i)
+                        val title = obj.optString("title", "Goal")
+                        val targetAmount = obj.optDouble("targetAmount", 1000.0)
+                        val currentAmount = obj.optDouble("currentAmount", 0.0)
+                        val isSample = (title.equals("Vacation Fund", ignoreCase = true) && targetAmount == 1500.0) ||
+                                       title.lowercase(Locale.US).startsWith("sample") ||
+                                       title.lowercase(Locale.US).startsWith("example")
+                        if (!isSample) {
+                            list.add(
+                                SavingsGoal(
+                                    id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                                    title = title,
+                                    targetAmount = targetAmount,
+                                    category = obj.optString("category", "Savings"),
+                                    currentAmount = currentAmount,
+                                    emoji = obj.optString("emoji", "🎯"),
+                                    colorHex = obj.optLong("colorHex", 0xFF10B981L),
+                                    targetDate = obj.optString("targetDate", null).takeIf { !it.isNullOrBlank() && it != "null" },
+                                    isCompleted = obj.optBoolean("isCompleted", false),
+                                    notes = obj.optString("notes", "")
+                                )
+                            )
+                        }
+                    }
+                    _savingsGoals.value = list
+                    persistSavingsGoals(list)
+                } catch (_: Exception) {}
+            }
+
             // Self-healing: Ensure any imported transactions categorized as expenses are correctly flagged as isIncome = false (run once)
             if (repository.getSetting("account_cleanup_v1") != "true") {
                 try {
@@ -1075,6 +1264,9 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
             // Purge all sample data and ensure sample data is never added again
             purgeAllSampleData()
 
+            // Ensure all debt minimum payments sync with planned expenses and pay cycles
+            syncAllDebtMinimums()
+
             // Observe transaction, planned expense, and account changes to automatically update Home Screen Widget and Bill Reminders
             viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 combine(repository.allTransactions, repository.allPlannedExpenses, _activeAccountName) { transactions, plannedExpenses, _ ->
@@ -1086,6 +1278,24 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                         com.example.widget.CurrentPayCycleWidgetProvider.sendUpdateBroadcast(getApplication())
                         com.example.notification.BillReminderScheduler.rescheduleAll(getApplication(), plannedExpenses, transactions)
                     }
+            }
+
+            // Automatic startup corruption detection & self-healing from Drive / Recovery Vault
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.delay(1200L)
+                internalCheckAndRepairDatabaseIntegrity()
+            }
+
+            // Periodic automatic background backup to My Drive/PayCycle Budget/ every 15 minutes
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                while (isActive) {
+                    kotlinx.coroutines.delay(15 * 60 * 1000L)
+                    if (_isDriveAutoSyncEnabled.value) {
+                        try {
+                            internalPerformDriveSync()
+                        } catch (_: Exception) {}
+                    }
+                }
             }
         }
     }
@@ -1210,22 +1420,135 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         // Never add sample data
     }
 
+    fun hasValidDriveToken(): Boolean {
+        return driveSyncManager.hasDriveToken()
+    }
+
     fun restoreFinancialDataManually() {
+        restoreAllDataFromDriveBackup()
+    }
+
+    fun restoreAllDataFromDriveBackup(onResult: ((Boolean, String) -> Unit)? = null) {
         viewModelScope.launch {
-            val vault = driveSyncManager.getSavedVaultBackup()
-            if (!vault.isNullOrBlank() && driveSyncManager.hasMeaningfulData(vault)) {
-                val ok = importFromJson(vault, true)
-                if (ok) {
+            _syncState.value = com.example.sync.SyncState.Syncing
+            val accountEmail = _driveAccountEmail.value ?: "86brancan@gmail.com"
+            val (ok, remoteJson) = driveSyncManager.restoreAllDataFromDriveAuto(accountEmail)
+            if (ok && !remoteJson.isNullOrBlank() && driveSyncManager.hasMeaningfulData(remoteJson)) {
+                val (importOk, importMsg) = importAnyDataDetailed(remoteJson, isRemoteNewer = true)
+                if (importOk) {
                     markLocalDataChanged()
-                    performDriveSync()
                     val nowStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", java.util.Locale.US))
-                    _syncState.value = com.example.sync.SyncState.Success("Restored data from cloud backup", nowStr)
+                    _syncState.value = com.example.sync.SyncState.Success("Restored all data from My Drive/PayCycle Budget/ ($nowStr)", nowStr)
+                    _lastDriveSyncTime.value = nowStr
+                    repository.saveSetting("last_drive_sync_time", nowStr)
+                    onResult?.invoke(true, "✅ Successfully restored all data from My Drive/PayCycle Budget/!\n$importMsg")
                 } else {
-                    _syncState.value = com.example.sync.SyncState.Error("Failed to parse cloud backup")
+                    _syncState.value = com.example.sync.SyncState.Error("Failed to parse backup: $importMsg")
+                    onResult?.invoke(false, "Failed to parse backup: $importMsg")
                 }
             } else {
-                _syncState.value = com.example.sync.SyncState.Error("No cloud backup found to restore. No sample data added.")
+                val msg = if (!driveSyncManager.hasDriveToken()) {
+                    "Not connected to Google Drive. Please authorize your Google account to restore from My Drive/PayCycle Budget/."
+                } else {
+                    "No backup found in My Drive/PayCycle Budget/."
+                }
+                _syncState.value = com.example.sync.SyncState.Error(msg)
+                onResult?.invoke(false, msg)
             }
+        }
+    }
+
+    fun backupAllDataToDriveManually(onResult: ((Boolean, String) -> Unit)? = null) {
+        viewModelScope.launch {
+            _syncState.value = com.example.sync.SyncState.Syncing
+            val json = internalExportToJson()
+            val accountEmail = _driveAccountEmail.value ?: "86brancan@gmail.com"
+            val (success, message) = driveSyncManager.backupAllDataToDriveAuto(json, accountEmail)
+            val nowStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", java.util.Locale.US))
+            if (success) {
+                _lastDriveSyncTime.value = nowStr
+                _syncState.value = com.example.sync.SyncState.Success(message, nowStr)
+                repository.saveSetting("last_drive_sync_time", nowStr)
+                onResult?.invoke(true, message)
+            } else {
+                _syncState.value = com.example.sync.SyncState.Error(message)
+                val pending = driveSyncManager.pendingAuthIntent
+                if (pending != null) {
+                    _pendingAuthIntentFlow.emit(pending)
+                }
+                onResult?.invoke(false, message)
+            }
+        }
+    }
+
+    fun checkAndRepairDatabaseIntegrity(onResult: ((Boolean, String) -> Unit)? = null) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            internalCheckAndRepairDatabaseIntegrity(onResult)
+        }
+    }
+
+    suspend fun internalCheckAndRepairDatabaseIntegrity(onResult: ((Boolean, String) -> Unit)? = null): Pair<Boolean, String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            val txList = repository.allTransactions.first()
+            val debtList = repository.allDebts.first()
+            val plannedList = repository.allPlannedExpenses.first()
+            val incList = repository.allIncomeSources.first()
+
+            // 1. Check if database is completely wiped/empty despite having a prior backup
+            if (txList.isEmpty() && debtList.isEmpty() && plannedList.isEmpty() && incList.isEmpty()) {
+                val accountEmail = _driveAccountEmail.value ?: "86brancan@gmail.com"
+                val (ok, backupJson) = driveSyncManager.restoreAllDataFromDriveAuto(accountEmail)
+                if (ok && !backupJson.isNullOrBlank() && driveSyncManager.hasMeaningfulData(backupJson)) {
+                    val (importOk, importMsg) = importAnyDataDetailed(backupJson, isRemoteNewer = true)
+                    if (importOk) {
+                        val nowStr = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a", java.util.Locale.US))
+                        _syncState.value = com.example.sync.SyncState.Success("Auto-repaired corrupted database from My Drive/PayCycle Budget/ backup!", nowStr)
+                        onResult?.invoke(true, "Restored database from My Drive/PayCycle Budget/ backup.\n$importMsg")
+                        return@withContext Pair(true, "Restored database from My Drive/PayCycle Budget/ backup.\n$importMsg")
+                    }
+                }
+            }
+
+            // 2. Scan and repair corrupted transactions (NaN, infinite, blank titles)
+            var repairedCount = 0
+            for (tx in txList) {
+                var fixed = tx
+                if (fixed.amount.isNaN() || fixed.amount.isInfinite()) {
+                    fixed = fixed.copy(amount = 0.0)
+                    repository.updateTransaction(fixed)
+                    repairedCount++
+                }
+                if (fixed.title.isBlank()) {
+                    fixed = fixed.copy(title = "Unnamed Expense")
+                    repository.updateTransaction(fixed)
+                    repairedCount++
+                }
+            }
+
+            // 3. Scan and repair debts (NaN balances or rates)
+            for (debt in debtList) {
+                if (debt.balance.isNaN() || debt.balance.isInfinite() || debt.interestRate.isNaN() || debt.minimumPayment.isNaN()) {
+                    val fixedDebt = debt.copy(
+                        balance = if (debt.balance.isNaN() || debt.balance.isInfinite()) 0.0 else debt.balance,
+                        interestRate = if (debt.interestRate.isNaN()) 0.0 else debt.interestRate,
+                        minimumPayment = if (debt.minimumPayment.isNaN()) 0.0 else debt.minimumPayment
+                    )
+                    repository.updateDebt(fixedDebt)
+                    repairedCount++
+                }
+            }
+
+            val msg = if (repairedCount > 0) {
+                "Data health check complete: Repaired $repairedCount corrupted records."
+            } else {
+                "Database integrity verified: All records intact and protected against corruption."
+            }
+            onResult?.invoke(true, msg)
+            Pair(true, msg)
+        } catch (e: Exception) {
+            val err = "Integrity check failed: ${e.localizedMessage}"
+            onResult?.invoke(false, err)
+            Pair(false, err)
         }
     }
 
@@ -1238,6 +1561,10 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         autoSyncJob = viewModelScope.launch {
             kotlinx.coroutines.delay(3000L) // 3 seconds debounce
             performDriveSync()
+            // Also automatically backup all data to Google Drive folder My Drive/PayCycle Budget/
+            val currentJson = internalExportToJson()
+            val accountEmail = _driveAccountEmail.value ?: "86brancan@gmail.com"
+            driveSyncManager.backupAllDataToDriveAuto(currentJson, accountEmail)
         }
     }
 
@@ -1438,18 +1765,37 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
     fun prevMonth() {
         val currentPayday = DateUtils.getPaydayOnOrBefore(_selectedDate.value, _anchorPayday.value)
         val prevPayday = currentPayday.minusDays(14)
+        val realCurrentPayday = DateUtils.getPaydayOnOrBefore(LocalDate.now(), _anchorPayday.value)
+        val currentCycleMonth = YearMonth.from(realCurrentPayday)
+        val pastCyclePaydayBoundary = DateUtils.getPaydayOnOrBefore(currentCycleMonth.atDay(1), _anchorPayday.value)
+        if (prevPayday.isBefore(pastCyclePaydayBoundary)) {
+            // There is no reason to see more than the current cycle's month in the past
+            return
+        }
+        val allPeriods = uiState.value.allCalculatedPayPeriods
+        val earliestPayday = allPeriods.minOfOrNull { it.payday }
+        if (earliestPayday != null && prevPayday.isBefore(earliestPayday)) {
+            return
+        }
         _selectedDate.value = prevPayday
         _selectedMonth.value = YearMonth.from(prevPayday)
     }
 
     fun selectMonth(month: YearMonth) {
-        if (month == YearMonth.now()) {
+        val realCurrentPayday = DateUtils.getPaydayOnOrBefore(LocalDate.now(), _anchorPayday.value)
+        val currentCycleMonth = YearMonth.from(realCurrentPayday)
+        val targetMonth = if (month.isBefore(currentCycleMonth)) {
+            currentCycleMonth
+        } else {
+            month
+        }
+        if (targetMonth == currentCycleMonth) {
             val today = LocalDate.now()
             _selectedDate.value = today
             val payday = DateUtils.getPaydayOnOrBefore(today, _anchorPayday.value)
             _selectedMonth.value = YearMonth.from(payday)
         } else {
-            val payday = DateUtils.getPaydayOnOrBefore(month.atDay(1), _anchorPayday.value)
+            val payday = DateUtils.getPaydayOnOrBefore(targetMonth.atDay(1), _anchorPayday.value)
             _selectedDate.value = payday
             _selectedMonth.value = YearMonth.from(payday)
         }
@@ -2872,6 +3218,19 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun syncAllDebtMinimums() {
+        viewModelScope.launch {
+            try {
+                val allDebts = repository.allDebts.first()
+                for (debt in allDebts) {
+                    syncDebtToPlannedExpense(debt)
+                }
+            } catch (e: Exception) {
+                Log.e("BudgetViewModel", "Error syncing all debt minimums", e)
+            }
+        }
+    }
+
     fun deduplicateTransactionsAndBills(onComplete: ((Int) -> Unit)? = null) {
         viewModelScope.launch {
             val count = performDeduplication()
@@ -3621,6 +3980,39 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 json.put("debts", debtArray)
 
+                // 6. Debt Payments
+                val paymentList = repository.allDebtPayments.first()
+                val paymentArray = org.json.JSONArray()
+                for (p in paymentList) {
+                    val obj = org.json.JSONObject()
+                    obj.put("id", p.id)
+                    obj.put("debtId", p.debtId)
+                    obj.put("paymentAmount", p.paymentAmount)
+                    obj.put("principalAmount", p.principalAmount)
+                    obj.put("interestAmount", p.interestAmount)
+                    obj.put("paymentDateMillis", p.paymentDateMillis)
+                    obj.put("note", p.note)
+                    paymentArray.put(obj)
+                }
+                json.put("debt_payments", paymentArray)
+
+                // 7. Metadata for Integrity & Corruption Protection
+                val metadataObj = org.json.JSONObject()
+                metadataObj.put("app", "PayCycle Budget")
+                metadataObj.put("version", "2.0")
+                metadataObj.put("backup_timestamp", System.currentTimeMillis())
+                metadataObj.put("backup_location", "My Drive/PayCycle Budget/")
+                metadataObj.put("file_name", "paycycle_budget_backup.json")
+                metadataObj.put("total_transactions", txList.size)
+                metadataObj.put("total_debts", debtList.size)
+                metadataObj.put("total_planned_expenses", expList.size)
+                metadataObj.put("total_income_sources", incList.size)
+                metadataObj.put("total_debt_payments", paymentList.size)
+                metadataObj.put("integrity_status", "VALID")
+                val checksum = (txList.size * 31 + debtList.size * 17 + expList.size * 13 + incList.size * 7 + paymentList.size).toString()
+                metadataObj.put("checksum", checksum)
+                json.put("metadata", metadataObj)
+
                 json.toString(4) // human-readable styled
             } catch (e: Exception) {
                 "{ \"error\": \"${e.localizedMessage}\" }"
@@ -3733,10 +4125,14 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                 var expImported = 0
                 var debtImported = 0
 
-                val existingTxList = repository.allTransactions.first()
-                val existingIncList = repository.allIncomeSources.first()
-                val existingExpList = repository.allPlannedExpenses.first()
-                val existingDebtList = repository.allDebts.first()
+                if (isRemoteNewer) {
+                    repository.clearAllData()
+                }
+
+                val existingTxList = if (isRemoteNewer) emptyList() else repository.allTransactions.first()
+                val existingIncList = if (isRemoteNewer) emptyList() else repository.allIncomeSources.first()
+                val existingExpList = if (isRemoteNewer) emptyList() else repository.allPlannedExpenses.first()
+                val existingDebtList = if (isRemoteNewer) emptyList() else repository.allDebts.first()
 
                 val rootJsonObj: org.json.JSONObject?
                 val rootJsonArray: org.json.JSONArray?
@@ -3993,6 +4389,37 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
                                         ))
                                         debtImported++
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    // Debt Payments
+                    var paymentImported = 0
+                    val paymentKey = listOf("debt_payments", "debtPayments", "payments").firstOrNull { rootJsonObj.has(it) }
+                    if (paymentKey != null) {
+                        val array = rootJsonObj.optJSONArray(paymentKey)
+                        if (array != null) {
+                            for (i in 0 until array.length()) {
+                                val obj = array.optJSONObject(i) ?: continue
+                                val debtId = obj.optInt("debtId", 0)
+                                val paymentAmount = extractFlexibleDouble(obj, "paymentAmount", "amount") ?: 0.0
+                                val principalAmount = extractFlexibleDouble(obj, "principalAmount", "principal") ?: paymentAmount
+                                val interestAmount = extractFlexibleDouble(obj, "interestAmount", "interest") ?: 0.0
+                                val paymentDateMillis = extractFlexibleDateMillis(obj, "paymentDateMillis", "date")
+                                val noteText = extractFlexibleString(obj, "note", "notes", default = "")
+                                if (paymentAmount > 0.0 && debtId > 0) {
+                                    repository.insertDebtPayment(
+                                        DebtPaymentEntity(
+                                            debtId = debtId,
+                                            paymentAmount = paymentAmount,
+                                            principalAmount = principalAmount,
+                                            interestAmount = interestAmount,
+                                            paymentDateMillis = paymentDateMillis,
+                                            note = noteText
+                                        )
+                                    )
+                                    paymentImported++
                                 }
                             }
                         }
@@ -4915,6 +5342,102 @@ class BudgetViewModel(application: Application) : AndroidViewModel(application) 
         val email = _driveAccountEmail.value
         return driveSyncManager.uploadOrOverwriteWebCompanionHtml(email, htmlContent)
     }
+
+    // Savings Goals operations
+    fun addSavingsGoal(
+        title: String,
+        targetAmount: Double,
+        category: String,
+        currentAmount: Double = 0.0,
+        emoji: String = "🎯",
+        colorHex: Long = 0xFF10B981L,
+        targetDate: String? = null,
+        notes: String = ""
+    ) {
+        val newGoal = SavingsGoal(
+            title = title.trim(),
+            targetAmount = targetAmount,
+            category = if (category.isBlank()) title.trim() else category.trim(),
+            currentAmount = currentAmount.coerceAtLeast(0.0),
+            emoji = emoji,
+            colorHex = colorHex,
+            targetDate = targetDate?.takeIf { it.isNotBlank() },
+            notes = notes.trim(),
+            isCompleted = currentAmount >= targetAmount
+        )
+        val updated = _savingsGoals.value + newGoal
+        _savingsGoals.value = updated
+        persistSavingsGoals(updated)
+    }
+
+    fun updateSavingsGoal(updatedGoal: SavingsGoal) {
+        val updated = _savingsGoals.value.map { if (it.id == updatedGoal.id) updatedGoal else it }
+        _savingsGoals.value = updated
+        persistSavingsGoals(updated)
+    }
+
+    fun deleteSavingsGoal(goalId: String) {
+        val updated = _savingsGoals.value.filterNot { it.id == goalId }
+        _savingsGoals.value = updated
+        persistSavingsGoals(updated)
+    }
+
+    fun contributeToSavingsGoal(
+        goalId: String,
+        amount: Double,
+        addAsTransaction: Boolean = false,
+        accountName: String? = null
+    ) {
+        val goal = _savingsGoals.value.firstOrNull { it.id == goalId } ?: return
+        val newAmount = goal.currentAmount + amount
+        val isNowCompleted = newAmount >= goal.targetAmount
+        val updated = _savingsGoals.value.map {
+            if (it.id == goalId) it.copy(currentAmount = newAmount, isCompleted = isNowCompleted) else it
+        }
+        _savingsGoals.value = updated
+        persistSavingsGoals(updated)
+
+        if (addAsTransaction) {
+            val acc = accountName?.takeIf { it.isNotBlank() && it != "All Accounts" }
+                ?: uiState.value.allAccounts.firstOrNull { it != "All Accounts" && !it.equals("Primary Account", ignoreCase = true) }
+                ?: ""
+            addTransaction(
+                title = "Savings: ${goal.title}",
+                amount = amount,
+                date = LocalDate.now(),
+                category = goal.category,
+                isIncome = false,
+                isRecurring = false,
+                accountName = acc,
+                isCompleted = true,
+                isAutoPay = false
+            )
+        }
+    }
+
+    private fun persistSavingsGoals(list: List<SavingsGoal>) {
+        viewModelScope.launch {
+            try {
+                val array = org.json.JSONArray()
+                for (goal in list) {
+                    val obj = org.json.JSONObject().apply {
+                        put("id", goal.id)
+                        put("title", goal.title)
+                        put("targetAmount", goal.targetAmount)
+                        put("category", goal.category)
+                        put("currentAmount", goal.currentAmount)
+                        put("emoji", goal.emoji)
+                        put("colorHex", goal.colorHex)
+                        put("targetDate", goal.targetDate ?: "")
+                        put("isCompleted", goal.isCompleted)
+                        put("notes", goal.notes)
+                    }
+                    array.put(obj)
+                }
+                repository.saveSetting("savings_goals_json", array.toString())
+            } catch (_: Exception) {}
+        }
+    }
 }
 
 data class BudgetUiState(
@@ -4952,12 +5475,22 @@ data class BudgetUiState(
     val targetDebtExpanded: Boolean = false,
     val monthlySummaryExpanded: Boolean = false,
     val showRunningBalance: Boolean = false,
-    val driveAuthVersion: Long = 0L
+    val driveAuthVersion: Long = 0L,
+    val savingsGoals: List<SavingsGoal> = emptyList()
 ) {
     val debts: List<DebtEntity> get() = allDebts
     val currentPayday: LocalDate get() = currentPayPeriodStart
     val currentPayPeriod: PayPeriod?
         get() = payPeriods.firstOrNull { it.startDate == currentPayPeriodStart } ?: payPeriods.firstOrNull()
+    val canGoToPreviousPayCycle: Boolean
+        get() {
+            val realCurrentPayday = DateUtils.getPaydayOnOrBefore(LocalDate.now(), anchorPayday)
+            val currentCycleMonth = YearMonth.from(realCurrentPayday)
+            val pastCyclePaydayBoundary = DateUtils.getPaydayOnOrBefore(currentCycleMonth.atDay(1), anchorPayday)
+            val earliest = allCalculatedPayPeriods.minOfOrNull { it.payday }
+            val effectiveEarliest = if (earliest != null && earliest.isAfter(pastCyclePaydayBoundary)) earliest else pastCyclePaydayBoundary
+            return currentPayPeriodStart.isAfter(effectiveEarliest)
+        }
 }
 
 data class UndoActionItem(

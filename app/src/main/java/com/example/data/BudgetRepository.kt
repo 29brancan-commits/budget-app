@@ -111,5 +111,6 @@ class BudgetRepository(private val transactionDao: TransactionDao) {
         transactionDao.clearIncomeSources()
         transactionDao.clearPlannedExpenses()
         transactionDao.clearDebts()
+        transactionDao.clearDebtPayments()
     }
 }
