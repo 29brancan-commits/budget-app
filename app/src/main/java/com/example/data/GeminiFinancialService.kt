@@ -1049,5 +1049,165 @@ object GeminiFinancialService {
             explanation = "Parsed: $title • $${String.format(Locale.US, "%.2f", amount)} ($category)"
         )
     }
+
+    // 5. Full Application Context Chatbot Query
+    suspend fun answerUserQueryWithFullContext(
+        userPrompt: String,
+        uiState: com.example.ui.BudgetUiState,
+        chatHistory: List<com.example.ui.ChatMessage> = emptyList()
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Gemini API key is missing or not configured in AI Studio Secrets."))
+        }
+
+        val today = LocalDate.now()
+        val accountBalances = uiState.accountBalances
+        val allTx = uiState.allTransactions
+        val currentPayPeriod = uiState.currentPayPeriod
+        val payPeriods = uiState.allCalculatedPayPeriods
+        val debts = uiState.allDebts
+        val savingsGoals = uiState.savingsGoals
+
+        val contextPrompt = buildString {
+            append("You are an expert, friendly AI Financial Assistant embedded directly in this personal budget & pay cycle tracking app.\n")
+            append("You have complete, live, real-time access to ALL financial data in the user's app instance. Answer the user's question accurately, concisely, and supportively.\n\n")
+
+            append("=== LIVE FINANCIAL APP CONTEXT (${today.format(DateTimeFormatter.ISO_LOCAL_DATE)}) ===\n")
+            append("- Active Account Selected: ${uiState.activeAccountName}\n")
+            append("- Available Accounts (${uiState.allAccounts.size}): ${uiState.allAccounts.joinToString(", ")}\n\n")
+
+            append("--- ACCOUNT BALANCES ---\n")
+            if (accountBalances.isEmpty()) {
+                append("No account balances recorded.\n")
+            } else {
+                accountBalances.forEach { (accName, acc) ->
+                    append("• ${accName}: Remaining Balance = $${String.format(Locale.US, "%,.2f", acc.remainingBalance)}, Income = $${String.format(Locale.US, "%,.2f", acc.totalIncome)}, Expenses = $${String.format(Locale.US, "%,.2f", acc.totalExpenses)}, Cleared = $${String.format(Locale.US, "%,.2f", acc.clearedBalance)}\n")
+                }
+            }
+            append("\n")
+
+            append("--- CURRENT PAY CYCLE ---\n")
+            if (currentPayPeriod != null) {
+                val cycleSafeSpend = (currentPayPeriod.remainingBalance).coerceAtLeast(0.0)
+                val daysInCycle = (java.time.temporal.ChronoUnit.DAYS.between(today, currentPayPeriod.endDate) + 1).coerceAtLeast(1L)
+                val safeSpendPerDay = cycleSafeSpend / daysInCycle
+                append("• Current Cycle Period: ${currentPayPeriod.startDate} to ${currentPayPeriod.endDate}\n")
+                append("• Starting Balance: $${String.format(Locale.US, "%,.2f", currentPayPeriod.startingBalance)}\n")
+                append("• Total Income: $${String.format(Locale.US, "%,.2f", currentPayPeriod.totalIncome)}\n")
+                append("• Total Expenses: $${String.format(Locale.US, "%,.2f", currentPayPeriod.totalExpenses)}\n")
+                append("• Net Remaining Balance: $${String.format(Locale.US, "%,.2f", currentPayPeriod.remainingBalance)}\n")
+                append("• Safe-To-Spend: $${String.format(Locale.US, "%,.2f", cycleSafeSpend)} total ($${String.format(Locale.US, "%,.2f", safeSpendPerDay)}/day)\n")
+            } else {
+                append("No current pay period active.\n")
+            }
+            append("\n")
+
+            append("--- SAVINGS GOALS (${savingsGoals.size}) ---\n")
+            if (savingsGoals.isEmpty()) {
+                append("No active savings goals.\n")
+            } else {
+                savingsGoals.forEach { goal ->
+                    append("• ${goal.emoji} ${goal.title}: $${String.format(Locale.US, "%,.2f", goal.currentAmount)} saved of $${String.format(Locale.US, "%,.2f", goal.targetAmount)} target (Category: ${goal.category}${if (goal.targetDate != null) ", Target Date: ${goal.targetDate}" else ""})\n")
+                }
+            }
+            append("\n")
+
+            append("--- DEBTS (${debts.size}) ---\n")
+            if (debts.isEmpty()) {
+                append("No debts or credit cards tracked.\n")
+            } else {
+                val totalDebt = debts.sumOf { it.balance }
+                val totalMin = debts.sumOf { it.minimumPayment }
+                append("Total Debt Balance: $${String.format(Locale.US, "%,.2f", totalDebt)} (Total Min Payment: $${String.format(Locale.US, "%,.2f", totalMin)}/mo)\n")
+                debts.forEach { d ->
+                    append("• ${d.name}: Balance = $${String.format(Locale.US, "%,.2f", d.balance)}, APR = ${d.interestRate}%, Min Payment = $${String.format(Locale.US, "%,.2f", d.minimumPayment)}, Due Day = ${d.billDueDay}\n")
+                }
+            }
+            append("\n")
+
+            val upcoming = allTx.filter { tx ->
+                val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                !tx.isIncome && !tx.isCompleted && (txDate.isEqual(today) || txDate.isAfter(today))
+            }.sortedBy { tx -> DateUtils.millisToLocalDate(tx.dateMillis) }
+
+            append("--- UPCOMING BILLS & EXPENSES (${upcoming.size}) ---\n")
+            if (upcoming.isEmpty()) {
+                append("No upcoming incomplete bills recorded.\n")
+            } else {
+                upcoming.take(15).forEach { tx ->
+                    val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                    val daysUntil = java.time.temporal.ChronoUnit.DAYS.between(today, txDate)
+                    append("• $txDate (${if (daysUntil == 0L) "TODAY" else "in $daysUntil days"}): ${tx.title} - $${String.format(Locale.US, "%,.2f", tx.amount)} [${tx.category}] (${tx.accountName})\n")
+                }
+            }
+            append("\n")
+
+            append("--- RECENT TRANSACTIONS (Last 20) ---\n")
+            allTx.sortedByDescending { it.dateMillis }.take(20).forEach { tx ->
+                val txDate = DateUtils.millisToLocalDate(tx.dateMillis)
+                val typeStr = if (tx.isIncome) "INCOME" else "EXPENSE"
+                val statusStr = if (tx.isCompleted) "COMPLETED" else "PENDING"
+                append("• $txDate: ${tx.title} - $${String.format(Locale.US, "%,.2f", tx.amount)} [$typeStr • ${tx.category} • ${tx.accountName} • $statusStr]\n")
+            }
+            append("\n")
+
+            append("=== CONVERSATION HISTORY ===\n")
+            chatHistory.takeLast(10).forEach { msg ->
+                val role = if (msg.isUser) "User" else "Assistant"
+                append("$role: ${msg.text}\n")
+            }
+            append("User: $userPrompt\n\n")
+
+            append("=== INSTRUCTIONS ===\n")
+            append("1. Answer the user's prompt directly using the exact numbers and items from the live financial app context above.\n")
+            append("2. If the user asks about specific numbers (e.g. safe to spend, debt total, savings progress, bill due dates), provide exact dollar amounts.\n")
+            append("3. Format response cleanly using Markdown bullet points, bold key figures, and concise advice.\n")
+            append("4. Keep the tone helpful, encouraging, and clear.")
+        }
+
+        try {
+            val jsonBody = JSONObject().apply {
+                put("contents", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("parts", JSONArray().apply {
+                            put(JSONObject().put("text", contextPrompt))
+                        })
+                    })
+                })
+                put("generationConfig", JSONObject().apply {
+                    put("temperature", 0.3)
+                })
+            }
+
+            val request = Request.Builder()
+                .url("$BASE_URL?key=$apiKey")
+                .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            val respStr = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Gemini Chat API call failed: $respStr")
+                return@withContext Result.failure(Exception("Gemini request failed (${response.code})"))
+            }
+
+            val root = JSONObject(respStr)
+            val candidates = root.optJSONArray("candidates")
+            val firstCand = candidates?.optJSONObject(0)
+            val parts = firstCand?.optJSONObject("content")?.optJSONArray("parts")
+            val text = parts?.optJSONObject(0)?.optString("text")
+
+            if (text.isNullOrBlank()) {
+                Result.failure(Exception("Empty response from Gemini model."))
+            } else {
+                Result.success(text.trim())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error querying Gemini Chat API", e)
+            Result.failure(e)
+        }
+    }
 }
 

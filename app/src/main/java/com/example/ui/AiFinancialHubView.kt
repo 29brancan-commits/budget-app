@@ -87,6 +87,7 @@ fun AiFinancialHubView(
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf(
+        "💬 AI Financial Chat",
         "🔮 Cash Flow & Safe-Spend",
         "🧪 Scenario Simulator",
         "🔍 Subscription Auditor"
@@ -222,9 +223,10 @@ fun AiFinancialHubView(
         }
 
         when (selectedTab) {
-            0 -> CashFlowForecasterSection(uiState = uiState, isWideScreen = isWideScreen)
-            1 -> WhatIfSimulatorSection(uiState = uiState, isWideScreen = isWideScreen)
-            2 -> SubscriptionAuditorSection(uiState = uiState, isWideScreen = isWideScreen)
+            0 -> FullDataChatBotView(uiState = uiState, isWideScreen = isWideScreen)
+            1 -> CashFlowForecasterSection(uiState = uiState, isWideScreen = isWideScreen)
+            2 -> WhatIfSimulatorSection(uiState = uiState, isWideScreen = isWideScreen)
+            3 -> SubscriptionAuditorSection(uiState = uiState, isWideScreen = isWideScreen)
         }
     }
 }
